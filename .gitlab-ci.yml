@@ -1,0 +1,29 @@
+stages:
+  - build
+  - test
+
+variables:
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+before_script:
+  - export GRADLE_USER_HOME=$(pwd)/.gradle
+
+build:
+  stage: build
+  image: gradle:8.8-jdk21
+  script:
+    - gradle build -x test
+  cache:
+    key: "$CI_COMMIT_REF_NAME"
+    paths:
+      - .gradle/
+
+test:
+  stage: test
+  image: gradle:8.8-jdk21
+  script:
+    - gradle test
+  cache:
+    key: "$CI_COMMIT_REF_NAME"
+    paths:
+      - .gradle/
