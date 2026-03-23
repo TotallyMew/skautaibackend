@@ -1,0 +1,16 @@
+ktor {
+    deployment {
+        port = 8080
+        port = ${?PORT}
+    }
+    application {
+        modules = [ lt.skautai.ApplicationKt.module ]
+    }
+}
+
+database {
+    url = "jdbc:postgresql://localhost:5432/skautu_inventorius"
+    driver = "org.postgresql.Driver"
+    user = "postgres"
+    password = "your_password_here"
+}
