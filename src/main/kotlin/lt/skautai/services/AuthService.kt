@@ -7,12 +7,12 @@ import lt.skautai.database.tables.*
 import lt.skautai.models.requests.LoginRequest
 import lt.skautai.models.requests.RegisterTuntininkasRequest
 import lt.skautai.models.requests.RegisterWithInviteRequest
+import lt.skautai.models.responses.MessageResponse
 import lt.skautai.models.responses.TokenResponse
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.mindrot.jbcrypt.BCrypt
 import java.util.*
-import lt.skautai.models.responses.MessageResponse
 
 class AuthService(private val environment: ApplicationEnvironment) {
 
@@ -20,9 +20,20 @@ class AuthService(private val environment: ApplicationEnvironment) {
     private val issuer = environment.config.property("jwt.issuer").getString()
     private val audience = environment.config.property("jwt.audience").getString()
 
+    // role name -> role_type
+    private val systemRoles = mapOf(
+        "Tuntininkas" to "LEADERSHIP",
+        "Tuntininko pavaduotojas" to "LEADERSHIP",
+        "Draugininkas" to "LEADERSHIP",
+        "Draugininko pavaduotojas" to "LEADERSHIP",
+        "Inventorininkas" to "LEADERSHIP",
+        "Skautas" to "RANK",
+        "Patyres skautas" to "RANK",
+        "Suauges skautybeje" to "RANK"
+    )
+
     fun registerTuntininkas(request: RegisterTuntininkasRequest): Result<TokenResponse> {
         return transaction {
-            // Check if email already exists
             val existingUser = Users.selectAll()
                 .where { Users.email eq request.email }
                 .firstOrNull()
@@ -32,7 +43,6 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
             val passwordHash = BCrypt.hashpw(request.password, BCrypt.gensalt())
 
-            // Create user
             val userId = Users.insert {
                 it[name] = request.name
                 it[surname] = request.surname
@@ -41,7 +51,6 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 it[phone] = request.phone
             } get Users.id
 
-            // Create tuntas
             val tuntasId = Tuntai.insert {
                 it[name] = request.tuntasName
                 it[krastas] = request.tuntasKrastas
@@ -49,27 +58,18 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 it[status] = "PENDING"
             } get Tuntai.id
 
-            // Create membership
             UserTuntasMemberships.insert {
                 it[this.userId] = userId
                 it[this.tuntasId] = tuntasId
             }
 
-            // Find or create tuntininkas role
-            val systemRoleNames = listOf(
-                "Tuntininkas",
-                "Inventorininkas",
-                "Draugininkas",
-                "Draugininko pavaduotojas",
-                "Patyres skautas",
-                "Skautas"
-            )
-
-            for (roleName in systemRoleNames) {
+            // Seed all system roles with correct role_type
+            for ((roleName, roleType) in systemRoles) {
                 Roles.insert {
                     it[this.tuntasId] = tuntasId
                     it[name] = roleName
                     it[isSystemRole] = true
+                    it[this.roleType] = roleType
                 }
             }
 
@@ -77,8 +77,8 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 .where { (Roles.name eq "Tuntininkas") and (Roles.tuntasId eq tuntasId) }
                 .first()[Roles.id]
 
-            // Assign role
-            UserRoles.insert {
+            // Tuntininkas is a LEADERSHIP role
+            UserLeadershipRoles.insert {
                 it[this.userId] = userId
                 it[roleId] = tuntininkasRoleId
                 it[this.tuntasId] = tuntasId
@@ -98,7 +98,6 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
     fun registerWithInvite(request: RegisterWithInviteRequest): Result<TokenResponse> {
         return transaction {
-            // Check email
             val existingUser = Users.selectAll()
                 .where { Users.email eq request.email }
                 .firstOrNull()
@@ -106,7 +105,6 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 return@transaction Result.failure(Exception("Email already registered"))
             }
 
-            // Find and validate invite
             val invite = Invitations.selectAll()
                 .where { Invitations.code eq request.inviteCode }
                 .firstOrNull()
@@ -125,7 +123,6 @@ class AuthService(private val environment: ApplicationEnvironment) {
             val roleId = invite[Invitations.roleId]
             val orgUnitId = invite[Invitations.organizationalUnitId]
 
-            // Check tuntas is active
             val tuntas = Tuntai.selectAll()
                 .where { Tuntai.id eq tuntasId }
                 .firstOrNull()
@@ -133,9 +130,14 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 return@transaction Result.failure(Exception("Tuntas is not active"))
             }
 
+            // Determine role type
+            val role = Roles.selectAll()
+                .where { Roles.id eq roleId }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Role not found"))
+
             val passwordHash = BCrypt.hashpw(request.password, BCrypt.gensalt())
 
-            // Create user
             val userId = Users.insert {
                 it[name] = request.name
                 it[surname] = request.surname
@@ -144,22 +146,29 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 it[phone] = request.phone
             } get Users.id
 
-            // Create membership
             UserTuntasMemberships.insert {
                 it[this.userId] = userId
                 it[this.tuntasId] = tuntasId
             }
 
-            // Assign role
-            UserRoles.insert {
-                it[this.userId] = userId
-                it[this.roleId] = roleId
-                it[this.tuntasId] = tuntasId
-                it[organizationalUnitId] = orgUnitId
-                it[assignedByUserId] = invite[Invitations.createdByUserId]
+            // Insert into correct table based on role type
+            when (role[Roles.roleType]) {
+                "LEADERSHIP" -> UserLeadershipRoles.insert {
+                    it[this.userId] = userId
+                    it[this.roleId] = roleId
+                    it[this.tuntasId] = tuntasId
+                    it[organizationalUnitId] = orgUnitId
+                    it[assignedByUserId] = invite[Invitations.createdByUserId]
+                }
+                "RANK" -> UserRanks.insert {
+                    it[this.userId] = userId
+                    it[this.roleId] = roleId
+                    it[this.tuntasId] = tuntasId
+                    it[assignedByUserId] = invite[Invitations.createdByUserId]
+                }
+                else -> return@transaction Result.failure(Exception("Unknown role type"))
             }
 
-            // Mark invite as used
             Invitations.update({ Invitations.id eq invite[Invitations.id] }) {
                 it[usedByUserId] = userId
                 it[usedAt] = now
@@ -250,6 +259,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
             Result.success(MessageResponse("Super admin created successfully"))
         }
     }
+
     private fun generateToken(userId: String, email: String, type: String): String {
         return JWT.create()
             .withAudience(audience)
@@ -257,7 +267,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
             .withClaim("userId", userId)
             .withClaim("email", email)
             .withClaim("type", type)
-            .withExpiresAt(Date(System.currentTimeMillis() + 86400000)) // 24 hours
+            .withExpiresAt(Date(System.currentTimeMillis() + 86400000))
             .sign(Algorithm.HMAC256(secret))
     }
 }

@@ -59,7 +59,7 @@ class AuthRoutesTest {
         transaction {
             exec("""
                 TRUNCATE TABLE 
-                    users, tuntai, super_admins, user_roles, role_permissions,
+                    users, tuntai, super_admins, user_leadership_roles, user_ranks, role_permissions,
                     roles, permissions, locations, organizational_units,
                     user_tuntas_memberships, invitations
                 CASCADE

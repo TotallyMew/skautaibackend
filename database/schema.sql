@@ -18,22 +18,7 @@ CREATE TABLE super_admins (
                               password_hash VARCHAR(255) NOT NULL,
                               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
---Invitations
-CREATE TABLE invitations (
-                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                             tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
-                             code VARCHAR(20) UNIQUE NOT NULL,
-                             role_id UUID NOT NULL REFERENCES roles(id),
-                             organizational_unit_id UUID REFERENCES organizational_units(id),
-                             created_by_user_id UUID NOT NULL REFERENCES users(id),
-                             used_by_user_id UUID REFERENCES users(id),
-                             expires_at TIMESTAMP NOT NULL,
-                             used_at TIMESTAMP,
-                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 
-CREATE INDEX idx_invitations_code ON invitations(code);
-CREATE INDEX idx_invitations_tuntas ON invitations(tuntas_id);
 -- Tuntai
 CREATE TABLE tuntai (
                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -88,6 +73,7 @@ CREATE TABLE roles (
                        tuntas_id UUID REFERENCES tuntai(id) ON DELETE CASCADE,
                        name VARCHAR(100) NOT NULL,
                        is_system_role BOOLEAN DEFAULT FALSE,
+                       role_type VARCHAR(20) NOT NULL DEFAULT 'LEADERSHIP' CHECK (role_type IN ('LEADERSHIP', 'RANK')),
                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -108,16 +94,30 @@ CREATE TABLE role_permissions (
                                   UNIQUE(role_id, permission_id)
 );
 
--- User roles
-CREATE TABLE user_roles (
+-- User leadership roles
+CREATE TABLE user_leadership_roles (
+                                       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                       user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                                       role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                                       tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                                       organizational_unit_id UUID REFERENCES organizational_units(id),
+                                       assigned_by_user_id UUID REFERENCES users(id),
+                                       assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                       starts_at TIMESTAMP,
+                                       expires_at TIMESTAMP,
+                                       left_at TIMESTAMP,
+                                       term_number INTEGER NOT NULL DEFAULT 1,
+                                       term_status VARCHAR(20) DEFAULT 'ACTIVE' CHECK (term_status IN ('ACTIVE', 'COMPLETED', 'RESIGNED'))
+);
+
+-- User ranks
+CREATE TABLE user_ranks (
                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                             user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                             role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
                             tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
-                            organizational_unit_id UUID REFERENCES organizational_units(id),
                             assigned_by_user_id UUID REFERENCES users(id),
-                            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            expires_at TIMESTAMP
+                            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Locations
@@ -131,8 +131,6 @@ CREATE TABLE locations (
 );
 
 -- Items
--- Note: original_owner_id is UUID without FK constraint because it can reference
--- either tuntai or organizational_units depending on transfer history
 CREATE TABLE items (
                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                        tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
@@ -425,6 +423,20 @@ CREATE TABLE sync_operations (
                                  conflict_notes TEXT
 );
 
+-- Invitations
+CREATE TABLE invitations (
+                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                             tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                             code VARCHAR(20) UNIQUE NOT NULL,
+                             role_id UUID NOT NULL REFERENCES roles(id),
+                             organizational_unit_id UUID REFERENCES organizational_units(id),
+                             created_by_user_id UUID NOT NULL REFERENCES users(id),
+                             used_by_user_id UUID REFERENCES users(id),
+                             expires_at TIMESTAMP NOT NULL,
+                             used_at TIMESTAMP,
+                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Indexes
 CREATE INDEX idx_items_tuntas ON items(tuntas_id);
 CREATE INDEX idx_items_owner ON items(owner_type, owner_id);
@@ -434,8 +446,10 @@ CREATE INDEX idx_reservations_dates ON reservations(start_date, end_date);
 CREATE INDEX idx_reservations_status ON reservations(status);
 CREATE INDEX idx_sync_operations_status ON sync_operations(status);
 CREATE INDEX idx_sync_operations_device ON sync_operations(device_id);
-CREATE INDEX idx_user_roles_user ON user_roles(user_id);
-CREATE INDEX idx_user_roles_tuntas ON user_roles(tuntas_id);
+CREATE INDEX idx_user_leadership_roles_user ON user_leadership_roles(user_id);
+CREATE INDEX idx_user_leadership_roles_tuntas ON user_leadership_roles(tuntas_id);
+CREATE INDEX idx_user_ranks_user ON user_ranks(user_id);
+CREATE INDEX idx_user_ranks_tuntas ON user_ranks(tuntas_id);
 CREATE INDEX idx_events_tuntas ON events(tuntas_id);
 CREATE INDEX idx_events_dates ON events(start_date, end_date);
 CREATE INDEX idx_item_assignments_item ON item_assignments(item_id);
@@ -444,3 +458,5 @@ CREATE INDEX idx_draugove_requisitions_tuntas ON draugove_requisitions(tuntas_id
 CREATE INDEX idx_draugove_requisitions_unit ON draugove_requisitions(organizational_unit_id);
 CREATE INDEX idx_pastovykle_inventory_pastovykle ON pastovykle_inventory(pastovykle_id);
 CREATE INDEX idx_sync_operations_client_timestamp ON sync_operations(client_timestamp);
+CREATE INDEX idx_invitations_code ON invitations(code);
+CREATE INDEX idx_invitations_tuntas ON invitations(tuntas_id);
