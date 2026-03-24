@@ -19,6 +19,8 @@ CREATE TABLE super_admins (
                               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+
+
 -- Tuntai
 CREATE TABLE tuntai (
                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -408,7 +410,24 @@ CREATE TABLE sync_operations (
                                  server_timestamp TIMESTAMP,
                                  status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPLIED', 'CONFLICT', 'REJECTED')),
                                  conflict_notes TEXT
+
+
+
 );
+--Invitations
+CREATE TABLE invitations (
+                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                             tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                             code VARCHAR(20) UNIQUE NOT NULL,
+                             role_id UUID NOT NULL REFERENCES roles(id),
+                             organizational_unit_id UUID REFERENCES organizational_units(id),
+                             created_by_user_id UUID NOT NULL REFERENCES users(id),
+                             used_by_user_id UUID REFERENCES users(id),
+                             expires_at TIMESTAMP NOT NULL,
+                             used_at TIMESTAMP,
+                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 
 -- Indexes
 CREATE INDEX idx_items_tuntas ON items(tuntas_id);
@@ -429,3 +448,5 @@ CREATE INDEX idx_draugove_requisitions_tuntas ON draugove_requisitions(tuntas_id
 CREATE INDEX idx_draugove_requisitions_unit ON draugove_requisitions(organizational_unit_id);
 CREATE INDEX idx_pastovykle_inventory_pastovykle ON pastovykle_inventory(pastovykle_id);
 CREATE INDEX idx_sync_operations_client_timestamp ON sync_operations(client_timestamp);
+CREATE INDEX idx_invitations_code ON invitations(code);
+CREATE INDEX idx_invitations_tuntas ON invitations(tuntas_id);

@@ -1,0 +1,30 @@
+package lt.skautai.database.tables
+
+import org.jetbrains.exposed.sql.Table
+import org.jetbrains.exposed.sql.kotlin.datetime.date
+import org.jetbrains.exposed.sql.kotlin.datetime.timestamp
+
+object Items : Table("items") {
+    val id = uuid("id").autoGenerate()
+    val tuntasId = uuid("tuntas_id").references(Tuntai.id)
+    val ownerType = varchar("owner_type", 20)
+    val ownerId = uuid("owner_id")
+    val originalOwnerId = uuid("original_owner_id").nullable()
+    val name = varchar("name", 200)
+    val description = text("description").nullable()
+    val category = varchar("category", 20)
+    val condition = varchar("condition", 20).default("GOOD")
+    val quantity = integer("quantity").default(1)
+    val locationId = uuid("location_id").references(Locations.id).nullable()
+    val responsibleUserId = uuid("responsible_user_id").references(Users.id).nullable()
+    val createdByUserId = uuid("created_by_user_id").references(Users.id).nullable()
+    val photoUrl = text("photo_url").nullable()
+    val purchaseDate = date("purchase_date").nullable()
+    val purchasePrice = decimal("purchase_price", 10, 2).nullable()
+    val notes = text("notes").nullable()
+    val status = varchar("status", 20).default("ACTIVE")
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+
+    override val primaryKey = PrimaryKey(id)
+}

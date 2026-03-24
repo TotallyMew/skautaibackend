@@ -19,6 +19,9 @@ test:
   stage: test
   script:
     - $env:GRADLE_USER_HOME = "$(Get-Location)/.gradle"
+    - $env:TEST_DB_URL = "jdbc:postgresql://localhost:5432/skautu_inventorius_test"
+    - $env:TEST_DB_USER = "postgres"
+    - $env:TEST_DB_PASSWORD = $env:TEST_DB_PASSWORD
     - ./gradlew test
   cache:
     key: "$CI_COMMIT_REF_NAME"

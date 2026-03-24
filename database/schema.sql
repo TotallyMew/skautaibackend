@@ -18,7 +18,22 @@ CREATE TABLE super_admins (
                               password_hash VARCHAR(255) NOT NULL,
                               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+--Invitations
+CREATE TABLE invitations (
+                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                             tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                             code VARCHAR(20) UNIQUE NOT NULL,
+                             role_id UUID NOT NULL REFERENCES roles(id),
+                             organizational_unit_id UUID REFERENCES organizational_units(id),
+                             created_by_user_id UUID NOT NULL REFERENCES users(id),
+                             used_by_user_id UUID REFERENCES users(id),
+                             expires_at TIMESTAMP NOT NULL,
+                             used_at TIMESTAMP,
+                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
+CREATE INDEX idx_invitations_code ON invitations(code);
+CREATE INDEX idx_invitations_tuntas ON invitations(tuntas_id);
 -- Tuntai
 CREATE TABLE tuntai (
                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

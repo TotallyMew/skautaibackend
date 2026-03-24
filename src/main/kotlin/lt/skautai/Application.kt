@@ -2,6 +2,9 @@ package lt.skautai
 
 import io.ktor.server.application.*
 import io.ktor.server.netty.*
+import lt.skautai.plugins.configureRouting
+import lt.skautai.plugins.configureSecurity
+import lt.skautai.plugins.configureSerialization
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.transactions.transaction
 
@@ -11,6 +14,9 @@ fun main(args: Array<String>) {
 
 fun Application.module() {
     configureDatabases()
+    configureSerialization()
+    configureSecurity()
+    configureRouting()
 }
 
 fun Application.configureDatabases() {
