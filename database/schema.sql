@@ -290,12 +290,24 @@ CREATE TABLE event_roles (
                              id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                              event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
                              user_id UUID NOT NULL REFERENCES users(id),
-                             role VARCHAR(30) NOT NULL CHECK (role IN ('VIRSININKAS', 'KOMENDANTAS', 'UKVEDYS', 'PASTOVYKLES_GURU', 'VADOVAS', 'SAVANORIS', 'PATYRE_SKAUTAS', 'SKAUTAS')),
+                             role VARCHAR(30) NOT NULL CHECK (role IN (
+                                                                       'VIRSININKAS', 'KOMENDANTAS', 'UKVEDYS',
+                                                                       'PASTOVYKLES_GURU', 'VADOVAS', 'SAVANORIS',
+                                                                       'PATYRE_SKAUTAS', 'SKAUTAS', 'PROGRAMERIS', 'MAISTININKAS'
+                                 )),
+                             target_group VARCHAR(20) CHECK (target_group IN ('PATYRE_SKAUTAI', 'SKAUTAI_VILKAI', 'TEVAI')),
                              assigned_by_user_id UUID REFERENCES users(id),
                              assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                              UNIQUE(event_id, user_id, role)
 );
 
+-- Only one VIRSININKAS per event
+CREATE UNIQUE INDEX idx_event_roles_one_virsininkas
+    ON event_roles(event_id)
+    WHERE role = 'VIRSININKAS';
+CREATE UNIQUE INDEX idx_event_roles_one_komendantas
+    ON event_roles(event_id)
+    WHERE role = 'KOMENDANTAS';
 -- Draugovė requisitions
 CREATE TABLE draugove_requisitions (
                                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -437,6 +449,34 @@ CREATE TABLE invitations (
                              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE bendras_inventory_requests (
+                                            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                            tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                                            requested_by_user_id UUID NOT NULL REFERENCES users(id),
+                                            item_id UUID NOT NULL REFERENCES items(id),
+                                            quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+                                            event_id UUID REFERENCES events(id),
+                                            needs_draugininkas_approval BOOLEAN NOT NULL DEFAULT FALSE,
+                                            draugininkas_status VARCHAR(20) CHECK (draugininkas_status IN ('PENDING', 'FORWARDED', 'REJECTED')),
+                                            draugininkas_reviewed_by_user_id UUID REFERENCES users(id),
+                                            draugininkas_rejection_reason TEXT,
+                                            top_level_status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (top_level_status IN ('PENDING', 'APPROVED', 'REJECTED')),
+                                            top_level_reviewed_by_user_id UUID REFERENCES users(id),
+                                            top_level_rejection_reason TEXT,
+                                            start_date DATE NOT NULL,
+                                            end_date DATE NOT NULL,
+                                            notes TEXT,
+                                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                            CHECK (end_date >= start_date)
+);
+
+CREATE TRIGGER update_bendras_inventory_requests_updated_at
+    BEFORE UPDATE ON bendras_inventory_requests
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+
+
 -- Indexes
 CREATE INDEX idx_items_tuntas ON items(tuntas_id);
 CREATE INDEX idx_items_owner ON items(owner_type, owner_id);
@@ -460,3 +500,7 @@ CREATE INDEX idx_pastovykle_inventory_pastovykle ON pastovykle_inventory(pastovy
 CREATE INDEX idx_sync_operations_client_timestamp ON sync_operations(client_timestamp);
 CREATE INDEX idx_invitations_code ON invitations(code);
 CREATE INDEX idx_invitations_tuntas ON invitations(tuntas_id);
+CREATE INDEX idx_bendras_inventory_requests_tuntas ON bendras_inventory_requests(tuntas_id);
+CREATE INDEX idx_bendras_inventory_requests_user ON bendras_inventory_requests(requested_by_user_id);
+CREATE INDEX idx_bendras_inventory_requests_item ON bendras_inventory_requests(item_id);
+CREATE INDEX idx_bendras_inventory_requests_top_status ON bendras_inventory_requests(top_level_status);

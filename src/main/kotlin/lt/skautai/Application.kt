@@ -5,6 +5,7 @@ import io.ktor.server.netty.*
 import lt.skautai.plugins.configureRouting
 import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
+import lt.skautai.services.PermissionSeeder
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.transactions.transaction
 
@@ -17,6 +18,7 @@ fun Application.module() {
     configureSerialization()
     configureSecurity()
     configureRouting()
+    PermissionSeeder.seedPermissions()
 }
 
 fun Application.configureDatabases() {
@@ -36,6 +38,6 @@ fun Application.configureDatabases() {
     val logger = log
     transaction {
         exec("SELECT 1")
-        logger.info("Database connection successful")
+        logger.info("Database connection asd")
     }
 }

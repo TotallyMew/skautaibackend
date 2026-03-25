@@ -3,91 +3,37 @@ package lt.skautai
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.server.routing.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import lt.skautai.routes.authRoutes
-import lt.skautai.services.AuthService
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.transactions.transaction
 import org.junit.jupiter.api.*
 import org.junit.jupiter.api.Assertions.*
+import lt.skautai.TestHelper.configureFullApp
+
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class AuthRoutesTest {
 
     @BeforeAll
     fun setup() {
-        val config = com.typesafe.config.ConfigFactory.load("test")
-        val dbUrl = config.getString("test.database.url")
-        val dbUser = config.getString("test.database.user")
-        val dbPassword = config.getString("test.database.password")
-
-        Database.connect(
-            url = dbUrl,
-            driver = "org.postgresql.Driver",
-            user = dbUser,
-            password = dbPassword
-        )
-
-        transaction {
-            val schema = object {}.javaClass
-                .getResource("/schema.sql")
-                ?.readText()
-                ?: error("schema.sql not found in resources")
-            exec(schema)
-        }
+        TestHelper.setupDatabase()
     }
 
     @AfterAll
     fun teardown() {
-        transaction {
-            exec("""
-                DROP SCHEMA public CASCADE;
-                CREATE SCHEMA public;
-            """.trimIndent())
-        }
+        TestHelper.teardownDatabase()
     }
-
 
     @BeforeEach
     fun cleanTables() {
-        transaction {
-            exec("""
-                TRUNCATE TABLE 
-                    users, tuntai, super_admins, user_leadership_roles, user_ranks, role_permissions,
-                    roles, permissions, locations, organizational_units,
-                    user_tuntas_memberships, invitations
-                CASCADE
-            """.trimIndent())
-        }
+        TestHelper.cleanTables()
     }
 
-    private fun ApplicationTestBuilder.configureApp() {
-        environment {
-            config = io.ktor.server.config.MapApplicationConfig(
-                "jwt.secret" to "test-secret-key-minimum-32-characters!!",
-                "jwt.issuer" to "lt.skautai.test",
-                "jwt.audience" to "lt.skautai.test.app",
-                "jwt.realm" to "test"
-            )
-        }
-        install(ContentNegotiation) {
-            json(Json { ignoreUnknownKeys = true })
-        }
-        application {
-            val authService = AuthService(environment)
-            routing { authRoutes(authService) }
-        }
-    }
 
     @Test
     fun `register tuntininkas returns 201 with token`() = testApplication {
-        configureApp()
+        configureFullApp()
 
         val response = client.post("/api/auth/register") {
             contentType(ContentType.Application.Json)
@@ -111,7 +57,7 @@ class AuthRoutesTest {
 
     @Test
     fun `register duplicate email returns 400`() = testApplication {
-        configureApp()
+        configureFullApp()
 
         client.post("/api/auth/register") {
             contentType(ContentType.Application.Json)
@@ -146,7 +92,7 @@ class AuthRoutesTest {
 
     @Test
     fun `login with valid credentials returns 200`() = testApplication {
-        configureApp()
+        configureFullApp()
 
         client.post("/api/auth/register") {
             contentType(ContentType.Application.Json)
@@ -178,7 +124,7 @@ class AuthRoutesTest {
 
     @Test
     fun `login with wrong password returns 401`() = testApplication {
-        configureApp()
+        configureFullApp()
 
         client.post("/api/auth/register") {
             contentType(ContentType.Application.Json)
@@ -208,7 +154,7 @@ class AuthRoutesTest {
 
     @Test
     fun `login with nonexistent email returns 401`() = testApplication {
-        configureApp()
+        configureFullApp()
 
         val response = client.post("/api/auth/login") {
             contentType(ContentType.Application.Json)
@@ -225,7 +171,7 @@ class AuthRoutesTest {
 
     @Test
     fun `seed super admin works when none exists`() = testApplication {
-        configureApp()
+        configureFullApp()
 
         val response = client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
@@ -242,7 +188,7 @@ class AuthRoutesTest {
 
     @Test
     fun `seed super admin fails when one already exists`() = testApplication {
-        configureApp()
+        configureFullApp()
 
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)

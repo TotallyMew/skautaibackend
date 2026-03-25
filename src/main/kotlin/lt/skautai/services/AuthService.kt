@@ -72,7 +72,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
                     it[this.roleType] = roleType
                 }
             }
-
+            PermissionSeeder.seedRolePermissions(tuntasId)
             val tuntininkasRoleId = Roles.selectAll()
                 .where { (Roles.name eq "Tuntininkas") and (Roles.tuntasId eq tuntasId) }
                 .first()[Roles.id]

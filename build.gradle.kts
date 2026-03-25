@@ -1,13 +1,13 @@
 plugins {
-    kotlin("jvm") version "2.0.10"
-    kotlin("plugin.serialization") version "2.0.10"
+    kotlin("jvm") version "2.3.0"
+    kotlin("plugin.serialization") version "2.3.0"
     application
 }
 
 group = "lt.skautai"
 version = "1.0-SNAPSHOT"
 
-val ktor_version = "2.3.12"
+val ktor_version = "3.4.1"
 val exposed_version = "0.54.0"
 val logback_version = "1.4.14"
 
@@ -25,6 +25,7 @@ dependencies {
     implementation("io.ktor:ktor-server-auth-jwt:$ktor_version")
     implementation("org.jetbrains.exposed:exposed-kotlin-datetime:$exposed_version")
     implementation("org.jetbrains.exposed:exposed-json:$exposed_version")
+
     // Database
     implementation("org.jetbrains.exposed:exposed-core:$exposed_version")
     implementation("org.jetbrains.exposed:exposed-dao:$exposed_version")
@@ -34,15 +35,13 @@ dependencies {
     // Logging
     implementation("ch.qos.logback:logback-classic:$logback_version")
 
-    // Testing
-    testImplementation(kotlin("test"))
-    testImplementation("io.ktor:ktor-server-test-host:$ktor_version")
-
-    //Authentication
+    // Authentication
     implementation("org.mindrot:jbcrypt:0.4")
     implementation("com.auth0:java-jwt:4.4.0")
 
-    //Tests
+    // Testing
+    testImplementation(kotlin("test"))
+    testImplementation("io.ktor:ktor-server-test-host:$ktor_version")
     testImplementation("io.mockk:mockk:1.13.10")
 }
 
@@ -52,8 +51,13 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+    environment("TEST_DB_PASSWORD", System.getenv("TEST_DB_PASSWORD") ?: "")
+    environment("TEST_DB_URL", System.getenv("TEST_DB_URL") ?: "jdbc:postgresql://localhost:5432/skautu_inventorius_test")
+    environment("TEST_DB_USER", System.getenv("TEST_DB_USER") ?: "postgres")
+    environment("TEST_JWT_SECRET", System.getenv("TEST_JWT_SECRET") ?: "")
 }
 
 kotlin {
     jvmToolchain(21)
 }
+
