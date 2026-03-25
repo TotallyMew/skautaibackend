@@ -7,12 +7,14 @@ import lt.skautai.routes.invitationRoutes
 import lt.skautai.routes.itemRoutes
 import lt.skautai.routes.superAdminRoutes
 import lt.skautai.routes.locationRoutes
+import lt.skautai.routes.memberRoutes
 import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.services.AuthService
 import lt.skautai.services.InvitationService
 import lt.skautai.services.ItemService
 import lt.skautai.services.LocationService
 import lt.skautai.services.OrganizationalUnitService
+import lt.skautai.services.MemberService
 
 
 fun Application.configureRouting() {
@@ -21,6 +23,7 @@ fun Application.configureRouting() {
     val itemService = ItemService()
     val locationService = LocationService()
     val organizationalUnitService = OrganizationalUnitService()
+    val memberService = MemberService()
 
     routing {
         authRoutes(authService)
@@ -29,5 +32,6 @@ fun Application.configureRouting() {
         itemRoutes(itemService)
         locationRoutes(locationService)
         organizationalUnitRoutes(organizationalUnitService)
+        memberRoutes(memberService)
     }
 }

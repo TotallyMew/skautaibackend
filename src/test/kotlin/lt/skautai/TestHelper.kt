@@ -22,7 +22,8 @@ import lt.skautai.plugins.configureSerialization
 import lt.skautai.routes.locationRoutes
 import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.services.LocationService
-
+import lt.skautai.services.MemberService
+import lt.skautai.routes.memberRoutes
 
 object TestHelper {
 
@@ -92,6 +93,7 @@ object TestHelper {
             val itemService = ItemService()
             val locationService = LocationService()
             val organizationalUnitService = OrganizationalUnitService()
+            val memberService = MemberService()
             PermissionSeeder.seedPermissions()
             routing {
                 authRoutes(authService)
@@ -100,6 +102,7 @@ object TestHelper {
                 itemRoutes(itemService)
                 locationRoutes(locationService)
                 organizationalUnitRoutes(organizationalUnitService)
+                memberRoutes(memberService)
             }
         }
     }
