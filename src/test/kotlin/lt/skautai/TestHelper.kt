@@ -20,6 +20,7 @@ import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.transactions.transaction
 import lt.skautai.plugins.configureSerialization
 import lt.skautai.routes.locationRoutes
+import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.services.LocationService
 
 
@@ -90,6 +91,7 @@ object TestHelper {
             val invitationService = InvitationService()
             val itemService = ItemService()
             val locationService = LocationService()
+            val organizationalUnitService = OrganizationalUnitService()
             PermissionSeeder.seedPermissions()
             routing {
                 authRoutes(authService)
@@ -97,6 +99,7 @@ object TestHelper {
                 superAdminRoutes()
                 itemRoutes(itemService)
                 locationRoutes(locationService)
+                organizationalUnitRoutes(organizationalUnitService)
             }
         }
     }
