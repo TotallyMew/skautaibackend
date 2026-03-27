@@ -24,6 +24,10 @@ import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.services.LocationService
 import lt.skautai.services.MemberService
 import lt.skautai.routes.memberRoutes
+import lt.skautai.routes.reservationRoutes
+import lt.skautai.services.ReservationService
+import lt.skautai.routes.eventRoutes
+import lt.skautai.services.EventService
 
 object TestHelper {
 
@@ -75,7 +79,7 @@ object TestHelper {
                     users, tuntai, bendras_inventory_requests, super_admins,
                     user_leadership_roles, user_ranks, role_permissions,
                     roles, permissions, locations, organizational_units,
-                    user_tuntas_memberships, invitations, items
+                    user_tuntas_memberships, invitations, items, reservations,events
                 CASCADE
             """.trimIndent())
         }
@@ -94,6 +98,8 @@ object TestHelper {
             val locationService = LocationService()
             val organizationalUnitService = OrganizationalUnitService()
             val memberService = MemberService()
+            val reservationService = ReservationService()
+            val eventService = EventService()
             PermissionSeeder.seedPermissions()
             routing {
                 authRoutes(authService)
@@ -103,6 +109,8 @@ object TestHelper {
                 locationRoutes(locationService)
                 organizationalUnitRoutes(organizationalUnitService)
                 memberRoutes(memberService)
+                reservationRoutes(reservationService)
+                eventRoutes(eventService)
             }
         }
     }
