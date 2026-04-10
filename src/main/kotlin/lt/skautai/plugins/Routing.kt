@@ -3,6 +3,7 @@ package lt.skautai.plugins
 import io.ktor.server.application.*
 import io.ktor.server.routing.*
 import lt.skautai.routes.authRoutes
+import lt.skautai.routes.bendrasInventoryRequestRoutes
 import lt.skautai.routes.invitationRoutes
 import lt.skautai.routes.itemRoutes
 import lt.skautai.routes.superAdminRoutes
@@ -18,6 +19,7 @@ import lt.skautai.services.MemberService
 import lt.skautai.routes.reservationRoutes
 import lt.skautai.services.ReservationService
 import lt.skautai.routes.eventRoutes
+import lt.skautai.services.BendrasInventoryRequestService
 import lt.skautai.services.EventService
 
 fun Application.configureRouting() {
@@ -29,6 +31,7 @@ fun Application.configureRouting() {
     val memberService = MemberService()
     val reservationService = ReservationService()
     val eventService = EventService()
+    val bendrasInventoryRequestService = BendrasInventoryRequestService()
 
     routing {
         authRoutes(authService)
@@ -40,5 +43,6 @@ fun Application.configureRouting() {
         memberRoutes(memberService)
         reservationRoutes(reservationService)
         eventRoutes(eventService)
+        bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
     }
 }

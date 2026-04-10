@@ -67,7 +67,8 @@ object PermissionSeeder {
             "events.inventory.distribute" to "ALL",
             "events.inventory.return" to "ALL",
             "members.remove" to "ALL",
-            "draugove.members.manage" to "ALL"
+            "draugove.members.manage" to "ALL",
+            "items.request.bendras" to "ALL",
         ),
         "Tuntininko pavaduotojas" to listOf(
             "items.view" to "ALL",
@@ -92,7 +93,8 @@ object PermissionSeeder {
             "events.inventory.distribute" to "ALL",
             "events.inventory.return" to "ALL",
             "members.remove" to "ALL",
-            "draugove.members.manage" to "ALL"
+            "draugove.members.manage" to "ALL",
+            "items.request.bendras" to "ALL",
         ),
         "Draugininkas" to listOf(
             "items.view" to "ALL",
@@ -111,7 +113,8 @@ object PermissionSeeder {
             "events.manage" to "OWN_DRAUGOVE",
             "events.inventory.distribute" to "OWN_DRAUGOVE",
             "events.inventory.return" to "OWN_DRAUGOVE",
-            "draugove.members.manage" to "OWN_DRAUGOVE"
+            "draugove.members.manage" to "OWN_DRAUGOVE",
+            "items.request.bendras" to "ALL",
         ),
         "Draugininko pavaduotojas" to listOf(
             "items.view" to "ALL",
@@ -130,7 +133,8 @@ object PermissionSeeder {
             "events.manage" to "OWN_DRAUGOVE",
             "events.inventory.distribute" to "OWN_DRAUGOVE",
             "events.inventory.return" to "OWN_DRAUGOVE",
-            "draugove.members.manage" to "OWN_DRAUGOVE"
+            "draugove.members.manage" to "OWN_DRAUGOVE",
+            "items.request.bendras" to "ALL",
         ),
         "Inventorininkas" to listOf(
             "items.view" to "ALL",

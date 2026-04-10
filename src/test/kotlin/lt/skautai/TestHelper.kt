@@ -19,6 +19,7 @@ import lt.skautai.services.*
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.transactions.transaction
 import lt.skautai.plugins.configureSerialization
+import lt.skautai.routes.bendrasInventoryRequestRoutes
 import lt.skautai.routes.locationRoutes
 import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.services.LocationService
@@ -105,6 +106,7 @@ object TestHelper {
             val memberService = MemberService()
             val reservationService = ReservationService()
             val eventService = EventService()
+            val bendrasInventoryRequestService = BendrasInventoryRequestService()
             PermissionSeeder.seedPermissions()
             routing {
                 authRoutes(authService)
@@ -116,6 +118,8 @@ object TestHelper {
                 memberRoutes(memberService)
                 reservationRoutes(reservationService)
                 eventRoutes(eventService)
+                bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
+
             }
         }
     }
