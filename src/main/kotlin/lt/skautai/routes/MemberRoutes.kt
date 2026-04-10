@@ -187,6 +187,40 @@ fun Route.memberRoutes(memberService: MemberService) {
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove rank")) }
                 }
             }
+            delete("{userId}/remove") {
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!checkPermission("members.remove", tuntasUUID)) return@delete
+
+                val userId = call.parameters["userId"]
+                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("User ID required"))
+                val userUUID = try { UUID.fromString(userId) } catch (e: Exception) {
+                    return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
+                }
+
+                memberService.removeMember(userUUID, tuntasUUID)
+                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Member removed")) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove member")) }
+            }
+
+            post("{userId}/resign") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                memberService.resignMember(callerUserId, tuntasUUID)
+                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Successfully resigned from tuntas")) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to resign")) }
+            }
         }
     }
 }

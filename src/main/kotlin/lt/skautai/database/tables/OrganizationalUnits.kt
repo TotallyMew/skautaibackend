@@ -9,6 +9,7 @@ object OrganizationalUnits : Table("organizational_units") {
     val parentId = uuid("parent_id").references(id).nullable()
     val name = varchar("name", 100)
     val type = varchar("type", 30)
+    val acceptedRankId = uuid("accepted_rank_id").references(Roles.id).nullable()
     val createdAt = timestamp("created_at")
 
     override val primaryKey = PrimaryKey(id)

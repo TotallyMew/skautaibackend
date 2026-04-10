@@ -380,4 +380,69 @@ class MemberService {
             assignedAt = row[UserRanks.assignedAt].toString()
         )
     }
+    fun removeMember(targetUserId: UUID, tuntasId: UUID): Result<Unit> {
+        return transaction {
+            val membership = UserTuntasMemberships.selectAll()
+                .where {
+                    (UserTuntasMemberships.userId eq targetUserId) and
+                            (UserTuntasMemberships.tuntasId eq tuntasId) and
+                            (UserTuntasMemberships.leftAt.isNull())
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Member not found in this tuntas"))
+
+            val now = kotlinx.datetime.Clock.System.now()
+
+            UserTuntasMemberships.update({
+                (UserTuntasMemberships.userId eq targetUserId) and
+                        (UserTuntasMemberships.tuntasId eq tuntasId)
+            }) {
+                it[leftAt] = now
+            }
+
+            UserLeadershipRoles.update({
+                (UserLeadershipRoles.userId eq targetUserId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE")
+            }) {
+                it[termStatus] = "RESIGNED"
+                it[leftAt] = now
+            }
+
+            Result.success(Unit)
+        }
+    }
+
+    fun resignMember(callerUserId: UUID, tuntasId: UUID): Result<Unit> {
+        return transaction {
+            UserTuntasMemberships.selectAll()
+                .where {
+                    (UserTuntasMemberships.userId eq callerUserId) and
+                            (UserTuntasMemberships.tuntasId eq tuntasId) and
+                            (UserTuntasMemberships.leftAt.isNull())
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("You are not an active member of this tuntas"))
+
+            val now = kotlinx.datetime.Clock.System.now()
+
+            UserTuntasMemberships.update({
+                (UserTuntasMemberships.userId eq callerUserId) and
+                        (UserTuntasMemberships.tuntasId eq tuntasId)
+            }) {
+                it[leftAt] = now
+            }
+
+            UserLeadershipRoles.update({
+                (UserLeadershipRoles.userId eq callerUserId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE")
+            }) {
+                it[termStatus] = "RESIGNED"
+                it[leftAt] = now
+            }
+
+            Result.success(Unit)
+        }
+    }
 }

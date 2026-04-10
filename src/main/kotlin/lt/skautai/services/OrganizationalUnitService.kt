@@ -5,6 +5,14 @@ import lt.skautai.models.requests.CreateOrganizationalUnitRequest
 import lt.skautai.models.requests.UpdateOrganizationalUnitRequest
 import lt.skautai.models.responses.OrganizationalUnitListResponse
 import lt.skautai.models.responses.OrganizationalUnitResponse
+import lt.skautai.database.tables.Roles
+import lt.skautai.database.tables.UserDraugoveMemberships
+import lt.skautai.database.tables.UserTuntasMemberships
+import lt.skautai.database.tables.UserRanks
+import lt.skautai.database.tables.Users
+import lt.skautai.models.requests.AssignDraugoveMembershipRequest
+import lt.skautai.models.responses.DraugoveMembershipListResponse
+import lt.skautai.models.responses.DraugoveMembershipResponse
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -60,9 +68,8 @@ class OrganizationalUnitService {
                 }
             }
 
-            // Verify parent belongs to same tuntas
             if (parentUUID != null) {
-                val parent = OrganizationalUnits.selectAll()
+                OrganizationalUnits.selectAll()
                     .where {
                         (OrganizationalUnits.id eq parentUUID) and
                                 (OrganizationalUnits.tuntasId eq tuntasId)
@@ -71,11 +78,29 @@ class OrganizationalUnitService {
                     ?: return@transaction Result.failure(Exception("Parent unit not found in this tuntas"))
             }
 
+            val acceptedRankUUID = request.acceptedRankId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid accepted rank ID"))
+                }
+            }
+
+            if (acceptedRankUUID != null) {
+                Roles.selectAll()
+                    .where {
+                        (Roles.id eq acceptedRankUUID) and
+                                (Roles.tuntasId eq tuntasId) and
+                                (Roles.roleType eq "RANK")
+                    }
+                    .firstOrNull()
+                    ?: return@transaction Result.failure(Exception("Rank role not found in this tuntas"))
+            }
+
             val unitId = OrganizationalUnits.insert {
                 it[this.tuntasId] = tuntasId
                 it[parentId] = parentUUID
                 it[name] = request.name
                 it[type] = request.type
+                it[acceptedRankId] = acceptedRankUUID
             } get OrganizationalUnits.id
 
             val unit = OrganizationalUnits.selectAll()
@@ -111,12 +136,11 @@ class OrganizationalUnitService {
             }
 
             if (parentUUID != null) {
-                // Cannot set parent to itself
                 if (parentUUID == unitId) {
                     return@transaction Result.failure(Exception("Unit cannot be its own parent"))
                 }
 
-                val parent = OrganizationalUnits.selectAll()
+                OrganizationalUnits.selectAll()
                     .where {
                         (OrganizationalUnits.id eq parentUUID) and
                                 (OrganizationalUnits.tuntasId eq tuntasId)
@@ -125,18 +149,30 @@ class OrganizationalUnitService {
                     ?: return@transaction Result.failure(Exception("Parent unit not found in this tuntas"))
             }
 
+            val acceptedRankUUID = request.acceptedRankId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid accepted rank ID"))
+                }
+            }
+
+            if (acceptedRankUUID != null) {
+                Roles.selectAll()
+                    .where {
+                        (Roles.id eq acceptedRankUUID) and
+                                (Roles.tuntasId eq tuntasId) and
+                                (Roles.roleType eq "RANK")
+                    }
+                    .firstOrNull()
+                    ?: return@transaction Result.failure(Exception("Rank role not found in this tuntas"))
+            }
+
             OrganizationalUnits.update({
                 (OrganizationalUnits.id eq unitId) and
                         (OrganizationalUnits.tuntasId eq tuntasId)
             }) { update ->
-
-                request.name?.let { v ->
-                    update[name] = v
-                }
-
-                request.parentId?.let {
-                    update[OrganizationalUnits.parentId] = parentUUID
-                }
+                request.name?.let { v -> update[name] = v }
+                request.parentId?.let { update[OrganizationalUnits.parentId] = parentUUID }
+                request.acceptedRankId?.let { update[OrganizationalUnits.acceptedRankId] = acceptedRankUUID }
             }
 
             val updated = OrganizationalUnits.selectAll()
@@ -189,13 +225,188 @@ class OrganizationalUnitService {
     }
 
     private fun toResponse(row: ResultRow): OrganizationalUnitResponse {
+
+        val acceptedRankId = row[OrganizationalUnits.acceptedRankId]
+        val acceptedRankName = acceptedRankId?.let {
+            Roles.selectAll()
+                .where {Roles.id eq it}
+                .firstOrNull()
+                ?.get(Roles.name)
+        }
+
         return OrganizationalUnitResponse(
             id = row[OrganizationalUnits.id].toString(),
             tuntasId = row[OrganizationalUnits.tuntasId].toString(),
             parentId = row[OrganizationalUnits.parentId]?.toString(),
             name = row[OrganizationalUnits.name],
             type = row[OrganizationalUnits.type],
+            acceptedRankId = acceptedRankId?.toString(),
+            acceptedRankName = acceptedRankName,
             createdAt = row[OrganizationalUnits.createdAt].toString()
+        )
+    }
+    fun getDraugoveMembers(unitId: UUID, tuntasId: UUID): Result<DraugoveMembershipListResponse> {
+        return transaction {
+            OrganizationalUnits.selectAll()
+                .where {
+                    (OrganizationalUnits.id eq unitId) and
+                            (OrganizationalUnits.tuntasId eq tuntasId)
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Organizational unit not found"))
+
+            val members = UserDraugoveMemberships
+                    .innerJoin(Users, { UserDraugoveMemberships.userId }, { Users.id })
+                .selectAll()
+                .where {
+                    (UserDraugoveMemberships.organizationalUnitId eq unitId) and
+                            (UserDraugoveMemberships.tuntasId eq tuntasId) and
+                            (UserDraugoveMemberships.leftAt.isNull())
+                }
+                .map { toDraugoveMembershipResponse(it) }
+
+            Result.success(DraugoveMembershipListResponse(members = members, total = members.size))
+        }
+    }
+
+    fun assignDraugoveMember(
+    unitId: UUID,
+    tuntasId: UUID,
+    assignedByUserId: UUID,
+    request: AssignDraugoveMembershipRequest
+    ): Result<DraugoveMembershipResponse> {
+        return transaction {
+            val unit = OrganizationalUnits.selectAll()
+                .where {
+                    (OrganizationalUnits.id eq unitId) and
+                            (OrganizationalUnits.tuntasId eq tuntasId)
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Organizational unit not found"))
+
+            if (unit[OrganizationalUnits.type] != "DRAUGOVE") {
+                return@transaction Result.failure(Exception("Only DRAUGOVE units can have members assigned"))
+            }
+
+            val userUUID = try { UUID.fromString(request.userId) } catch (e: Exception) {
+                return@transaction Result.failure(Exception("Invalid user ID"))
+            }
+
+            // Verify user is an active tuntas member
+            UserTuntasMemberships.selectAll()
+                .where {
+                    (UserTuntasMemberships.userId eq userUUID) and
+                            (UserTuntasMemberships.tuntasId eq tuntasId) and
+                            (UserTuntasMemberships.leftAt.isNull())
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("User is not an active member of this tuntas"))
+
+            // Rank validation — only enforce if draugove has an accepted rank set
+            val acceptedRankId = unit[OrganizationalUnits.acceptedRankId]
+            if (acceptedRankId != null && !request.isLent) {
+                val userHasRank = UserRanks.selectAll()
+                    .where {
+                        (UserRanks.userId eq userUUID) and
+                                (UserRanks.tuntasId eq tuntasId) and
+                                (UserRanks.roleId eq acceptedRankId)
+                    }
+                    .firstOrNull()
+                if (userHasRank == null) {
+                    return@transaction Result.failure(Exception("User's rank does not match the accepted rank for this draugove"))
+                }
+            }
+
+            // Check user does not already have an active primary membership in another draugove
+            // (only applies to non-lent assignments)
+            if (!request.isLent) {
+                val existingPrimary = UserDraugoveMemberships.selectAll()
+                    .where {
+                        (UserDraugoveMemberships.userId eq userUUID) and
+                                (UserDraugoveMemberships.tuntasId eq tuntasId) and
+                                (UserDraugoveMemberships.isLent eq false) and
+                        (UserDraugoveMemberships.leftAt.isNull())
+                    }
+                    .firstOrNull()
+
+                if (existingPrimary != null) {
+                    return@transaction Result.failure(Exception("User already has a primary draugove assignment. Remove it first or use isLent=true"))
+                }
+            }
+
+            val membershipId = UserDraugoveMemberships.insert {
+                it[userId] = userUUID
+                it[organizationalUnitId] = unitId
+                it[this.tuntasId] = tuntasId
+                it[isLent] = request.isLent
+                it[this.assignedByUserId] = assignedByUserId
+            } get UserDraugoveMemberships.id
+
+            val inserted = UserDraugoveMemberships
+                    .innerJoin(Users, { UserDraugoveMemberships.userId }, { Users.id })
+                .selectAll()
+                .where { UserDraugoveMemberships.id eq membershipId }
+                .first()
+
+            Result.success(toDraugoveMembershipResponse(inserted))
+        }
+    }
+
+    fun removeDraugoveMember(
+    unitId: UUID,
+    tuntasId: UUID,
+    targetUserId: UUID
+    ): Result<Unit> {
+        return transaction {
+            OrganizationalUnits.selectAll()
+                .where {
+                    (OrganizationalUnits.id eq unitId) and
+                            (OrganizationalUnits.tuntasId eq tuntasId)
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Organizational unit not found"))
+
+            val membership = UserDraugoveMemberships.selectAll()
+                .where {
+                    (UserDraugoveMemberships.userId eq targetUserId) and
+                            (UserDraugoveMemberships.organizationalUnitId eq unitId) and
+                            (UserDraugoveMemberships.tuntasId eq tuntasId) and
+                            (UserDraugoveMemberships.leftAt.isNull())
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Active draugove membership not found for this user"))
+
+            UserDraugoveMemberships.update({
+                (UserDraugoveMemberships.userId eq targetUserId) and
+                        (UserDraugoveMemberships.organizationalUnitId eq unitId) and
+                        (UserDraugoveMemberships.tuntasId eq tuntasId) and
+                        (UserDraugoveMemberships.leftAt.isNull())
+            }) {
+                it[leftAt] = kotlinx.datetime.Clock.System.now()
+            }
+
+            Result.success(Unit)
+        }
+    }
+
+    private fun toDraugoveMembershipResponse(row: ResultRow): DraugoveMembershipResponse {
+        val unitId = row[UserDraugoveMemberships.organizationalUnitId]
+        val unitName = OrganizationalUnits.selectAll()
+            .where { OrganizationalUnits.id eq unitId }
+            .first()[OrganizationalUnits.name]
+
+        return DraugoveMembershipResponse(
+                id = row[UserDraugoveMemberships.id].toString(),
+        userId = row[UserDraugoveMemberships.userId].toString(),
+        userName = row[Users.name],
+        userSurname = row[Users.surname],
+        organizationalUnitId = unitId.toString(),
+        organizationalUnitName = unitName,
+        tuntasId = row[UserDraugoveMemberships.tuntasId].toString(),
+        isLent = row[UserDraugoveMemberships.isLent],
+        assignedByUserId = row[UserDraugoveMemberships.assignedByUserId]?.toString(),
+        joinedAt = row[UserDraugoveMemberships.joinedAt].toString(),
+        leftAt = row[UserDraugoveMemberships.leftAt]?.toString()
         )
     }
 }

@@ -28,7 +28,9 @@ object PermissionSeeder {
         "reservations.create",
         "reservations.approve",
         "requisitions.create",
-        "requisitions.approve"
+        "requisitions.approve",
+        "members.remove",
+        "draugove.members.manage"
     )
 
     // All event permissions
@@ -63,7 +65,9 @@ object PermissionSeeder {
             "events.create" to "ALL",
             "events.manage" to "ALL",
             "events.inventory.distribute" to "ALL",
-            "events.inventory.return" to "ALL"
+            "events.inventory.return" to "ALL",
+            "members.remove" to "ALL",
+            "draugove.members.manage" to "ALL"
         ),
         "Tuntininko pavaduotojas" to listOf(
             "items.view" to "ALL",
@@ -86,7 +90,9 @@ object PermissionSeeder {
             "events.create" to "ALL",
             "events.manage" to "ALL",
             "events.inventory.distribute" to "ALL",
-            "events.inventory.return" to "ALL"
+            "events.inventory.return" to "ALL",
+            "members.remove" to "ALL",
+            "draugove.members.manage" to "ALL"
         ),
         "Draugininkas" to listOf(
             "items.view" to "ALL",
@@ -104,7 +110,8 @@ object PermissionSeeder {
             "events.create" to "OWN_DRAUGOVE",
             "events.manage" to "OWN_DRAUGOVE",
             "events.inventory.distribute" to "OWN_DRAUGOVE",
-            "events.inventory.return" to "OWN_DRAUGOVE"
+            "events.inventory.return" to "OWN_DRAUGOVE",
+            "draugove.members.manage" to "OWN_DRAUGOVE"
         ),
         "Draugininko pavaduotojas" to listOf(
             "items.view" to "ALL",
@@ -122,7 +129,8 @@ object PermissionSeeder {
             "events.create" to "OWN_DRAUGOVE",
             "events.manage" to "OWN_DRAUGOVE",
             "events.inventory.distribute" to "OWN_DRAUGOVE",
-            "events.inventory.return" to "OWN_DRAUGOVE"
+            "events.inventory.return" to "OWN_DRAUGOVE",
+            "draugove.members.manage" to "OWN_DRAUGOVE"
         ),
         "Inventorininkas" to listOf(
             "items.view" to "ALL",

@@ -55,6 +55,11 @@ object TestHelper {
         )
 
         transaction {
+            exec("""
+            DROP SCHEMA public CASCADE;
+            CREATE SCHEMA public;
+        """.trimIndent())
+
             val schema = object {}.javaClass
                 .getResource("/schema.sql")
                 ?.readText()
@@ -147,5 +152,14 @@ object TestHelper {
         }
 
         return token to tuntasId
+    }
+    fun getRoleId(tuntasId: String, roleName: String): String {
+        var id = ""
+        transaction {
+            exec("SELECT id FROM roles WHERE tuntas_id = '$tuntasId' AND name = '$roleName' LIMIT 1") { rs ->
+                if (rs.next()) id = rs.getString("id")
+            }
+        }
+        return id
     }
 }

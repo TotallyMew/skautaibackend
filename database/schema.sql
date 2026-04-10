@@ -56,17 +56,6 @@ CREATE TABLE user_tuntas_memberships (
                                          left_at TIMESTAMP,
                                          UNIQUE(user_id, tuntas_id)
 );
-
--- Organizational units
-CREATE TABLE organizational_units (
-                                      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                                      tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
-                                      parent_id UUID REFERENCES organizational_units(id),
-                                      name VARCHAR(100) NOT NULL,
-                                      type VARCHAR(30) NOT NULL CHECK (type IN ('DRAUGOVE', 'SKILTIS', 'GAUJA', 'GILDIJA', 'BURELI', 'VYRESNIUJU_DRAUGOVE')),
-                                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Roles
 CREATE TABLE roles (
                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -76,6 +65,19 @@ CREATE TABLE roles (
                        role_type VARCHAR(20) NOT NULL DEFAULT 'LEADERSHIP' CHECK (role_type IN ('LEADERSHIP', 'RANK')),
                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Organizational units
+CREATE TABLE organizational_units (
+                                      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                      tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                                      parent_id UUID REFERENCES organizational_units(id),
+                                      name VARCHAR(100) NOT NULL,
+                                      type VARCHAR(30) NOT NULL,
+                                      accepted_rank_id UUID REFERENCES roles(id),
+                                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
 
 -- Permissions
 CREATE TABLE permissions (
@@ -456,6 +458,7 @@ CREATE TABLE bendras_inventory_requests (
                                             item_id UUID NOT NULL REFERENCES items(id),
                                             quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
                                             event_id UUID REFERENCES events(id),
+                                            draugove_id UUID REFERENCES organizational_units(id),
                                             needs_draugininkas_approval BOOLEAN NOT NULL DEFAULT FALSE,
                                             draugininkas_status VARCHAR(20) CHECK (draugininkas_status IN ('PENDING', 'FORWARDED', 'REJECTED')),
                                             draugininkas_reviewed_by_user_id UUID REFERENCES users(id),
@@ -475,7 +478,16 @@ CREATE TRIGGER update_bendras_inventory_requests_updated_at
     BEFORE UPDATE ON bendras_inventory_requests
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-
+CREATE TABLE user_draugove_memberships (
+                                           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                           user_id UUID NOT NULL REFERENCES users(id),
+                                           organizational_unit_id UUID NOT NULL REFERENCES organizational_units(id) ON DELETE CASCADE,
+                                           tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                                           is_lent BOOLEAN NOT NULL DEFAULT FALSE,
+                                           assigned_by_user_id UUID REFERENCES users(id),
+                                           joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                           left_at TIMESTAMP
+);
 
 -- Indexes
 CREATE INDEX idx_items_tuntas ON items(tuntas_id);
@@ -504,3 +516,6 @@ CREATE INDEX idx_bendras_inventory_requests_tuntas ON bendras_inventory_requests
 CREATE INDEX idx_bendras_inventory_requests_user ON bendras_inventory_requests(requested_by_user_id);
 CREATE INDEX idx_bendras_inventory_requests_item ON bendras_inventory_requests(item_id);
 CREATE INDEX idx_bendras_inventory_requests_top_status ON bendras_inventory_requests(top_level_status);
+CREATE INDEX idx_user_draugove_memberships_user ON user_draugove_memberships(user_id);
+CREATE INDEX idx_user_draugove_memberships_tuntas ON user_draugove_memberships(tuntas_id);
+CREATE INDEX idx_user_draugove_memberships_unit ON user_draugove_memberships(organizational_unit_id);

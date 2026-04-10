@@ -9,6 +9,8 @@ data class OrganizationalUnitResponse(
     val parentId: String? = null,
     val name: String,
     val type: String,
+    val acceptedRankId: String? = null,
+    val acceptedRankName: String? = null,
     val createdAt: String
 )
 
