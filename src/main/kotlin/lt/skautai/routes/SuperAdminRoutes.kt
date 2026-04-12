@@ -66,6 +66,36 @@ fun Route.superAdminRoutes() {
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Approval failed")) }
             }
+
+            post("/{id}/reject") {
+                val tuntasId = try {
+                    UUID.fromString(call.parameters["id"])
+                } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val result = transaction {
+                    val tuntas = Tuntai.selectAll()
+                        .where { Tuntai.id eq tuntasId }
+                        .firstOrNull()
+                        ?: return@transaction Result.failure(Exception("Tuntas not found"))
+
+                    if (tuntas[Tuntai.status] != "PENDING") {
+                        return@transaction Result.failure(Exception("Tuntas is not pending approval"))
+                    }
+
+                    Tuntai.update({ Tuntai.id eq tuntasId }) {
+                        it[status] = "REJECTED"
+                    }
+
+                    Result.success(MessageResponse("Tuntas rejected"))
+                }
+
+                result
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Rejection failed")) }
+            }
+
         }
     }
 }

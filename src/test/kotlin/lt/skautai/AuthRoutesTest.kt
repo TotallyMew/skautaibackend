@@ -664,4 +664,114 @@ class AuthRoutesTest {
 
         assertEquals(HttpStatusCode.Unauthorized, response.status)
     }
+
+    @Test
+    fun `super admin can reject pending tuntas`() = testApplication {
+        configureFullApp()
+
+        // Register a tuntas
+        client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+        {
+            "name": "Test",
+            "surname": "User",
+            "email": "tuntininkas2@test.com",
+            "password": "test123",
+            "tuntasName": "Test Tuntas Reject"
+        }
+    """.trimIndent())
+        }
+
+        val tuntasId = transaction {
+            var id = ""
+            exec("SELECT id FROM tuntai WHERE name = 'Test Tuntas Reject' LIMIT 1") { rs ->
+                if (rs.next()) id = rs.getString("id")
+            }
+            id
+        }
+
+        // Seed and login super admin
+        client.post("/api/setup/super-admin") {
+            contentType(ContentType.Application.Json)
+            setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
+        }
+
+        val loginResponse = client.post("/api/super-admin/login") {
+            contentType(ContentType.Application.Json)
+            setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
+        }
+        val adminToken = Json.parseToJsonElement(loginResponse.bodyAsText())
+            .jsonObject["token"]!!.jsonPrimitive.content
+
+        val response = client.post("/api/super-admin/tuntai/$tuntasId/reject") {
+            header("Authorization", "Bearer $adminToken")
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+
+        // Verify tuntas is now rejected
+        val tuntaiResponse = client.get("/api/super-admin/tuntai") {
+            header("Authorization", "Bearer $adminToken")
+        }
+        val tuntai = Json.parseToJsonElement(tuntaiResponse.bodyAsText()).jsonArray
+        val rejectedTuntas = tuntai.firstOrNull {
+            it.jsonObject["name"]?.jsonPrimitive?.content == "Test Tuntas Reject"
+        }
+        assertNotNull(rejectedTuntas)
+        assertEquals("REJECTED", rejectedTuntas!!.jsonObject["status"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `super admin cannot reject already active tuntas`() = testApplication {
+        configureFullApp()
+
+        // Register a tuntas
+        client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+        {
+            "name": "Test",
+            "surname": "User",
+            "email": "tuntininkas3@test.com",
+            "password": "test123",
+            "tuntasName": "Test Tuntas Active"
+        }
+    """.trimIndent())
+        }
+
+        val tuntasId = transaction {
+            var id = ""
+            exec("SELECT id FROM tuntai WHERE name = 'Test Tuntas Active' LIMIT 1") { rs ->
+                if (rs.next()) id = rs.getString("id")
+            }
+            id
+        }
+
+        // Seed and login super admin
+        client.post("/api/setup/super-admin") {
+            contentType(ContentType.Application.Json)
+            setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
+        }
+
+        val loginResponse = client.post("/api/super-admin/login") {
+            contentType(ContentType.Application.Json)
+            setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
+        }
+        val adminToken = Json.parseToJsonElement(loginResponse.bodyAsText())
+            .jsonObject["token"]!!.jsonPrimitive.content
+
+        // First approve it
+        client.post("/api/super-admin/tuntai/$tuntasId/approve") {
+            header("Authorization", "Bearer $adminToken")
+        }
+
+        // Now try to reject it
+        val response = client.post("/api/super-admin/tuntai/$tuntasId/reject") {
+            header("Authorization", "Bearer $adminToken")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
 }

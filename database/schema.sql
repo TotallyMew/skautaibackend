@@ -19,16 +19,16 @@ CREATE TABLE super_admins (
                               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Tuntai
 CREATE TABLE tuntai (
                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                         name VARCHAR(100) NOT NULL,
                         krastas VARCHAR(100),
                         contact_email VARCHAR(255),
-                        status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACTIVE', 'SUSPENDED')),
+                        status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACTIVE', 'SUSPENDED', 'REJECTED')),
                         approved_by_super_admin_id UUID REFERENCES super_admins(id),
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        approved_at TIMESTAMP
+                        approved_at TIMESTAMP,
+                        rejected_at TIMESTAMP
 );
 
 -- Users

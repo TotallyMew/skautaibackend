@@ -13,6 +13,7 @@ object Tuntai : Table("tuntai") {
         .references(SuperAdmins.id).nullable()
     val createdAt = timestamp("created_at")
     val approvedAt = timestamp("approved_at").nullable()
+    val rejectedAt = timestamp("rejected_at").nullable()
 
     override val primaryKey = PrimaryKey(id)
 }
