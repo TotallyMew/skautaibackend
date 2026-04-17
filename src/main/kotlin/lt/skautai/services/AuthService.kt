@@ -9,6 +9,7 @@ import lt.skautai.models.requests.RegisterTuntininkasRequest
 import lt.skautai.models.requests.RegisterWithInviteRequest
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.models.responses.TokenResponse
+import lt.skautai.models.responses.TuntasInfo
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.mindrot.jbcrypt.BCrypt
@@ -175,12 +176,14 @@ class AuthService(private val environment: ApplicationEnvironment) {
             }
 
             val token = generateToken(userId.toString(), request.email, "user")
+            val tuntai = getActiveTuntaiForUser(userId)
             Result.success(
                 TokenResponse(
                     token = token,
                     userId = userId.toString(),
                     email = request.email,
-                    name = request.name
+                    name = request.name,
+                    tuntai = tuntai
                 )
             )
         }
@@ -202,12 +205,14 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 user[Users.email],
                 "user"
             )
+            val tuntai = getActiveTuntaiForUser(user[Users.id])
             Result.success(
                 TokenResponse(
                     token = token,
                     userId = user[Users.id].toString(),
                     email = user[Users.email],
-                    name = user[Users.name]
+                    name = user[Users.name],
+                    tuntai = tuntai
                 )
             )
         }
@@ -260,6 +265,24 @@ class AuthService(private val environment: ApplicationEnvironment) {
         }
     }
 
+    private fun getActiveTuntaiForUser(userId: UUID): List<TuntasInfo> {
+        return UserTuntasMemberships
+            .innerJoin(Tuntai, { UserTuntasMemberships.tuntasId }, { Tuntai.id })
+            .selectAll()
+            .where {
+                (UserTuntasMemberships.userId eq userId) and
+                        (UserTuntasMemberships.leftAt.isNull()) and
+                        (Tuntai.status eq "ACTIVE")
+            }
+            .map {
+                TuntasInfo(
+                    id = it[Tuntai.id].toString(),
+                    name = it[Tuntai.name],
+                    krastas = it[Tuntai.krastas] ?: "",
+                    contactEmail = it[Tuntai.contactEmail] ?: ""
+                )
+            }
+    }
     private fun generateToken(userId: String, email: String, type: String): String {
         return JWT.create()
             .withAudience(audience)

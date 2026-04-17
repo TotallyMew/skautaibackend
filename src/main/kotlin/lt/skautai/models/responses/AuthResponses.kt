@@ -8,7 +8,8 @@ data class TokenResponse(
     val userId: String,
     val email: String,
     val name: String,
-    val type: String = "user"
+    val type: String = "user",
+    val tuntai: List<TuntasInfo> = emptyList()
 )
 
 @Serializable

@@ -19,6 +19,7 @@ import lt.skautai.services.MemberService
 import lt.skautai.routes.reservationRoutes
 import lt.skautai.services.ReservationService
 import lt.skautai.routes.eventRoutes
+import lt.skautai.routes.userRoutes
 import lt.skautai.services.BendrasInventoryRequestService
 import lt.skautai.services.EventService
 
@@ -44,5 +45,6 @@ fun Application.configureRouting() {
         reservationRoutes(reservationService)
         eventRoutes(eventService)
         bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
+        userRoutes()
     }
 }
