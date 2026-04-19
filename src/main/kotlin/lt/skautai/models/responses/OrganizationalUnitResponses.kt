@@ -6,9 +6,9 @@ import kotlinx.serialization.Serializable
 data class OrganizationalUnitResponse(
     val id: String,
     val tuntasId: String,
-    val parentId: String? = null,
     val name: String,
     val type: String,
+    val subType: String? = null,
     val acceptedRankId: String? = null,
     val acceptedRankName: String? = null,
     val createdAt: String

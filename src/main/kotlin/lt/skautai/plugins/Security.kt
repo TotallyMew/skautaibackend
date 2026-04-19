@@ -63,7 +63,7 @@ fun Application.configureSecurity() {
 data class ResolvedPermission(
     val permissionName: String,
     val scope: String,
-    val userOrgUnitId: UUID?
+    val userOrgUnitIds: Set<UUID>
 )
 
 fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermission> {
@@ -89,7 +89,8 @@ fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermissio
         val allRoleIds = leadershipRoleIds + rankRoleIds
         if (allRoleIds.isEmpty()) return@transaction emptyList()
 
-        val orgUnitId = UserLeadershipRoles
+// Collect all unit IDs from leadership roles
+        val leadershipUnitIds = UserLeadershipRoles
             .selectAll()
             .where {
                 (UserLeadershipRoles.userId eq userId) and
@@ -98,8 +99,21 @@ fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermissio
                         (UserLeadershipRoles.leftAt.isNull()) and
                         (UserLeadershipRoles.organizationalUnitId.isNotNull())
             }
-            .firstOrNull()
-            ?.get(UserLeadershipRoles.organizationalUnitId)
+            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
+            .toSet()
+
+        // Collect all unit IDs from unit assignments
+        val assignmentUnitIds = UnitAssignments
+            .selectAll()
+            .where {
+                (UnitAssignments.userId eq userId) and
+                        (UnitAssignments.tuntasId eq tuntasId) and
+                        (UnitAssignments.leftAt.isNull())
+            }
+            .map { it[UnitAssignments.organizationalUnitId] }
+            .toSet()
+
+        val allUnitIds = leadershipUnitIds + assignmentUnitIds
 
         RolePermissions
             .innerJoin(Permissions, { RolePermissions.permissionId }, { Permissions.id })
@@ -109,7 +123,7 @@ fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermissio
                 ResolvedPermission(
                     permissionName = it[Permissions.name],
                     scope = it[RolePermissions.scope],
-                    userOrgUnitId = orgUnitId
+                    userOrgUnitIds = allUnitIds
                 )
             }
     }
@@ -165,12 +179,12 @@ suspend fun RoutingContext.checkPermission(
         return false
     }
 
-    if (matchingPermission.userOrgUnitId == null) {
+    if (matchingPermission.userOrgUnitIds.isEmpty()) {
         call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
         return false
     }
 
-    if (matchingPermission.userOrgUnitId != targetOrgUnitId) {
+    if (targetOrgUnitId !in matchingPermission.userOrgUnitIds) {
         call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
         return false
     }

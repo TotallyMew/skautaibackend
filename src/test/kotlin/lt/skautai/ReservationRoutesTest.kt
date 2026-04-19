@@ -43,8 +43,6 @@ class ReservationRoutesTest {
                 {
                     "name": "$name",
                     "category": "COLLECTIVE",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "$tuntasId",
                     "quantity": $quantity
                 }
             """.trimIndent())

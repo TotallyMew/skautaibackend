@@ -45,9 +45,7 @@ class BendrasInventoryRequestRoutesTest {
             {
                 "name": "$name",
                 "category": "COLLECTIVE",
-                "quantity": $quantity,
-                "ownerType": "TUNTAS",
-                "ownerId": "$tuntasId"
+                "quantity": $quantity
             }
         """.trimIndent())
         }
@@ -100,7 +98,7 @@ class BendrasInventoryRequestRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "$name", "type": "DRAUGOVE" }""")
+            setBody("""{ "name": "$name", "type": "VILKU_DRAUGOVE" }""")
         }
         return Json.parseToJsonElement(response.bodyAsText())
             .jsonObject["id"]!!.jsonPrimitive.content
@@ -120,7 +118,7 @@ class BendrasInventoryRequestRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$skautasId", "isLent": false }""")
+            setBody("""{ "userId": "$skautasId", "assignmentType": "MEMBER" }""")
         }
 
         val response = client.post("/api/inventory-requests") {
@@ -133,7 +131,7 @@ class BendrasInventoryRequestRoutesTest {
                     "quantity": 1,
                     "startDate": "2099-01-01",
                     "endDate": "2099-01-10",
-                    "draugoveId": "$draugoveId"
+                    "requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }
@@ -345,7 +343,7 @@ class BendrasInventoryRequestRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$skautasId", "isLent": false }""")
+            setBody("""{ "userId": "$skautasId", "assignmentType": "MEMBER" }""")
         }
 
         // Skautas creates request routed through draugove
@@ -359,7 +357,7 @@ class BendrasInventoryRequestRoutesTest {
                 "quantity": 1,
                 "startDate": "2099-01-01",
                 "endDate": "2099-01-10",
-                "draugoveId": "$draugoveId"
+                "requestingUnitId": "$draugoveId"
             }
         """.trimIndent())
         }

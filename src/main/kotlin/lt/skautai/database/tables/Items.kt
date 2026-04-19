@@ -7,9 +7,8 @@ import org.jetbrains.exposed.sql.kotlin.datetime.timestamp
 object Items : Table("items") {
     val id = uuid("id").autoGenerate()
     val tuntasId = uuid("tuntas_id").references(Tuntai.id)
-    val ownerType = varchar("owner_type", 20)
-    val ownerId = uuid("owner_id")
-    val originalOwnerId = uuid("original_owner_id").nullable()
+    val custodianId = uuid("custodian_id").references(OrganizationalUnits.id).nullable()
+    val origin = varchar("origin", 30).default("UNIT_ACQUIRED")
     val name = varchar("name", 200)
     val description = text("description").nullable()
     val category = varchar("category", 20)

@@ -85,7 +85,8 @@ object TestHelper {
                     users, tuntai, bendras_inventory_requests, super_admins,
                     user_leadership_roles, user_ranks, role_permissions,
                     roles, permissions, locations, organizational_units,
-                    user_tuntas_memberships, invitations, items, reservations,events
+                    user_tuntas_memberships, unit_assignments, user_draugove_memberships,
+                    invitations, items, reservations, events
                 CASCADE
             """.trimIndent())
         }

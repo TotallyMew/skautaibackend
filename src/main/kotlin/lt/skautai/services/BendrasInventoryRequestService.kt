@@ -7,11 +7,27 @@ import lt.skautai.models.requests.TopLevelReviewRequest
 import lt.skautai.models.responses.BendrasInventoryRequestListResponse
 import lt.skautai.models.responses.BendrasInventoryRequestResponse
 import org.jetbrains.exposed.sql.*
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.*
 
 class BendrasInventoryRequestService {
+
+    // All leadership role names that can act as unit-level leaders
+    // for draugininkas-review purposes
+    private val unitLeaderRoles = listOf(
+        "Draugininkas",
+        "Draugininko pavaduotojas",
+        "Gildijos pirmininkas",
+        "Gildijos pirmininko pavaduotojas",
+        "Vyr. skautu draugoves draugininkas",
+        "Vyr. skautu draugoves draugininko pavaduotojas",
+        "Vyr. skautu burelio pirmininkas",
+        "Vyr. skautu burelio pirmininko pavaduotojas",
+        "Vyr. skauciu draugoves draugininkas",
+        "Vyr. skauciu draugoves draugininko pavaduotojas",
+        "Vyr. skauciu burelio pirmininkas",
+        "Vyr. skauciu burelio pirmininko pavaduotojas"
+    )
 
     fun getAllRequests(tuntasId: UUID): Result<BendrasInventoryRequestListResponse> {
         return transaction {
@@ -84,34 +100,34 @@ class BendrasInventoryRequestService {
                 }
             }
 
-            val draugoveUUID = request.draugoveId?.let {
+            val requestingUnitUUID = request.requestingUnitId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid draugove ID"))
+                    return@transaction Result.failure(Exception("Invalid requesting unit ID"))
                 }
             }
 
-            // Validate draugove belongs to tuntas if provided
-            if (draugoveUUID != null) {
+            // Validate requesting unit belongs to tuntas if provided
+            if (requestingUnitUUID != null) {
                 OrganizationalUnits.selectAll()
                     .where {
-                        (OrganizationalUnits.id eq draugoveUUID) and
-                                (OrganizationalUnits.tuntasId eq tuntasId) and
-                                (OrganizationalUnits.type eq "DRAUGOVE")
+                        (OrganizationalUnits.id eq requestingUnitUUID) and
+                                (OrganizationalUnits.tuntasId eq tuntasId)
                     }
                     .firstOrNull()
-                    ?: return@transaction Result.failure(Exception("Draugove not found in this tuntas"))
+                    ?: return@transaction Result.failure(Exception("Requesting unit not found in this tuntas"))
             }
 
             // Determine needs_draugininkas_approval
-            // Check if requester has Draugininkas or Draugininko pavaduotojas role
-            val isDraugininkas = UserLeadershipRoles
+            // Check if requester holds any unit-level leadership role
+            val isUnitLeader = UserLeadershipRoles
                 .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
                 .selectAll()
                 .where {
                     (UserLeadershipRoles.userId eq requestedByUserId) and
                             (UserLeadershipRoles.tuntasId eq tuntasId) and
                             (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                            (Roles.name inList listOf("Draugininkas", "Draugininko pavaduotojas"))
+                            (UserLeadershipRoles.leftAt.isNull()) and
+                            (Roles.name inList unitLeaderRoles)
                 }
                 .any()
 
@@ -127,13 +143,13 @@ class BendrasInventoryRequestService {
                 ?.get(Roles.name)
 
             val needsApproval = when {
-                // Skautas and Patyres skautas always need draugininkas approval
-                requesterRank in listOf("Skautas", "Patyres skautas") -> true
-                // Draugininkas level never needs approval
-                isDraugininkas -> false
-                // Above Patyres skautas with no draugove — goes straight to top level
-                draugoveUUID == null -> false
-                // Above Patyres skautas with draugove — use their choice
+                // Vilkas, Skautas, Patyres skautas always need unit leader approval
+                requesterRank in listOf("Vilkas", "Skautas", "Patyres skautas") -> true
+                // Unit leaders never need approval
+                isUnitLeader -> false
+                // Vadovas/Vyr. skautas with no requesting unit — goes straight to top level
+                requestingUnitUUID == null -> false
+                // Otherwise use their choice
                 else -> request.needsDraugininkasApproval ?: false
             }
 
@@ -143,7 +159,7 @@ class BendrasInventoryRequestService {
                 it[this.itemId] = itemUUID
                 it[quantity] = request.quantity
                 it[this.eventId] = eventUUID
-                it[this.draugoveId] = draugoveUUID
+                it[this.requestingUnitId] = requestingUnitUUID
                 it[needsDraugininkasApproval] = needsApproval
                 it[draugininkasStatus] = if (needsApproval) "PENDING" else null
                 it[topLevelStatus] = "PENDING"
@@ -220,32 +236,32 @@ class BendrasInventoryRequestService {
                 ?: return@transaction Result.failure(Exception("Request not found"))
 
             if (!existing[BendrasInventoryRequests.needsDraugininkasApproval]) {
-                return@transaction Result.failure(Exception("This request does not require draugininkas approval"))
+                return@transaction Result.failure(Exception("This request does not require unit leader approval"))
             }
 
             if (existing[BendrasInventoryRequests.draugininkasStatus] != "PENDING") {
-                return@transaction Result.failure(Exception("Request is not pending draugininkas review"))
+                return@transaction Result.failure(Exception("Request is not pending unit leader review"))
             }
 
-            // Verify reviewer is Draugininkas or Draugininko pavaduotojas
-            // of the requester's draugove
-            val draugoveId = existing[BendrasInventoryRequests.draugoveId]
-                ?: return@transaction Result.failure(Exception("Request has no draugove assigned"))
+            val requestingUnitId = existing[BendrasInventoryRequests.requestingUnitId]
+                ?: return@transaction Result.failure(Exception("Request has no unit assigned"))
 
-            val isReviewerDraugininkas = UserLeadershipRoles
+            // Verify reviewer is a unit leader of the requesting unit
+            val isReviewerUnitLeader = UserLeadershipRoles
                 .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
                 .selectAll()
                 .where {
                     (UserLeadershipRoles.userId eq reviewerUserId) and
                             (UserLeadershipRoles.tuntasId eq tuntasId) and
                             (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                            (UserLeadershipRoles.organizationalUnitId eq draugoveId) and
-                            (Roles.name inList listOf("Draugininkas", "Draugininko pavaduotojas"))
+                            (UserLeadershipRoles.leftAt.isNull()) and
+                            (UserLeadershipRoles.organizationalUnitId eq requestingUnitId) and
+                            (Roles.name inList unitLeaderRoles)
                 }
                 .any()
 
-            if (!isReviewerDraugininkas) {
-                return@transaction Result.failure(Exception("You are not the Draugininkas of this request's draugove"))
+            if (!isReviewerUnitLeader) {
+                return@transaction Result.failure(Exception("You are not a unit leader of this request's unit"))
             }
 
             BendrasInventoryRequests.update({
@@ -257,7 +273,7 @@ class BendrasInventoryRequestService {
                 it[draugininkasRejectionReason] = request.rejectionReason
                 if (request.action == "REJECTED") {
                     it[topLevelStatus] = "REJECTED"
-                    it[topLevelRejectionReason] = "Rejected by Draugininkas"
+                    it[topLevelRejectionReason] = "Rejected by unit leader"
                 }
             }
 
@@ -292,11 +308,10 @@ class BendrasInventoryRequestService {
                 return@transaction Result.failure(Exception("Request is not pending top level review"))
             }
 
-            // If needs draugininkas approval, draugininkas must have forwarded first
             if (existing[BendrasInventoryRequests.needsDraugininkasApproval] &&
                 existing[BendrasInventoryRequests.draugininkasStatus] != "FORWARDED"
             ) {
-                return@transaction Result.failure(Exception("Request must be forwarded by Draugininkas first"))
+                return@transaction Result.failure(Exception("Request must be forwarded by unit leader first"))
             }
 
             BendrasInventoryRequests.update({
@@ -315,9 +330,9 @@ class BendrasInventoryRequestService {
                 val endDate = existing[BendrasInventoryRequests.endDate]
                 val quantity = existing[BendrasInventoryRequests.quantity]
                 val eventId = existing[BendrasInventoryRequests.eventId]
+                val requestingUnitId = existing[BendrasInventoryRequests.requestingUnitId]
                 val requesterUserId = existing[BendrasInventoryRequests.requestedByUserId]
 
-                // Conflict detection
                 val item = Items.selectAll()
                     .where { Items.id eq itemId }
                     .firstOrNull()
@@ -346,6 +361,7 @@ class BendrasInventoryRequestService {
                     it[reservedByUserId] = requesterUserId
                     it[approvedByUserId] = reviewerUserId
                     it[Reservations.eventId] = eventId
+                    it[Reservations.requestingUnitId] = requestingUnitId
                     it[Reservations.quantity] = quantity
                     it[Reservations.startDate] = startDate
                     it[Reservations.endDate] = endDate
@@ -368,8 +384,8 @@ class BendrasInventoryRequestService {
             .where { Items.id eq itemId }
             .firstOrNull()?.get(Items.name) ?: "Unknown"
 
-        val draugoveId = row[BendrasInventoryRequests.draugoveId]
-        val draugoveName = draugoveId?.let {
+        val requestingUnitId = row[BendrasInventoryRequests.requestingUnitId]
+        val requestingUnitName = requestingUnitId?.let {
             OrganizationalUnits.selectAll()
                 .where { OrganizationalUnits.id eq it }
                 .firstOrNull()?.get(OrganizationalUnits.name)
@@ -383,8 +399,8 @@ class BendrasInventoryRequestService {
             itemName = itemName,
             quantity = row[BendrasInventoryRequests.quantity],
             eventId = row[BendrasInventoryRequests.eventId]?.toString(),
-            draugoveId = draugoveId?.toString(),
-            draugoveName = draugoveName,
+            requestingUnitId = requestingUnitId?.toString(),
+            requestingUnitName = requestingUnitName,
             needsDraugininkasApproval = row[BendrasInventoryRequests.needsDraugininkasApproval],
             draugininkasStatus = row[BendrasInventoryRequests.draugininkasStatus],
             draugininkasReviewedByUserId = row[BendrasInventoryRequests.draugininkasReviewedByUserId]?.toString(),

@@ -9,7 +9,7 @@ data class CreateBendrasInventoryRequestRequest(
     val startDate: String,
     val endDate: String,
     val eventId: String? = null,
-    val draugoveId: String? = null,
+    val requestingUnitId: String? = null,
     val needsDraugininkasApproval: Boolean? = null,
     val notes: String? = null
 )

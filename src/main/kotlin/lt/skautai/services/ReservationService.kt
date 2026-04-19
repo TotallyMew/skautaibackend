@@ -115,10 +115,17 @@ class ReservationService {
                 }
             }
 
+            val requestingUnitUUID = request.requestingUnitId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid requesting unit ID"))
+                }
+            }
+
             val reservationId = Reservations.insert {
                 it[this.itemId] = itemUUID
                 it[this.tuntasId] = tuntasId
                 it[this.reservedByUserId] = reservedByUserId
+                it[requestingUnitId] = requestingUnitUUID
                 it[eventId] = eventUUID
                 it[quantity] = request.quantity
                 it[this.startDate] = startDate
@@ -239,6 +246,7 @@ class ReservationService {
             tuntasId = row[Reservations.tuntasId].toString(),
             reservedByUserId = row[Reservations.reservedByUserId].toString(),
             approvedByUserId = row[Reservations.approvedByUserId]?.toString(),
+            requestingUnitId = row[Reservations.requestingUnitId]?.toString(),
             eventId = row[Reservations.eventId]?.toString(),
             quantity = row[Reservations.quantity],
             startDate = row[Reservations.startDate].toString(),

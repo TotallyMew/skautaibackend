@@ -29,11 +29,11 @@ fun Route.itemRoutes(itemService: ItemService) {
 
                 if (!checkPermission("items.view", tuntasUUID)) return@get
 
-                val ownerType = call.request.queryParameters["ownerType"]
+                val custodianId = call.request.queryParameters["custodianId"]
                 val category = call.request.queryParameters["category"]
                 val status = call.request.queryParameters["status"]
 
-                itemService.getItems(tuntasUUID, userId, ownerType, category, status)
+                itemService.getItems(tuntasUUID, userId, custodianId, category, status)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch items")) }
             }
@@ -73,10 +73,10 @@ fun Route.itemRoutes(itemService: ItemService) {
 
                 val request = call.receive<CreateItemRequest>()
 
-                // Determine target org unit for scope check
-                val targetOrgUnitId = if (request.ownerType == "DRAUGOVE") {
-                    try { UUID.fromString(request.ownerId) } catch (e: Exception) { null }
-                } else null
+                // custodianId is the target org unit for scope check
+                val targetOrgUnitId = request.custodianId?.let {
+                    try { UUID.fromString(it) } catch (e: Exception) { null }
+                }
 
                 if (!checkPermission("items.create", tuntasUUID, targetOrgUnitId)) return@post
 
@@ -101,7 +101,7 @@ fun Route.itemRoutes(itemService: ItemService) {
                 }
 
                 // Fetch item to determine org unit for scope check
-                val targetOrgUnitId = lt.skautai.services.ItemScopeHelper.getItemOrgUnitId(itemUUID, tuntasUUID)
+                val targetOrgUnitId = lt.skautai.services.ItemScopeHelper.getItemCustodianId(itemUUID, tuntasUUID)
 
                 if (!checkPermission("items.update", tuntasUUID, targetOrgUnitId)) return@put
 

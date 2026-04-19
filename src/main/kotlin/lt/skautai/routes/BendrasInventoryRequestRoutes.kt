@@ -113,17 +113,17 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                 }
 
                 // Look up draugove from the request before permission check
-                val draugoveUUID = transaction {
+                val requestingUnitUUID = transaction {
                     BendrasInventoryRequests.selectAll()
                         .where {
                             (BendrasInventoryRequests.id eq requestUUID) and
                                     (BendrasInventoryRequests.tuntasId eq tuntasUUID)
                         }
                         .firstOrNull()
-                        ?.get(BendrasInventoryRequests.draugoveId)
+                        ?.get(BendrasInventoryRequests.requestingUnitId)
                 }
 
-                if (!checkPermission("items.request.forward.bendras", tuntasUUID, draugoveUUID)) return@post
+                if (!checkPermission("items.request.forward.bendras", tuntasUUID, requestingUnitUUID)) return@post
 
                 val request = call.receive<DraugininkasReviewRequest>()
 

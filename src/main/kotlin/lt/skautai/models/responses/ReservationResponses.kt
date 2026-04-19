@@ -10,6 +10,7 @@ data class ReservationResponse(
     val tuntasId: String,
     val reservedByUserId: String,
     val approvedByUserId: String? = null,
+    val requestingUnitId: String? = null,
     val eventId: String? = null,
     val quantity: Int,
     val startDate: String,

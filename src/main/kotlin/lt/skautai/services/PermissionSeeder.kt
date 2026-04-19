@@ -13,9 +13,9 @@ object PermissionSeeder {
         "items.create",
         "items.update",
         "items.delete",
-        "items.request.draugove",
+        "items.transfer",
         "items.request.bendras",
-        "items.request.approve.draugove",
+        "items.request.approve.unit",
         "items.request.forward.bendras",
         "items.request.approve.bendras",
         "members.view",
@@ -30,7 +30,7 @@ object PermissionSeeder {
         "requisitions.create",
         "requisitions.approve",
         "members.remove",
-        "draugove.members.manage"
+        "unit.members.manage"
     )
 
     // All event permissions
@@ -43,13 +43,20 @@ object PermissionSeeder {
     )
 
     // Role name -> list of Pair(permissionName, scope)
+    // scope ALL     = applies tuntas-wide
+    // scope OWN_UNIT = applies only to the user's assigned organizational unit
     private val rolePermissionMap = mapOf(
+
+        // ── Tuntas-level leadership ──────────────────────────────────────────
+
         "Tuntininkas" to listOf(
             "items.view" to "ALL",
             "items.create" to "ALL",
             "items.update" to "ALL",
             "items.delete" to "ALL",
-            "items.request.approve.draugove" to "ALL",
+            "items.transfer" to "ALL",
+            "items.request.bendras" to "ALL",
+            "items.request.approve.unit" to "ALL",
             "items.request.approve.bendras" to "ALL",
             "members.view" to "ALL",
             "members.manage" to "ALL",
@@ -60,6 +67,7 @@ object PermissionSeeder {
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
             "reservations.approve" to "ALL",
+            "requisitions.create" to "ALL",
             "requisitions.approve" to "ALL",
             "events.view" to "ALL",
             "events.create" to "ALL",
@@ -67,15 +75,17 @@ object PermissionSeeder {
             "events.inventory.distribute" to "ALL",
             "events.inventory.return" to "ALL",
             "members.remove" to "ALL",
-            "draugove.members.manage" to "ALL",
-            "items.request.bendras" to "ALL",
+            "unit.members.manage" to "ALL"
         ),
+
         "Tuntininko pavaduotojas" to listOf(
             "items.view" to "ALL",
             "items.create" to "ALL",
             "items.update" to "ALL",
             "items.delete" to "ALL",
-            "items.request.approve.draugove" to "ALL",
+            "items.transfer" to "ALL",
+            "items.request.bendras" to "ALL",
+            "items.request.approve.unit" to "ALL",
             "items.request.approve.bendras" to "ALL",
             "members.view" to "ALL",
             "members.manage" to "ALL",
@@ -86,6 +96,7 @@ object PermissionSeeder {
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
             "reservations.approve" to "ALL",
+            "requisitions.create" to "ALL",
             "requisitions.approve" to "ALL",
             "events.view" to "ALL",
             "events.create" to "ALL",
@@ -93,85 +104,336 @@ object PermissionSeeder {
             "events.inventory.distribute" to "ALL",
             "events.inventory.return" to "ALL",
             "members.remove" to "ALL",
-            "draugove.members.manage" to "ALL",
-            "items.request.bendras" to "ALL",
+            "unit.members.manage" to "ALL"
         ),
-        "Draugininkas" to listOf(
-            "items.view" to "ALL",
-            "items.create" to "OWN_DRAUGOVE",
-            "items.update" to "OWN_DRAUGOVE",
-            "items.request.approve.draugove" to "OWN_DRAUGOVE",
-            "items.request.forward.bendras" to "OWN_DRAUGOVE",
-            "members.view" to "ALL",
-            "invitations.create" to "OWN_DRAUGOVE",
-            "reservations.view" to "ALL",
-            "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_DRAUGOVE",
-            "requisitions.create" to "OWN_DRAUGOVE",
-            "events.view" to "ALL",
-            "events.create" to "OWN_DRAUGOVE",
-            "events.manage" to "OWN_DRAUGOVE",
-            "events.inventory.distribute" to "OWN_DRAUGOVE",
-            "events.inventory.return" to "OWN_DRAUGOVE",
-            "draugove.members.manage" to "OWN_DRAUGOVE",
-            "items.request.bendras" to "ALL",
-        ),
-        "Draugininko pavaduotojas" to listOf(
-            "items.view" to "ALL",
-            "items.create" to "OWN_DRAUGOVE",
-            "items.update" to "OWN_DRAUGOVE",
-            "items.request.approve.draugove" to "OWN_DRAUGOVE",
-            "items.request.forward.bendras" to "OWN_DRAUGOVE",
-            "members.view" to "ALL",
-            "invitations.create" to "OWN_DRAUGOVE",
-            "reservations.view" to "ALL",
-            "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_DRAUGOVE",
-            "requisitions.create" to "OWN_DRAUGOVE",
-            "events.view" to "ALL",
-            "events.create" to "OWN_DRAUGOVE",
-            "events.manage" to "OWN_DRAUGOVE",
-            "events.inventory.distribute" to "OWN_DRAUGOVE",
-            "events.inventory.return" to "OWN_DRAUGOVE",
-            "draugove.members.manage" to "OWN_DRAUGOVE",
-            "items.request.bendras" to "ALL",
-        ),
+
+        // ── Tuntas-wide special role ─────────────────────────────────────────
+
         "Inventorininkas" to listOf(
             "items.view" to "ALL",
             "items.create" to "ALL",
             "items.update" to "ALL",
             "items.delete" to "ALL",
-            "items.request.approve.draugove" to "ALL",
+            "items.transfer" to "ALL",
+            "items.request.bendras" to "ALL",
+            "items.request.approve.unit" to "ALL",
             "items.request.approve.bendras" to "ALL",
             "members.view" to "ALL",
             "locations.manage" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
             "reservations.approve" to "ALL",
+            "requisitions.create" to "ALL",
             "requisitions.approve" to "ALL",
             "events.view" to "ALL",
             "events.inventory.distribute" to "ALL",
             "events.inventory.return" to "ALL"
         ),
+
+        // ── Unit-level leadership (Draugovė / Gildija / Vyr. vienetas) ───────
+        // All unit-level leaders share the same permission set, scoped to OWN_UNIT.
+        // The roles differ by name only (to enforce one-per-unit and unit-type awareness).
+
+        "Draugininkas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Draugininko pavaduotojas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Gildijos pirmininkas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Gildijos pirmininko pavaduotojas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Vyr. skautu draugoves draugininkas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Vyr. skautu draugoves draugininko pavaduotojas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Vyr. skautu burelio pirmininkas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Vyr. skautu burelio pirmininko pavaduotojas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Vyr. skauciu draugoves draugininkas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Vyr. skauciu draugoves draugininko pavaduotojas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Vyr. skauciu burelio pirmininkas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        "Vyr. skauciu burelio pirmininko pavaduotojas" to listOf(
+            "items.view" to "ALL",
+            "items.create" to "OWN_UNIT",
+            "items.update" to "OWN_UNIT",
+            "items.request.approve.unit" to "OWN_UNIT",
+            "items.request.forward.bendras" to "OWN_UNIT",
+            "items.request.bendras" to "ALL",
+            "members.view" to "ALL",
+            "invitations.create" to "OWN_UNIT",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "reservations.approve" to "OWN_UNIT",
+            "requisitions.create" to "OWN_UNIT",
+            "events.view" to "ALL",
+            "events.create" to "OWN_UNIT",
+            "events.manage" to "OWN_UNIT",
+            "events.inventory.distribute" to "OWN_UNIT",
+            "events.inventory.return" to "OWN_UNIT",
+            "unit.members.manage" to "OWN_UNIT"
+        ),
+
+        // ── Ranks ────────────────────────────────────────────────────────────
+        // Vilkai and Skautai: view and create reservations only
+        // Patyres skautas: same as above plus bendras request
+        // Vyr. skautas kandidatas / Vyr. skautas: same as Patyres skautas
+        // Vadovas: same permissions as Patyres skautas (unit-level leaders get more via their leadership role)
+
+        "Vilkas" to listOf(
+            "items.view" to "ALL",
+            "items.request.bendras" to "ALL",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "events.view" to "ALL"
+        ),
+
         "Skautas" to listOf(
             "items.view" to "ALL",
-            "items.request.draugove" to "ALL",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
             "events.view" to "ALL"
         ),
+
         "Patyres skautas" to listOf(
             "items.view" to "ALL",
-            "items.request.draugove" to "ALL",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
             "events.view" to "ALL"
         ),
-        "Suauges skautybeje" to listOf(
+
+        "Vyr. skautas kandidatas" to listOf(
             "items.view" to "ALL",
-            "items.request.draugove" to "ALL",
+            "items.request.bendras" to "ALL",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "events.view" to "ALL"
+        ),
+
+        "Vyr. skautas" to listOf(
+            "items.view" to "ALL",
+            "items.request.bendras" to "ALL",
+            "reservations.view" to "ALL",
+            "reservations.create" to "ALL",
+            "events.view" to "ALL"
+        ),
+
+        "Vadovas" to listOf(
+            "items.view" to "ALL",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
@@ -203,11 +465,9 @@ object PermissionSeeder {
 
     fun seedRolePermissions(tuntasId: UUID) {
         transaction {
-            // Load all permission IDs into a map for fast lookup
             val permissionIds = Permissions.selectAll()
                 .associate { it[Permissions.name] to it[Permissions.id] }
 
-            // Load all role IDs for this tuntas
             val roleIds = Roles.selectAll()
                 .where { Roles.tuntasId eq tuntasId }
                 .associate { it[Roles.name] to it[Roles.id] }
@@ -218,7 +478,6 @@ object PermissionSeeder {
                 for ((permName, scope) in permissions) {
                     val permId = permissionIds[permName] ?: continue
 
-                    // Avoid duplicate inserts
                     val exists = RolePermissions.selectAll()
                         .where {
                             (RolePermissions.roleId eq roleId) and

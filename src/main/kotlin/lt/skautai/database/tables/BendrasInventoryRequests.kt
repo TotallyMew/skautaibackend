@@ -11,7 +11,7 @@ object BendrasInventoryRequests : Table("bendras_inventory_requests") {
     val itemId = uuid("item_id").references(Items.id)
     val quantity = integer("quantity").default(1)
     val eventId = uuid("event_id").references(Events.id).nullable()
-    val draugoveId = uuid("draugove_id").references(OrganizationalUnits.id).nullable()
+    val requestingUnitId = uuid("requesting_unit_id").references(OrganizationalUnits.id).nullable()
     val needsDraugininkasApproval = bool("needs_draugininkas_approval").default(false)
     val draugininkasStatus = varchar("draugininkas_status", 20).nullable()
     val draugininkasReviewedByUserId = uuid("draugininkas_reviewed_by_user_id")

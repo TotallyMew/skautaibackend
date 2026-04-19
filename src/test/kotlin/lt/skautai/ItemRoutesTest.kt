@@ -11,7 +11,6 @@ import lt.skautai.TestHelper.configureFullApp
 import lt.skautai.TestHelper.registerAndActivateTuntininkas
 import org.junit.jupiter.api.*
 import org.junit.jupiter.api.Assertions.*
-import io.ktor.http.*
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ItemRoutesTest {
@@ -44,8 +43,6 @@ class ItemRoutesTest {
                 {
                     "name": "Palapine",
                     "category": "COLLECTIVE",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "$tuntasId",
                     "quantity": 2
                 }
             """.trimIndent())
@@ -70,8 +67,6 @@ class ItemRoutesTest {
                 {
                     "name": "Palapine",
                     "category": "COLLECTIVE",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "$tuntasId",
                     "quantity": 1
                 }
             """.trimIndent())
@@ -92,8 +87,6 @@ class ItemRoutesTest {
                 {
                     "name": "Palapine",
                     "category": "COLLECTIVE",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "00000000-0000-0000-0000-000000000000",
                     "quantity": 1
                 }
             """.trimIndent())
@@ -107,20 +100,11 @@ class ItemRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
 
-        // Create an item first
         client.post("/api/items") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Palapine",
-                    "category": "COLLECTIVE",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "$tuntasId",
-                    "quantity": 1
-                }
-            """.trimIndent())
+            setBody("""{ "name": "Palapine", "category": "COLLECTIVE", "quantity": 1 }""")
         }
 
         val response = client.get("/api/items") {
@@ -130,8 +114,7 @@ class ItemRoutesTest {
 
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        val items = body["items"]
-        assertNotNull(items)
+        assertNotNull(body["items"])
         assertEquals(1, body["total"]?.jsonPrimitive?.content?.toInt())
     }
 
@@ -144,15 +127,7 @@ class ItemRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Kirvukas",
-                    "category": "COLLECTIVE",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "$tuntasId",
-                    "quantity": 1
-                }
-            """.trimIndent())
+            setBody("""{ "name": "Kirvukas", "category": "COLLECTIVE", "quantity": 1 }""")
         }
 
         val itemId = Json.parseToJsonElement(createResponse.bodyAsText())
@@ -190,15 +165,7 @@ class ItemRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Palapine",
-                    "category": "COLLECTIVE",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "$tuntasId",
-                    "quantity": 1
-                }
-            """.trimIndent())
+            setBody("""{ "name": "Palapine", "category": "COLLECTIVE", "quantity": 1 }""")
         }
 
         val itemId = Json.parseToJsonElement(createResponse.bodyAsText())
@@ -208,13 +175,7 @@ class ItemRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Palapine atnaujinta",
-                    "quantity": 3,
-                    "condition": "DAMAGED"
-                }
-            """.trimIndent())
+            setBody("""{ "name": "Palapine atnaujinta", "quantity": 3, "condition": "DAMAGED" }""")
         }
 
         assertEquals(HttpStatusCode.OK, response.status)
@@ -233,15 +194,7 @@ class ItemRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Palapine",
-                    "category": "COLLECTIVE",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "$tuntasId",
-                    "quantity": 1
-                }
-            """.trimIndent())
+            setBody("""{ "name": "Palapine", "category": "COLLECTIVE", "quantity": 1 }""")
         }
 
         val itemId = Json.parseToJsonElement(createResponse.bodyAsText())
@@ -254,7 +207,6 @@ class ItemRoutesTest {
 
         assertEquals(HttpStatusCode.OK, deleteResponse.status)
 
-        // Tuntininkas can see inactive items
         val getResponse = client.get("/api/items/$itemId") {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
@@ -274,17 +226,74 @@ class ItemRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Palapine",
-                    "category": "INVALID",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "$tuntasId",
-                    "quantity": 1
-                }
-            """.trimIndent())
+            setBody("""{ "name": "Palapine", "category": "INVALID", "quantity": 1 }""")
         }
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `create item with custodian unit returns 201 with custodianId set`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val unitResponse = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Vilkai", "type": "VILKU_DRAUGOVE" }""")
+        }
+        val unitId = Json.parseToJsonElement(unitResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Palapine", "category": "COLLECTIVE", "quantity": 1, "custodianId": "$unitId" }""")
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(unitId, body["custodianId"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `get items filtered by custodianId returns only that unit items`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val unitResponse = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Vilkai", "type": "VILKU_DRAUGOVE" }""")
+        }
+        val unitId = Json.parseToJsonElement(unitResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        // Item with custodian
+        client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Palapine", "category": "COLLECTIVE", "quantity": 1, "custodianId": "$unitId" }""")
+        }
+        // Item without custodian (tuntas storage)
+        client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Kirvukas", "category": "COLLECTIVE", "quantity": 1 }""")
+        }
+
+        val response = client.get("/api/items?custodianId=$unitId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(1, body["total"]?.jsonPrimitive?.content?.toInt())
     }
 }

@@ -1,6 +1,7 @@
 package lt.skautai.services
 
 import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.Roles
 import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.models.requests.CreateItemRequest
@@ -16,7 +17,7 @@ class ItemService {
     fun getItems(
         tuntasId: UUID,
         requestingUserId: UUID,
-        ownerType: String? = null,
+        custodianId: String? = null,
         category: String? = null,
         status: String? = null
     ): Result<ItemListResponse> {
@@ -30,7 +31,10 @@ class ItemService {
                 query = query.andWhere { Items.status eq "ACTIVE" }
             }
 
-            ownerType?.let { query = query.andWhere { Items.ownerType eq it } }
+            custodianId?.let {
+                val uuid = try { UUID.fromString(it) } catch (e: Exception) { null }
+                if (uuid != null) query = query.andWhere { Items.custodianId eq uuid }
+            }
             category?.let { query = query.andWhere { Items.category eq it } }
             status?.let {
                 if (canSeeAll) query = query.andWhere { Items.status eq it }
@@ -70,24 +74,33 @@ class ItemService {
         request: CreateItemRequest
     ): Result<ItemResponse> {
         return transaction {
-            // Validate category
             if (request.category !in listOf("COLLECTIVE", "ASSIGNED", "INDIVIDUAL")) {
                 return@transaction Result.failure(Exception("Invalid category"))
             }
 
-            // Validate ownerType
-            if (request.ownerType !in listOf("TUNTAS", "DRAUGOVE")) {
-                return@transaction Result.failure(Exception("Invalid owner type"))
+            if (request.origin !in listOf("UNIT_ACQUIRED", "TRANSFERRED_FROM_TUNTAS")) {
+                return@transaction Result.failure(Exception("Invalid origin"))
             }
 
             if (request.quantity < 1) {
                 return@transaction Result.failure(Exception("Quantity must be at least 1"))
             }
 
-            val ownerUUID = try {
-                UUID.fromString(request.ownerId)
-            } catch (e: Exception) {
-                return@transaction Result.failure(Exception("Invalid owner ID"))
+            val custodianUUID = request.custodianId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid custodian ID"))
+                }
+            }
+
+            // Validate custodian belongs to this tuntas if provided
+            if (custodianUUID != null) {
+                OrganizationalUnits.selectAll()
+                    .where {
+                        (OrganizationalUnits.id eq custodianUUID) and
+                                (OrganizationalUnits.tuntasId eq tuntasId)
+                    }
+                    .firstOrNull()
+                    ?: return@transaction Result.failure(Exception("Custodian unit not found in this tuntas"))
             }
 
             val locationUUID = request.locationId?.let {
@@ -110,8 +123,8 @@ class ItemService {
 
             val itemId = Items.insert {
                 it[this.tuntasId] = tuntasId
-                it[ownerType] = request.ownerType
-                it[ownerId] = ownerUUID
+                it[Items.custodianId] = custodianUUID
+                it[origin] = request.origin
                 it[name] = request.name
                 it[description] = request.description
                 it[category] = request.category
@@ -171,6 +184,12 @@ class ItemService {
                 }
             }
 
+            val custodianUUID = request.custodianId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid custodian ID"))
+                }
+            }
+
             val locationUUID = request.locationId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid location ID"))
@@ -199,6 +218,7 @@ class ItemService {
                 request.purchasePrice?.let { v -> it[purchasePrice] = v.toBigDecimal() }
                 request.notes?.let { v -> it[notes] = v }
                 request.status?.let { v -> it[status] = v }
+                custodianUUID?.let { v -> it[custodianId] = v }
                 locationUUID?.let { v -> it[locationId] = v }
                 responsibleUUID?.let { v -> it[responsibleUserId] = v }
                 purchaseDate?.let { v -> it[this.purchaseDate] = v }
@@ -254,11 +274,20 @@ class ItemService {
     }
 
     private fun toItemResponse(row: ResultRow): ItemResponse {
+        val custodianId = row[Items.custodianId]
+        val custodianName = custodianId?.let {
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id eq it }
+                .firstOrNull()
+                ?.get(OrganizationalUnits.name)
+        }
+
         return ItemResponse(
             id = row[Items.id].toString(),
             tuntasId = row[Items.tuntasId].toString(),
-            ownerType = row[Items.ownerType],
-            ownerId = row[Items.ownerId].toString(),
+            custodianId = custodianId?.toString(),
+            custodianName = custodianName,
+            origin = row[Items.origin],
             name = row[Items.name],
             description = row[Items.description],
             category = row[Items.category],

@@ -8,6 +8,7 @@ data class CreateReservationRequest(
     val quantity: Int = 1,
     val startDate: String,
     val endDate: String,
+    val requestingUnitId: String? = null,
     val eventId: String? = null,
     val notes: String? = null
 )

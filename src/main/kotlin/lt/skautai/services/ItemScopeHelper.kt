@@ -8,17 +8,12 @@ import java.util.*
 
 object ItemScopeHelper {
 
-    fun getItemOrgUnitId(itemId: UUID, tuntasId: UUID): UUID? {
+    fun getItemCustodianId(itemId: UUID, tuntasId: UUID): UUID? {
         return transaction {
-            val item = Items.selectAll()
+            Items.selectAll()
                 .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
-                .firstOrNull() ?: return@transaction null
-
-            if (item[Items.ownerType] == "DRAUGOVE") {
-                item[Items.ownerId]
-            } else {
-                null
-            }
+                .firstOrNull()
+                ?.get(Items.custodianId)
         }
     }
 }

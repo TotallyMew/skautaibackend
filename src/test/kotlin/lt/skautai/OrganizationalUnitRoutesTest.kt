@@ -30,8 +30,60 @@ class OrganizationalUnitRoutesTest {
         TestHelper.cleanTables()
     }
 
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private suspend fun ApplicationTestBuilder.createUnit(
+        token: String,
+        tuntasId: String,
+        name: String = "Vilkai",
+        type: String = "VILKU_DRAUGOVE"
+    ): String {
+        val response = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name", "type": "$type" }""")
+        }
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    private suspend fun ApplicationTestBuilder.registerSecondUser(
+        token: String,
+        tuntasId: String,
+        roleName: String,
+        email: String = "second@test.com"
+    ): Pair<String, String> {
+        val roleId = TestHelper.getRoleId(tuntasId, roleName)
+        val inviteResponse = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId", "expiresAt": "2099-01-01T00:00:00Z" }""")
+        }
+        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        val registerResponse = client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Second",
+                    "surname": "User",
+                    "email": "$email",
+                    "password": "test123",
+                    "inviteCode": "$inviteCode"
+                }
+            """.trimIndent())
+        }
+        val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
+        return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
+    }
+
+    // ── Unit CRUD ─────────────────────────────────────────────────────────────
+
     @Test
-    fun `create draugove returns 201`() = testApplication {
+    fun `create unit returns 201`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
 
@@ -39,18 +91,31 @@ class OrganizationalUnitRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Vilkai",
-                    "type": "DRAUGOVE"
-                }
-            """.trimIndent())
+            setBody("""{ "name": "Vilkai", "type": "VILKU_DRAUGOVE" }""")
         }
 
         assertEquals(HttpStatusCode.Created, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals("Vilkai", body["name"]?.jsonPrimitive?.content)
-        assertEquals("DRAUGOVE", body["type"]?.jsonPrimitive?.content)
+        assertEquals("VILKU_DRAUGOVE", body["type"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `create VYR unit with subtype returns 201`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Vyr. skautai", "type": "VYR_SKAUTU_VIENETAS", "subType": "DRAUGOVE" }""")
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("VYR_SKAUTU_VIENETAS", body["type"]?.jsonPrimitive?.content)
+        assertEquals("DRAUGOVE", body["subType"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -62,52 +127,14 @@ class OrganizationalUnitRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Vilkai",
-                    "type": "INVALID"
-                }
-            """.trimIndent())
+            setBody("""{ "name": "Vilkai", "type": "INVALID" }""")
         }
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
     @Test
-    fun `create child unit with valid parent returns 201`() = testApplication {
-        configureFullApp()
-        val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val parentResponse = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-
-        val parentId = Json.parseToJsonElement(parentResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        val response = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Skiltis 1",
-                    "type": "SKILTIS",
-                    "parentId": "$parentId"
-                }
-            """.trimIndent())
-        }
-
-        assertEquals(HttpStatusCode.Created, response.status)
-        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals(parentId, body["parentId"]?.jsonPrimitive?.content)
-    }
-
-    @Test
-    fun `create unit with nonexistent parent returns 400`() = testApplication {
+    fun `create unit with subtype on non-VYR type returns 400`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
 
@@ -115,16 +142,24 @@ class OrganizationalUnitRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Skiltis 1",
-                    "type": "SKILTIS",
-                    "parentId": "00000000-0000-0000-0000-000000000000"
-                }
-            """.trimIndent())
+            setBody("""{ "name": "Vilkai", "type": "VILKU_DRAUGOVE", "subType": "DRAUGOVE" }""")
         }
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `create unit without token returns 401`() = testApplication {
+        configureFullApp()
+        val (_, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Vilkai", "type": "VILKU_DRAUGOVE" }""")
+        }
+
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
     }
 
     @Test
@@ -132,19 +167,8 @@ class OrganizationalUnitRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
 
-        client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-
-        client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Skautai", "type": "DRAUGOVE" }""")
-        }
+        createUnit(token, tuntasId, "Vilkai", "VILKU_DRAUGOVE")
+        createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
 
         val response = client.get("/api/organizational-units") {
             header("Authorization", "Bearer $token")
@@ -161,21 +185,10 @@ class OrganizationalUnitRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
 
-        client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
+        createUnit(token, tuntasId, "Vilkai", "VILKU_DRAUGOVE")
+        createUnit(token, tuntasId, "Gildija", "GILDIJA")
 
-        client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Gildija", "type": "GILDIJA" }""")
-        }
-
-        val response = client.get("/api/organizational-units?type=DRAUGOVE") {
+        val response = client.get("/api/organizational-units?type=VILKU_DRAUGOVE") {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
         }
@@ -189,16 +202,7 @@ class OrganizationalUnitRoutesTest {
     fun `get single unit returns 200`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val createResponse = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-
-        val unitId = Json.parseToJsonElement(createResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
+        val unitId = createUnit(token, tuntasId)
 
         val response = client.get("/api/organizational-units/$unitId") {
             header("Authorization", "Bearer $token")
@@ -224,19 +228,10 @@ class OrganizationalUnitRoutesTest {
     }
 
     @Test
-    fun `update unit returns 200`() = testApplication {
+    fun `update unit name returns 200`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val createResponse = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-
-        val unitId = Json.parseToJsonElement(createResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
+        val unitId = createUnit(token, tuntasId)
 
         val response = client.put("/api/organizational-units/$unitId") {
             contentType(ContentType.Application.Json)
@@ -254,23 +249,14 @@ class OrganizationalUnitRoutesTest {
     fun `delete unit returns 200`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId)
 
-        val createResponse = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-
-        val unitId = Json.parseToJsonElement(createResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        val response = client.delete("/api/organizational-units/$unitId") {
+        val deleteResponse = client.delete("/api/organizational-units/$unitId") {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
         }
 
-        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(HttpStatusCode.OK, deleteResponse.status)
 
         val getResponse = client.get("/api/organizational-units/$unitId") {
             header("Authorization", "Bearer $token")
@@ -281,34 +267,20 @@ class OrganizationalUnitRoutesTest {
     }
 
     @Test
-    fun `delete unit with children returns 400`() = testApplication {
+    fun `delete unit with active items in custody returns 400`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId)
 
-        val parentResponse = client.post("/api/organizational-units") {
+        // Assign an item to this unit as custodian
+        client.post("/api/items") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
+            setBody("""{ "name": "Palapine", "category": "COLLECTIVE", "quantity": 1, "custodianId": "$unitId" }""")
         }
 
-        val parentId = Json.parseToJsonElement(parentResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""
-                {
-                    "name": "Skiltis 1",
-                    "type": "SKILTIS",
-                    "parentId": "$parentId"
-                }
-            """.trimIndent())
-        }
-
-        val response = client.delete("/api/organizational-units/$parentId") {
+        val response = client.delete("/api/organizational-units/$unitId") {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
         }
@@ -316,223 +288,126 @@ class OrganizationalUnitRoutesTest {
         assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
-    @Test
-    fun `create unit without token returns 401`() = testApplication {
-        configureFullApp()
-        val (_, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val response = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-
-        assertEquals(HttpStatusCode.Unauthorized, response.status)
-    }
-
-    // Helper to register a second user via invite with a specific role
-    private suspend fun ApplicationTestBuilder.registerSecondUser(
-        token: String,
-        tuntasId: String,
-        roleName: String,
-        email: String = "second@test.com"
-    ): Pair<String, String> {
-        val roleId = TestHelper.getRoleId(tuntasId, roleName)
-        val inviteResponse = client.post("/api/invitations") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "roleId": "$roleId", "expiresAt": "2099-01-01T00:00:00Z" }""")
-        }
-        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
-            .jsonObject["code"]!!.jsonPrimitive.content
-
-        val registerResponse = client.post("/api/auth/register/invite") {
-            contentType(ContentType.Application.Json)
-            setBody("""
-            {
-                "name": "Second",
-                "surname": "User",
-                "email": "$email",
-                "password": "test123",
-                "inviteCode": "$inviteCode"
-            }
-        """.trimIndent())
-        }
-        val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
-        return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
-    }
-
+    // ── Unit membership ───────────────────────────────────────────────────────
 
     @Test
-    fun `assign member to draugove returns 201`() = testApplication {
+    fun `assign member returns 201 with assignmentType MEMBER`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        // Create draugove
-        val createResponse = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-        val unitId = Json.parseToJsonElement(createResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        // Register second user as Skautas
+        val unitId = createUnit(token, tuntasId)
         val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
 
         val response = client.post("/api/organizational-units/$unitId/members") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$secondUserId", "isLent": false }""")
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
         }
 
         assertEquals(HttpStatusCode.Created, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(secondUserId, body["userId"]?.jsonPrimitive?.content)
         assertEquals(unitId, body["organizationalUnitId"]?.jsonPrimitive?.content)
-        assertEquals(false, body["isLent"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals("MEMBER", body["assignmentType"]?.jsonPrimitive?.content)
     }
 
     @Test
-    fun `assign member to non-draugove unit returns 400`() = testApplication {
+    fun `assign member as VADOVO_PADEJEJAS returns 201`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val createResponse = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Gildija", "type": "GILDIJA" }""")
-        }
-        val unitId = Json.parseToJsonElement(createResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
+        val unitId = createUnit(token, tuntasId)
         val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
 
         val response = client.post("/api/organizational-units/$unitId/members") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$secondUserId", "isLent": false }""")
-        }
-
-        assertEquals(HttpStatusCode.BadRequest, response.status)
-    }
-
-    @Test
-    fun `assign member already in another draugove as primary returns 400`() = testApplication {
-        configureFullApp()
-        val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val unit1Response = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-        val unit1Id = Json.parseToJsonElement(unit1Response.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        val unit2Response = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Skautai", "type": "DRAUGOVE" }""")
-        }
-        val unit2Id = Json.parseToJsonElement(unit2Response.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
-
-        // Assign to first draugove as primary
-        client.post("/api/organizational-units/$unit1Id/members") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$secondUserId", "isLent": false }""")
-        }
-
-        // Try to assign to second draugove as primary — should fail
-        val response = client.post("/api/organizational-units/$unit2Id/members") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$secondUserId", "isLent": false }""")
-        }
-
-        assertEquals(HttpStatusCode.BadRequest, response.status)
-    }
-
-    @Test
-    fun `assign member as lent to second draugove succeeds`() = testApplication {
-        configureFullApp()
-        val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val unit1Response = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-        val unit1Id = Json.parseToJsonElement(unit1Response.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        val unit2Response = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Skautai", "type": "DRAUGOVE" }""")
-        }
-        val unit2Id = Json.parseToJsonElement(unit2Response.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
-
-        // Primary assignment
-        client.post("/api/organizational-units/$unit1Id/members") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$secondUserId", "isLent": false }""")
-        }
-
-        // Lent assignment to second draugove
-        val response = client.post("/api/organizational-units/$unit2Id/members") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$secondUserId", "isLent": true }""")
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "VADOVO_PADEJEJAS" }""")
         }
 
         assertEquals(HttpStatusCode.Created, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals(true, body["isLent"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals("VADOVO_PADEJEJAS", body["assignmentType"]?.jsonPrimitive?.content)
     }
 
     @Test
-    fun `get draugove members returns 200 with active members only`() = testApplication {
+    fun `assign member with nonexistent userId returns 400`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId)
 
-        val createResponse = client.post("/api/organizational-units") {
+        val response = client.post("/api/organizational-units/$unitId/members") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
+            setBody("""{ "userId": "00000000-0000-0000-0000-000000000000", "assignmentType": "MEMBER" }""")
         }
-        val unitId = Json.parseToJsonElement(createResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
 
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `assign member already primary in same type unit returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unit1Id = createUnit(token, tuntasId, "Vilkai 1", "VILKU_DRAUGOVE")
+        val unit2Id = createUnit(token, tuntasId, "Vilkai 2", "VILKU_DRAUGOVE")
+        val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
+
+        client.post("/api/organizational-units/$unit1Id/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
+        }
+
+        val response = client.post("/api/organizational-units/$unit2Id/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `assign member primary in different type units succeeds`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val vilkuId = createUnit(token, tuntasId, "Vilkai", "VILKU_DRAUGOVE")
+        val skautuId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
+
+        client.post("/api/organizational-units/$vilkuId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
+        }
+
+        val response = client.post("/api/organizational-units/$skautuId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+    }
+
+    @Test
+    fun `get unit members returns 200 with active members only`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId)
         val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
 
         client.post("/api/organizational-units/$unitId/members") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$secondUserId", "isLent": false }""")
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
         }
 
         val response = client.get("/api/organizational-units/$unitId/members") {
@@ -546,26 +421,17 @@ class OrganizationalUnitRoutesTest {
     }
 
     @Test
-    fun `remove member from draugove returns 200 and sets left_at`() = testApplication {
+    fun `remove member from unit returns 200 and sets left_at`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val createResponse = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-        val unitId = Json.parseToJsonElement(createResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
+        val unitId = createUnit(token, tuntasId)
         val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
 
         client.post("/api/organizational-units/$unitId/members") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$secondUserId", "isLent": false }""")
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
         }
 
         val response = client.delete("/api/organizational-units/$unitId/members/$secondUserId") {
@@ -575,9 +441,9 @@ class OrganizationalUnitRoutesTest {
 
         assertEquals(HttpStatusCode.OK, response.status)
 
-        // Verify left_at is set
+        // Verify left_at is set in unit_assignments
         org.jetbrains.exposed.sql.transactions.transaction {
-            exec("SELECT left_at FROM user_draugove_memberships WHERE user_id = '$secondUserId' AND organizational_unit_id = '$unitId'") { rs ->
+            exec("SELECT left_at FROM unit_assignments WHERE user_id = '$secondUserId' AND organizational_unit_id = '$unitId'") { rs ->
                 assertTrue(rs.next())
                 assertNotNull(rs.getTimestamp("left_at"))
             }
@@ -593,18 +459,10 @@ class OrganizationalUnitRoutesTest {
     }
 
     @Test
-    fun `remove nonexistent draugove member returns 400`() = testApplication {
+    fun `remove nonexistent unit member returns 400`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val createResponse = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-        val unitId = Json.parseToJsonElement(createResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
+        val unitId = createUnit(token, tuntasId)
 
         val response = client.delete("/api/organizational-units/$unitId/members/00000000-0000-0000-0000-000000000000") {
             header("Authorization", "Bearer $token")
@@ -618,24 +476,14 @@ class OrganizationalUnitRoutesTest {
     fun `assign member without permission returns 403`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val createResponse = client.post("/api/organizational-units") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "type": "DRAUGOVE" }""")
-        }
-        val unitId = Json.parseToJsonElement(createResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        // Register Skautas — no draugove.members.manage permission
+        val unitId = createUnit(token, tuntasId)
         val (secondToken, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
 
         val response = client.post("/api/organizational-units/$unitId/members") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $secondToken")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "userId": "$secondUserId", "isLent": false }""")
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
         }
 
         assertEquals(HttpStatusCode.Forbidden, response.status)

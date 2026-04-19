@@ -236,8 +236,6 @@ class LocationRoutesTest {
                 {
                     "name": "Palapine",
                     "category": "COLLECTIVE",
-                    "ownerType": "TUNTAS",
-                    "ownerId": "$tuntasId",
                     "quantity": 1,
                     "locationId": "$locationId"
                 }

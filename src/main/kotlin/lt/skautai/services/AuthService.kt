@@ -14,7 +14,7 @@ import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.mindrot.jbcrypt.BCrypt
 import java.util.*
-
+import lt.skautai.database.tables.UnitAssignments
 class AuthService(private val environment: ApplicationEnvironment) {
 
     private val secret = environment.config.property("jwt.secret").getString()
@@ -25,12 +25,25 @@ class AuthService(private val environment: ApplicationEnvironment) {
     private val systemRoles = mapOf(
         "Tuntininkas" to "LEADERSHIP",
         "Tuntininko pavaduotojas" to "LEADERSHIP",
+        "Inventorininkas" to "LEADERSHIP",
         "Draugininkas" to "LEADERSHIP",
         "Draugininko pavaduotojas" to "LEADERSHIP",
-        "Inventorininkas" to "LEADERSHIP",
+        "Gildijos pirmininkas" to "LEADERSHIP",
+        "Gildijos pirmininko pavaduotojas" to "LEADERSHIP",
+        "Vyr. skautu draugoves draugininkas" to "LEADERSHIP",
+        "Vyr. skautu draugoves draugininko pavaduotojas" to "LEADERSHIP",
+        "Vyr. skautu burelio pirmininkas" to "LEADERSHIP",
+        "Vyr. skautu burelio pirmininko pavaduotojas" to "LEADERSHIP",
+        "Vyr. skauciu draugoves draugininkas" to "LEADERSHIP",
+        "Vyr. skauciu draugoves draugininko pavaduotojas" to "LEADERSHIP",
+        "Vyr. skauciu burelio pirmininkas" to "LEADERSHIP",
+        "Vyr. skauciu burelio pirmininko pavaduotojas" to "LEADERSHIP",
+        "Vilkas" to "RANK",
         "Skautas" to "RANK",
         "Patyres skautas" to "RANK",
-        "Suauges skautybeje" to "RANK"
+        "Vyr. skautas kandidatas" to "RANK",
+        "Vyr. skautas" to "RANK",
+        "Vadovas" to "RANK"
     )
 
     fun registerTuntininkas(request: RegisterTuntininkasRequest): Result<TokenResponse> {
@@ -169,7 +182,16 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 }
                 else -> return@transaction Result.failure(Exception("Unknown role type"))
             }
-
+            // If the invite is scoped to an organizational unit, assign the user to that unit
+            if (orgUnitId != null) {
+                UnitAssignments.insert {
+                    it[this.userId] = userId
+                    it[this.organizationalUnitId] = orgUnitId
+                    it[this.tuntasId] = tuntasId
+                    it[assignmentType] = "MEMBER"
+                    it[assignedByUserId] = invite[Invitations.createdByUserId]
+                }
+            }
             Invitations.update({ Invitations.id eq invite[Invitations.id] }) {
                 it[usedByUserId] = userId
                 it[usedAt] = now

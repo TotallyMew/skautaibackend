@@ -6,8 +6,9 @@ import kotlinx.serialization.Serializable
 data class ItemResponse(
     val id: String,
     val tuntasId: String,
-    val ownerType: String,
-    val ownerId: String,
+    val custodianId: String? = null,
+    val custodianName: String? = null,
+    val origin: String,
     val name: String,
     val description: String? = null,
     val category: String,

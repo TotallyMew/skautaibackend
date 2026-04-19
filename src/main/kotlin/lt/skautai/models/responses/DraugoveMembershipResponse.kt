@@ -3,7 +3,7 @@ package lt.skautai.models.responses
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class DraugoveMembershipResponse(
+data class UnitMembershipResponse(
     val id: String,
     val userId: String,
     val userName: String,
@@ -11,14 +11,14 @@ data class DraugoveMembershipResponse(
     val organizationalUnitId: String,
     val organizationalUnitName: String,
     val tuntasId: String,
-    val isLent: Boolean,
+    val assignmentType: String,
     val assignedByUserId: String?,
     val joinedAt: String,
     val leftAt: String?
 )
 
 @Serializable
-data class DraugoveMembershipListResponse(
-    val members: List<DraugoveMembershipResponse>,
+data class UnitMembershipListResponse(
+    val members: List<UnitMembershipResponse>,
     val total: Int
 )

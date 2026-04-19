@@ -10,6 +10,7 @@ object Reservations : Table("reservations") {
     val tuntasId = uuid("tuntas_id").references(Tuntai.id)
     val reservedByUserId = uuid("reserved_by_user_id").references(Users.id)
     val approvedByUserId = uuid("approved_by_user_id").references(Users.id).nullable()
+    val requestingUnitId = uuid("requesting_unit_id").references(OrganizationalUnits.id).nullable()
     val eventId = uuid("event_id").references(Events.id).nullable()
     val quantity = integer("quantity").default(1)
     val startDate = date("start_date")

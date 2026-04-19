@@ -3,7 +3,7 @@ package lt.skautai.models.requests
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class AssignDraugoveMembershipRequest(
+data class AssignUnitMemberRequest(
     val userId: String,
-    val isLent: Boolean = false
+    val assignmentType: String = "MEMBER" // MEMBER or VADOVO_PADEJEJAS
 )

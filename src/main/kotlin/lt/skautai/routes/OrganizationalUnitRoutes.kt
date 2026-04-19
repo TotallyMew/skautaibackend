@@ -6,7 +6,7 @@ import io.ktor.server.auth.jwt.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import lt.skautai.models.requests.AssignDraugoveMembershipRequest
+import lt.skautai.models.requests.AssignUnitMemberRequest
 import lt.skautai.models.requests.CreateOrganizationalUnitRequest
 import lt.skautai.models.requests.UpdateOrganizationalUnitRequest
 import lt.skautai.models.responses.ErrorResponse
@@ -128,7 +128,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                         return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid unit ID"))
                     }
 
-                    service.getDraugoveMembers(unitUUID, tuntasUUID)
+                    service.getUnitMembers(unitUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to fetch members")) }
                 }
@@ -143,7 +143,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                     }
 
-                    if (!checkPermission("draugove.members.manage", tuntasUUID)) return@post
+                    if (!checkPermission("unit.members.manage", tuntasUUID)) return@post
 
                     val unitId = call.parameters["id"]
                         ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Unit ID required"))
@@ -151,9 +151,9 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid unit ID"))
                     }
 
-                    val request = call.receive<AssignDraugoveMembershipRequest>()
+                    val request = call.receive<AssignUnitMemberRequest>()
 
-                    service.assignDraugoveMember(unitUUID, tuntasUUID, assignedByUserId, request)
+                    service.assignUnitMember(unitUUID, tuntasUUID, assignedByUserId, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to assign member")) }
                 }
@@ -165,7 +165,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                         return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                     }
 
-                    if (!checkPermission("draugove.members.manage", tuntasUUID)) return@delete
+                    if (!checkPermission("unit.members.manage", tuntasUUID)) return@delete
 
                     val unitId = call.parameters["id"]
                         ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Unit ID required"))
@@ -179,7 +179,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                         return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
                     }
 
-                    service.removeDraugoveMember(unitUUID, tuntasUUID, userUUID)
+                    service.removeUnitMember(unitUUID, tuntasUUID, userUUID)
                     .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Member removed from draugove")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove member")) }
                 }
