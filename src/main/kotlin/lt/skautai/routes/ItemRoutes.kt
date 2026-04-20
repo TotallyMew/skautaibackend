@@ -10,6 +10,8 @@ import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.plugins.checkPermission
+import lt.skautai.plugins.resolveUserPermissions
+import lt.skautai.services.ItemScopeHelper
 import lt.skautai.services.ItemService
 import java.util.*
 
@@ -73,14 +75,26 @@ fun Route.itemRoutes(itemService: ItemService) {
 
                 val request = call.receive<CreateItemRequest>()
 
-                // custodianId is the target org unit for scope check
                 val targetOrgUnitId = request.custodianId?.let {
                     try { UUID.fromString(it) } catch (e: Exception) { null }
                 }
 
-                if (!checkPermission("items.create", tuntasUUID, targetOrgUnitId)) return@post
+                val isPendingApproval: Boolean
+                if (targetOrgUnitId != null) {
+                    // Assigning to a specific unit — use normal scope check
+                    if (!checkPermission("items.create", tuntasUUID, targetOrgUnitId)) return@post
+                    isPendingApproval = false
+                } else {
+                    // Tuntas shared storage — only ALL-scope users allowed (draugininkas cannot create shared items)
+                    val userPerms = resolveUserPermissions(userId, tuntasUUID)
+                    val createPerm = userPerms.find { it.permissionName == "items.create" }
+                    if (createPerm == null || createPerm.scope != "ALL") {
+                        return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                    }
+                    isPendingApproval = false
+                }
 
-                itemService.createItem(tuntasUUID, userId, request)
+                itemService.createItem(tuntasUUID, userId, request, isPendingApproval)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create item")) }
             }
@@ -100,8 +114,9 @@ fun Route.itemRoutes(itemService: ItemService) {
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
                 }
 
-                // Fetch item to determine org unit for scope check
-                val targetOrgUnitId = lt.skautai.services.ItemScopeHelper.getItemCustodianId(itemUUID, tuntasUUID)
+                // TRANSFERRED_FROM_TUNTAS items require ALL scope; pass null to block OWN_UNIT users
+                val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
+                val targetOrgUnitId = if (scopeInfo?.origin == "TRANSFERRED_FROM_TUNTAS") null else scopeInfo?.custodianId
 
                 if (!checkPermission("items.update", tuntasUUID, targetOrgUnitId)) return@put
 
@@ -125,7 +140,9 @@ fun Route.itemRoutes(itemService: ItemService) {
                     return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
                 }
 
-                if (!checkPermission("items.delete", tuntasUUID)) return@delete
+                val deleteScopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
+                val deleteTargetOrgUnitId = if (deleteScopeInfo?.origin == "TRANSFERRED_FROM_TUNTAS") null else deleteScopeInfo?.custodianId
+                if (!checkPermission("items.delete", tuntasUUID, deleteTargetOrgUnitId)) return@delete
 
                 itemService.deleteItem(itemUUID, tuntasUUID)
                     .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Item deactivated")) }

@@ -29,11 +29,28 @@ class BendrasInventoryRequestService {
         "Vyr. skauciu burelio pirmininko pavaduotojas"
     )
 
-    fun getAllRequests(tuntasId: UUID): Result<BendrasInventoryRequestListResponse> {
+    fun getAllRequests(
+        tuntasId: UUID,
+        userId: UUID,
+        isAdmin: Boolean,
+        unitIds: List<UUID>
+    ): Result<BendrasInventoryRequestListResponse> {
         return transaction {
-            val requests = BendrasInventoryRequests.selectAll()
+            var query = BendrasInventoryRequests.selectAll()
                 .where { BendrasInventoryRequests.tuntasId eq tuntasId }
-                .map { toResponse(it) }
+
+            when {
+                isAdmin -> {}
+                unitIds.isNotEmpty() -> query = query.andWhere {
+                    (BendrasInventoryRequests.requestingUnitId inList unitIds) or
+                            (BendrasInventoryRequests.requestedByUserId eq userId)
+                }
+                else -> query = query.andWhere {
+                    BendrasInventoryRequests.requestedByUserId eq userId
+                }
+            }
+
+            val requests = query.map { toResponse(it) }
             Result.success(BendrasInventoryRequestListResponse(requests = requests, total = requests.size))
         }
     }
@@ -61,42 +78,19 @@ class BendrasInventoryRequestService {
                 return@transaction Result.failure(Exception("Quantity must be at least 1"))
             }
 
-            val itemUUID = try { UUID.fromString(request.itemId) } catch (e: Exception) {
-                return@transaction Result.failure(Exception("Invalid item ID"))
+            if (request.itemId == null && request.itemDescription.isNullOrBlank()) {
+                return@transaction Result.failure(Exception("Either itemId or itemDescription is required"))
             }
 
-            val startDate = try {
-                kotlinx.datetime.LocalDate.parse(request.startDate)
-            } catch (e: Exception) {
-                return@transaction Result.failure(Exception("Invalid start date format, use YYYY-MM-DD"))
-            }
-
-            val endDate = try {
-                kotlinx.datetime.LocalDate.parse(request.endDate)
-            } catch (e: Exception) {
-                return@transaction Result.failure(Exception("Invalid end date format, use YYYY-MM-DD"))
-            }
-
-            if (endDate < startDate) {
-                return@transaction Result.failure(Exception("End date cannot be before start date"))
-            }
-
-            val item = Items.selectAll()
-                .where {
-                    (Items.id eq itemUUID) and
-                            (Items.tuntasId eq tuntasId) and
-                            (Items.status eq "ACTIVE")
-                }
-                .firstOrNull()
-                ?: return@transaction Result.failure(Exception("Item not found or not active"))
-
-            if (request.quantity > item[Items.quantity]) {
-                return@transaction Result.failure(Exception("Requested quantity exceeds available quantity"))
-            }
-
-            val eventUUID = request.eventId?.let {
+            val itemUUID = request.itemId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid event ID"))
+                    return@transaction Result.failure(Exception("Invalid item ID"))
+                }
+            }
+
+            val neededByDate = request.neededByDate?.let {
+                try { kotlinx.datetime.LocalDate.parse(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid neededByDate format, use YYYY-MM-DD"))
                 }
             }
 
@@ -115,10 +109,32 @@ class BendrasInventoryRequestService {
                     }
                     .firstOrNull()
                     ?: return@transaction Result.failure(Exception("Requesting unit not found in this tuntas"))
+
+                val hasLeadershipInUnit = UserLeadershipRoles.selectAll()
+                    .where {
+                        (UserLeadershipRoles.userId eq requestedByUserId) and
+                            (UserLeadershipRoles.tuntasId eq tuntasId) and
+                            (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                            (UserLeadershipRoles.leftAt.isNull()) and
+                            (UserLeadershipRoles.organizationalUnitId eq requestingUnitUUID)
+                    }
+                    .any()
+
+                val hasMembershipInUnit = UnitAssignments.selectAll()
+                    .where {
+                        (UnitAssignments.userId eq requestedByUserId) and
+                            (UnitAssignments.tuntasId eq tuntasId) and
+                            (UnitAssignments.organizationalUnitId eq requestingUnitUUID) and
+                            (UnitAssignments.leftAt.isNull())
+                    }
+                    .any()
+
+                if (!hasLeadershipInUnit && !hasMembershipInUnit) {
+                    return@transaction Result.failure(Exception("You can only create a request for your own unit or for the tuntas"))
+                }
             }
 
             // Determine needs_draugininkas_approval
-            // Check if requester holds any unit-level leadership role
             val isUnitLeader = UserLeadershipRoles
                 .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
                 .selectAll()
@@ -131,7 +147,6 @@ class BendrasInventoryRequestService {
                 }
                 .any()
 
-            // Check requester's rank
             val requesterRank = UserRanks
                 .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
                 .selectAll()
@@ -143,13 +158,9 @@ class BendrasInventoryRequestService {
                 ?.get(Roles.name)
 
             val needsApproval = when {
-                // Vilkas, Skautas, Patyres skautas always need unit leader approval
                 requesterRank in listOf("Vilkas", "Skautas", "Patyres skautas") -> true
-                // Unit leaders never need approval
                 isUnitLeader -> false
-                // Vadovas/Vyr. skautas with no requesting unit — goes straight to top level
                 requestingUnitUUID == null -> false
-                // Otherwise use their choice
                 else -> request.needsDraugininkasApproval ?: false
             }
 
@@ -157,14 +168,15 @@ class BendrasInventoryRequestService {
                 it[this.tuntasId] = tuntasId
                 it[this.requestedByUserId] = requestedByUserId
                 it[this.itemId] = itemUUID
+                it[itemDescription] = request.itemDescription
                 it[quantity] = request.quantity
-                it[this.eventId] = eventUUID
+                it[this.eventId] = null
                 it[this.requestingUnitId] = requestingUnitUUID
                 it[needsDraugininkasApproval] = needsApproval
                 it[draugininkasStatus] = if (needsApproval) "PENDING" else null
                 it[topLevelStatus] = "PENDING"
-                it[this.startDate] = startDate
-                it[this.endDate] = endDate
+                it[this.startDate] = neededByDate
+                it[this.endDate] = neededByDate
                 it[notes] = request.notes
             } get BendrasInventoryRequests.id
 
@@ -323,52 +335,8 @@ class BendrasInventoryRequestService {
                 it[topLevelRejectionReason] = request.rejectionReason
             }
 
-            // Auto-create reservation on approval
-            if (request.action == "APPROVED") {
-                val itemId = existing[BendrasInventoryRequests.itemId]
-                val startDate = existing[BendrasInventoryRequests.startDate]
-                val endDate = existing[BendrasInventoryRequests.endDate]
-                val quantity = existing[BendrasInventoryRequests.quantity]
-                val eventId = existing[BendrasInventoryRequests.eventId]
-                val requestingUnitId = existing[BendrasInventoryRequests.requestingUnitId]
-                val requesterUserId = existing[BendrasInventoryRequests.requestedByUserId]
+            // Purchase requests (no itemId) have no reservation to create on approval
 
-                val item = Items.selectAll()
-                    .where { Items.id eq itemId }
-                    .firstOrNull()
-                    ?: return@transaction Result.failure(Exception("Item not found"))
-
-                val conflictingQuantity = Reservations
-                    .select(Reservations.quantity)
-                    .where {
-                        (Reservations.itemId eq itemId) and
-                                (Reservations.status inList listOf("APPROVED", "ACTIVE")) and
-                                (Reservations.startDate lessEq endDate) and
-                                (Reservations.endDate greaterEq startDate)
-                    }
-                    .sumOf { it[Reservations.quantity] }
-
-                val availableQuantity = item[Items.quantity] - conflictingQuantity
-                if (quantity > availableQuantity) {
-                    return@transaction Result.failure(
-                        Exception("Insufficient available quantity. Available: $availableQuantity, requested: $quantity")
-                    )
-                }
-
-                Reservations.insert {
-                    it[Reservations.itemId] = itemId
-                    it[Reservations.tuntasId] = tuntasId
-                    it[reservedByUserId] = requesterUserId
-                    it[approvedByUserId] = reviewerUserId
-                    it[Reservations.eventId] = eventId
-                    it[Reservations.requestingUnitId] = requestingUnitId
-                    it[Reservations.quantity] = quantity
-                    it[Reservations.startDate] = startDate
-                    it[Reservations.endDate] = endDate
-                    it[status] = "APPROVED"
-                    it[notes] = "Auto-created from bendras inventory request $requestId"
-                }
-            }
 
             val updated = BendrasInventoryRequests.selectAll()
                 .where { BendrasInventoryRequests.id eq requestId }
@@ -380,9 +348,12 @@ class BendrasInventoryRequestService {
 
     private fun toResponse(row: ResultRow): BendrasInventoryRequestResponse {
         val itemId = row[BendrasInventoryRequests.itemId]
-        val itemName = Items.selectAll()
-            .where { Items.id eq itemId }
-            .firstOrNull()?.get(Items.name) ?: "Unknown"
+        val itemDescription = row[BendrasInventoryRequests.itemDescription]
+        val itemName = if (itemId != null) {
+            Items.selectAll().where { Items.id eq itemId }.firstOrNull()?.get(Items.name) ?: "Unknown"
+        } else {
+            itemDescription ?: "Unknown"
+        }
 
         val requestingUnitId = row[BendrasInventoryRequests.requestingUnitId]
         val requestingUnitName = requestingUnitId?.let {
@@ -391,14 +362,17 @@ class BendrasInventoryRequestService {
                 .firstOrNull()?.get(OrganizationalUnits.name)
         }
 
+        val neededByDate = row[BendrasInventoryRequests.startDate]?.toString()
+
         return BendrasInventoryRequestResponse(
             id = row[BendrasInventoryRequests.id].toString(),
             tuntasId = row[BendrasInventoryRequests.tuntasId].toString(),
             requestedByUserId = row[BendrasInventoryRequests.requestedByUserId].toString(),
-            itemId = itemId.toString(),
+            itemId = itemId?.toString(),
             itemName = itemName,
+            itemDescription = itemDescription,
             quantity = row[BendrasInventoryRequests.quantity],
-            eventId = row[BendrasInventoryRequests.eventId]?.toString(),
+            neededByDate = neededByDate,
             requestingUnitId = requestingUnitId?.toString(),
             requestingUnitName = requestingUnitName,
             needsDraugininkasApproval = row[BendrasInventoryRequests.needsDraugininkasApproval],
@@ -408,8 +382,6 @@ class BendrasInventoryRequestService {
             topLevelStatus = row[BendrasInventoryRequests.topLevelStatus],
             topLevelReviewedByUserId = row[BendrasInventoryRequests.topLevelReviewedByUserId]?.toString(),
             topLevelRejectionReason = row[BendrasInventoryRequests.topLevelRejectionReason],
-            startDate = row[BendrasInventoryRequests.startDate].toString(),
-            endDate = row[BendrasInventoryRequests.endDate].toString(),
             notes = row[BendrasInventoryRequests.notes],
             createdAt = row[BendrasInventoryRequests.createdAt].toString(),
             updatedAt = row[BendrasInventoryRequests.updatedAt].toString()

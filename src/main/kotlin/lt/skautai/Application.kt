@@ -5,8 +5,10 @@ import io.ktor.server.netty.*
 import lt.skautai.plugins.configureRouting
 import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
+import lt.skautai.database.tables.Tuntai
 import lt.skautai.services.PermissionSeeder
 import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 
 fun main(args: Array<String>) {
@@ -19,6 +21,11 @@ fun Application.module() {
     configureSecurity()
     configureRouting()
     PermissionSeeder.seedPermissions()
+    transaction {
+        Tuntai.selectAll().map { it[Tuntai.id] }.forEach { tuntasId ->
+            PermissionSeeder.seedRolePermissions(tuntasId)
+        }
+    }
 }
 
 fun Application.configureDatabases() {

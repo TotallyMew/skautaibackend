@@ -43,3 +43,41 @@ data class EventListResponse(
     val events: List<EventResponse>,
     val total: Int
 )
+
+@Serializable
+data class PastovykleResponse(
+    val id: String,
+    val eventId: String,
+    val name: String,
+    val responsibleUserId: String? = null,
+    val ageGroup: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class PastovykleListResponse(
+    val pastovykles: List<PastovykleResponse>,
+    val total: Int
+)
+
+@Serializable
+data class PastovykleInventoryResponse(
+    val id: String,
+    val pastovykleId: String,
+    val itemId: String,
+    val itemName: String,
+    val distributedByUserId: String? = null,
+    val recipientUserId: String? = null,
+    val recipientType: String? = null,
+    val quantityAssigned: Int,
+    val quantityReturned: Int,
+    val assignedAt: String,
+    val returnedAt: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class PastovykleInventoryListResponse(
+    val inventory: List<PastovykleInventoryResponse>,
+    val total: Int
+)

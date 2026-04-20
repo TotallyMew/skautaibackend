@@ -11,6 +11,7 @@ import lt.skautai.models.requests.DraugininkasReviewRequest
 import lt.skautai.models.requests.TopLevelReviewRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.plugins.checkPermission
+import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.BendrasInventoryRequestService
 import java.util.*
 import lt.skautai.database.tables.BendrasInventoryRequests
@@ -23,6 +24,9 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
         route("/api/inventory-requests") {
 
             get {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
@@ -31,7 +35,15 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
 
                 if (!checkPermission("items.view", tuntasUUID)) return@get
 
-                service.getAllRequests(tuntasUUID)
+                val userPerms = resolveUserPermissions(userId, tuntasUUID)
+                val isAdmin = userPerms.any {
+                    it.permissionName == "items.request.approve.bendras" && it.scope == "ALL"
+                }
+                val unitIds = if (!isAdmin)
+                    userPerms.firstOrNull()?.userOrgUnitIds?.toList() ?: emptyList()
+                else emptyList()
+
+                service.getAllRequests(tuntasUUID, userId, isAdmin, unitIds)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch requests")) }
             }

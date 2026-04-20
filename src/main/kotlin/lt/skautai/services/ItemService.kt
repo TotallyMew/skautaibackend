@@ -71,7 +71,8 @@ class ItemService {
     fun createItem(
         tuntasId: UUID,
         createdByUserId: UUID,
-        request: CreateItemRequest
+        request: CreateItemRequest,
+        isPendingApproval: Boolean = false
     ): Result<ItemResponse> {
         return transaction {
             if (request.category !in listOf("COLLECTIVE", "ASSIGNED", "INDIVIDUAL")) {
@@ -136,7 +137,7 @@ class ItemService {
                 it[this.purchaseDate] = purchaseDate
                 it[purchasePrice] = request.purchasePrice?.toBigDecimal()
                 it[notes] = request.notes
-                it[status] = "ACTIVE"
+                it[status] = if (isPendingApproval) "PENDING_APPROVAL" else "ACTIVE"
             } get Items.id
 
             val item = Items.selectAll()

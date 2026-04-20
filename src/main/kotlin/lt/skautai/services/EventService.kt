@@ -1,9 +1,7 @@
 package lt.skautai.services
 
 import lt.skautai.database.tables.*
-import lt.skautai.models.requests.AssignEventRoleRequest
-import lt.skautai.models.requests.CreateEventRequest
-import lt.skautai.models.requests.UpdateEventRequest
+import lt.skautai.models.requests.*
 import lt.skautai.models.responses.*
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -330,6 +328,366 @@ class EventService {
                         (EventRoles.eventId eq eventId)
             }
 
+            Result.success(Unit)
+        }
+    }
+
+    private val validAgeGroups = listOf("VILKAI", "SKAUTAI", "PATYRE_SKAUTAI", "MIXED")
+    private val validRecipientTypes = listOf("DIRECT", "GURU_PROXY")
+
+    private fun verifyStovyklaEvent(eventId: UUID, tuntasId: UUID): ResultRow? {
+        val event = Events.selectAll()
+            .where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }
+            .firstOrNull() ?: return null
+        if (event[Events.type] != "STOVYKLA") return null
+        return event
+    }
+
+    private fun toPastovykleResponse(row: ResultRow) = PastovykleResponse(
+        id = row[Pastovykles.id].toString(),
+        eventId = row[Pastovykles.eventId].toString(),
+        name = row[Pastovykles.name],
+        responsibleUserId = row[Pastovykles.responsibleUserId]?.toString(),
+        ageGroup = row[Pastovykles.ageGroup],
+        notes = row[Pastovykles.notes]
+    )
+
+    private fun toInventoryResponse(row: ResultRow): PastovykleInventoryResponse {
+        val itemName = Items.selectAll()
+            .where { Items.id eq row[PastovykleInventory.itemId] }
+            .firstOrNull()?.get(Items.name) ?: "Unknown"
+        return PastovykleInventoryResponse(
+            id = row[PastovykleInventory.id].toString(),
+            pastovykleId = row[PastovykleInventory.pastovykleId].toString(),
+            itemId = row[PastovykleInventory.itemId].toString(),
+            itemName = itemName,
+            distributedByUserId = row[PastovykleInventory.distributedByUserId]?.toString(),
+            recipientUserId = row[PastovykleInventory.recipientUserId]?.toString(),
+            recipientType = row[PastovykleInventory.recipientType],
+            quantityAssigned = row[PastovykleInventory.quantityAssigned],
+            quantityReturned = row[PastovykleInventory.quantityReturned],
+            assignedAt = row[PastovykleInventory.assignedAt].toString(),
+            returnedAt = row[PastovykleInventory.returnedAt]?.toString(),
+            notes = row[PastovykleInventory.notes]
+        )
+    }
+
+    fun updateStovyklaDetails(
+        eventId: UUID,
+        tuntasId: UUID,
+        request: UpdateStovyklaDetailsRequest
+    ): Result<StovyklaDetailsResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            val registrationDeadline = request.registrationDeadline?.let {
+                try { kotlinx.datetime.LocalDate.parse(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid registration deadline format, use YYYY-MM-DD"))
+                }
+            }
+
+            val existing = StovyklaDetails.selectAll()
+                .where { StovyklaDetails.eventId eq eventId }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Stovykla details not found"))
+
+            StovyklaDetails.update({ StovyklaDetails.eventId eq eventId }) {
+                registrationDeadline?.let { v -> it[StovyklaDetails.registrationDeadline] = v }
+                request.expectedParticipants?.let { v -> it[StovyklaDetails.expectedParticipants] = v }
+                request.actualParticipants?.let { v -> it[StovyklaDetails.actualParticipants] = v }
+            }
+
+            val updated = StovyklaDetails.selectAll()
+                .where { StovyklaDetails.eventId eq eventId }
+                .first()
+
+            Result.success(
+                StovyklaDetailsResponse(
+                    id = updated[StovyklaDetails.id].toString(),
+                    registrationDeadline = updated[StovyklaDetails.registrationDeadline]?.toString(),
+                    expectedParticipants = updated[StovyklaDetails.expectedParticipants],
+                    actualParticipants = updated[StovyklaDetails.actualParticipants]
+                )
+            )
+        }
+    }
+
+    fun getPastovykles(eventId: UUID, tuntasId: UUID): Result<PastovykleListResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            val list = Pastovykles.selectAll()
+                .where { Pastovykles.eventId eq eventId }
+                .map { toPastovykleResponse(it) }
+
+            Result.success(PastovykleListResponse(pastovykles = list, total = list.size))
+        }
+    }
+
+    fun getPastovykle(eventId: UUID, pastovykleId: UUID, tuntasId: UUID): Result<PastovykleResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            val row = Pastovykles.selectAll()
+                .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            Result.success(toPastovykleResponse(row))
+        }
+    }
+
+    fun createPastovykle(
+        eventId: UUID,
+        tuntasId: UUID,
+        request: CreatePastovykleRequest
+    ): Result<PastovykleResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            if (request.name.isBlank()) {
+                return@transaction Result.failure(Exception("Name cannot be blank"))
+            }
+
+            if (request.ageGroup != null && request.ageGroup !in validAgeGroups) {
+                return@transaction Result.failure(Exception("Invalid age group. Must be one of: ${validAgeGroups.joinToString()}"))
+            }
+
+            val responsibleUUID = request.responsibleUserId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid responsible user ID"))
+                }
+            }
+
+            val newId = Pastovykles.insert {
+                it[Pastovykles.eventId] = eventId
+                it[name] = request.name
+                it[responsibleUserId] = responsibleUUID
+                it[ageGroup] = request.ageGroup
+                it[notes] = request.notes
+            } get Pastovykles.id
+
+            val row = Pastovykles.selectAll().where { Pastovykles.id eq newId }.first()
+            Result.success(toPastovykleResponse(row))
+        }
+    }
+
+    fun updatePastovykle(
+        eventId: UUID,
+        pastovykleId: UUID,
+        tuntasId: UUID,
+        request: UpdatePastovykleRequest
+    ): Result<PastovykleResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            Pastovykles.selectAll()
+                .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            if (request.ageGroup != null && request.ageGroup !in validAgeGroups) {
+                return@transaction Result.failure(Exception("Invalid age group. Must be one of: ${validAgeGroups.joinToString()}"))
+            }
+
+            val responsibleUUID = request.responsibleUserId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid responsible user ID"))
+                }
+            }
+
+            Pastovykles.update({ (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }) {
+                request.name?.let { v -> it[name] = v }
+                request.ageGroup?.let { v -> it[ageGroup] = v }
+                request.notes?.let { v -> it[notes] = v }
+                responsibleUUID?.let { v -> it[responsibleUserId] = v }
+            }
+
+            val updated = Pastovykles.selectAll().where { Pastovykles.id eq pastovykleId }.first()
+            Result.success(toPastovykleResponse(updated))
+        }
+    }
+
+    fun deletePastovykle(eventId: UUID, pastovykleId: UUID, tuntasId: UUID): Result<Unit> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            Pastovykles.selectAll()
+                .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            val hasInventory = PastovykleInventory.selectAll()
+                .where { PastovykleInventory.pastovykleId eq pastovykleId }
+                .count() > 0
+
+            if (hasInventory) {
+                return@transaction Result.failure(Exception("Cannot delete pastovyklė with assigned inventory"))
+            }
+
+            Pastovykles.deleteWhere { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
+            Result.success(Unit)
+        }
+    }
+
+    fun getPastovykleInventory(
+        eventId: UUID,
+        pastovykleId: UUID,
+        tuntasId: UUID
+    ): Result<PastovykleInventoryListResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            Pastovykles.selectAll()
+                .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            val list = PastovykleInventory.selectAll()
+                .where { PastovykleInventory.pastovykleId eq pastovykleId }
+                .map { toInventoryResponse(it) }
+
+            Result.success(PastovykleInventoryListResponse(inventory = list, total = list.size))
+        }
+    }
+
+    fun assignInventory(
+        eventId: UUID,
+        pastovykleId: UUID,
+        tuntasId: UUID,
+        distributedByUserId: UUID,
+        request: AssignPastovykleInventoryRequest
+    ): Result<PastovykleInventoryResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            Pastovykles.selectAll()
+                .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            if (request.quantity < 1) {
+                return@transaction Result.failure(Exception("Quantity must be at least 1"))
+            }
+
+            val itemUUID = try { UUID.fromString(request.itemId) } catch (e: Exception) {
+                return@transaction Result.failure(Exception("Invalid item ID"))
+            }
+
+            Items.selectAll()
+                .where { (Items.id eq itemUUID) and (Items.tuntasId eq tuntasId) and (Items.status eq "ACTIVE") }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Item not found or not active"))
+
+            if (request.recipientType != null && request.recipientType !in validRecipientTypes) {
+                return@transaction Result.failure(Exception("Invalid recipient type. Must be one of: ${validRecipientTypes.joinToString()}"))
+            }
+
+            val recipientUUID = request.recipientUserId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid recipient user ID"))
+                }
+            }
+
+            val newId = PastovykleInventory.insert {
+                it[PastovykleInventory.pastovykleId] = pastovykleId
+                it[itemId] = itemUUID
+                it[this.distributedByUserId] = distributedByUserId
+                it[recipientUserId] = recipientUUID
+                it[recipientType] = request.recipientType
+                it[quantityAssigned] = request.quantity
+                it[quantityReturned] = 0
+                it[assignedAt] = kotlinx.datetime.Clock.System.now()
+                it[notes] = request.notes
+            } get PastovykleInventory.id
+
+            val row = PastovykleInventory.selectAll().where { PastovykleInventory.id eq newId }.first()
+            Result.success(toInventoryResponse(row))
+        }
+    }
+
+    fun updateInventoryAssignment(
+        eventId: UUID,
+        pastovykleId: UUID,
+        inventoryId: UUID,
+        tuntasId: UUID,
+        request: UpdatePastovykleInventoryRequest
+    ): Result<PastovykleInventoryResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            Pastovykles.selectAll()
+                .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            val existing = PastovykleInventory.selectAll()
+                .where { (PastovykleInventory.id eq inventoryId) and (PastovykleInventory.pastovykleId eq pastovykleId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Inventory assignment not found"))
+
+            if (request.quantityReturned != null) {
+                if (request.quantityReturned < 0) {
+                    return@transaction Result.failure(Exception("Returned quantity cannot be negative"))
+                }
+                if (request.quantityReturned > existing[PastovykleInventory.quantityAssigned]) {
+                    return@transaction Result.failure(Exception("Returned quantity cannot exceed assigned quantity"))
+                }
+            }
+
+            val returnedAt = if (request.quantityReturned != null) {
+                request.returnedAt?.let {
+                    try { kotlinx.datetime.Instant.parse(it) } catch (e: Exception) {
+                        return@transaction Result.failure(Exception("Invalid returnedAt format, use ISO-8601"))
+                    }
+                } ?: kotlinx.datetime.Clock.System.now()
+            } else null
+
+            PastovykleInventory.update({ (PastovykleInventory.id eq inventoryId) and (PastovykleInventory.pastovykleId eq pastovykleId) }) {
+                request.quantityReturned?.let { v -> it[quantityReturned] = v }
+                returnedAt?.let { v -> it[PastovykleInventory.returnedAt] = v }
+                request.notes?.let { v -> it[notes] = v }
+            }
+
+            val updated = PastovykleInventory.selectAll().where { PastovykleInventory.id eq inventoryId }.first()
+            Result.success(toInventoryResponse(updated))
+        }
+    }
+
+    fun removeInventoryAssignment(
+        eventId: UUID,
+        pastovykleId: UUID,
+        inventoryId: UUID,
+        tuntasId: UUID
+    ): Result<Unit> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            Pastovykles.selectAll()
+                .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            val existing = PastovykleInventory.selectAll()
+                .where { (PastovykleInventory.id eq inventoryId) and (PastovykleInventory.pastovykleId eq pastovykleId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Inventory assignment not found"))
+
+            if (existing[PastovykleInventory.quantityReturned] != 0) {
+                return@transaction Result.failure(Exception("Cannot remove assignment with returned items"))
+            }
+
+            PastovykleInventory.deleteWhere { (PastovykleInventory.id eq inventoryId) and (PastovykleInventory.pastovykleId eq pastovykleId) }
             Result.success(Unit)
         }
     }

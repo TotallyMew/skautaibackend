@@ -425,4 +425,610 @@ class EventRoutesTest {
 
         assertEquals(HttpStatusCode.Unauthorized, response.status)
     }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private suspend fun HttpClient.createTestPastovykle(
+        token: String,
+        tuntasId: String,
+        eventId: String,
+        name: String = "Vilkai"
+    ): String {
+        val response = post("/api/events/$eventId/pastovykles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name" }""")
+        }
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    private suspend fun HttpClient.createTestItem(
+        token: String,
+        tuntasId: String,
+        name: String = "Palapine",
+        quantity: Int = 5
+    ): String {
+        val response = post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "name": "$name",
+                    "category": "COLLECTIVE",
+                    "quantity": $quantity
+                }
+            """.trimIndent())
+        }
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    // ── StovyklaDetails tests ─────────────────────────────────────────────────
+
+    @Test
+    fun `update stovykla details returns 200 with updated fields`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val response = client.put("/api/events/$eventId/stovykla-details") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "expectedParticipants": 80,
+                    "registrationDeadline": "2026-06-15"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(80, body["expectedParticipants"]?.jsonPrimitive?.content?.toInt())
+        assertEquals("2026-06-15", body["registrationDeadline"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `update stovykla details on non-stovykla event returns 404`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId, type = "SUEIGA")
+
+        val response = client.put("/api/events/$eventId/stovykla-details") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "expectedParticipants": 10 }""")
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    @Test
+    fun `update stovykla details on nonexistent event returns 404`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.put("/api/events/00000000-0000-0000-0000-000000000000/stovykla-details") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "expectedParticipants": 10 }""")
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    @Test
+    fun `update stovykla details with invalid date format returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val response = client.put("/api/events/$eventId/stovykla-details") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "registrationDeadline": "15/06/2026" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    // ── Pastovyklės CRUD tests ────────────────────────────────────────────────
+
+    @Test
+    fun `create pastovykle returns 201`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val response = client.post("/api/events/$eventId/pastovykles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Vilkai", "ageGroup": "VILKAI" }""")
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Vilkai", body["name"]?.jsonPrimitive?.content)
+        assertEquals("VILKAI", body["ageGroup"]?.jsonPrimitive?.content)
+        assertEquals(eventId, body["eventId"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `create pastovykle on non-stovykla event returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId, type = "SUEIGA")
+
+        val response = client.post("/api/events/$eventId/pastovykles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Vilkai" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `create pastovykle with blank name returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val response = client.post("/api/events/$eventId/pastovykles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "   " }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `create pastovykle with invalid age group returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val response = client.post("/api/events/$eventId/pastovykles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Grupė", "ageGroup": "INVALID_GROUP" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `get pastovykles returns 200 with list`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        client.createTestPastovykle(token, tuntasId, eventId, "Vilkai")
+        client.createTestPastovykle(token, tuntasId, eventId, "Skautai")
+
+        val response = client.get("/api/events/$eventId/pastovykles") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(2, body["total"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun `get pastovykles on non-stovykla event returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId, type = "RENGINYS")
+
+        val response = client.get("/api/events/$eventId/pastovykles") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `get single pastovykle returns 200`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+
+        val response = client.get("/api/events/$eventId/pastovykles/$pid") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(pid, body["id"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `get nonexistent pastovykle returns 404`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val response = client.get("/api/events/$eventId/pastovykles/00000000-0000-0000-0000-000000000000") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    @Test
+    fun `update pastovykle name returns 200`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+
+        val response = client.put("/api/events/$eventId/pastovykles/$pid") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Atnaujinta grupė" }""")
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Atnaujinta grupė", body["name"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `update pastovykle with invalid age group returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+
+        val response = client.put("/api/events/$eventId/pastovykles/$pid") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "ageGroup": "BAD_GROUP" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `delete pastovykle with no inventory returns 200`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+
+        val response = client.delete("/api/events/$eventId/pastovykles/$pid") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+    }
+
+    @Test
+    fun `delete pastovykle with assigned inventory returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+        val itemId = client.createTestItem(token, tuntasId)
+
+        client.post("/api/events/$eventId/pastovykles/$pid/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "quantity": 2 }""")
+        }
+
+        val response = client.delete("/api/events/$eventId/pastovykles/$pid") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `delete nonexistent pastovykle returns 404`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val response = client.delete("/api/events/$eventId/pastovykles/00000000-0000-0000-0000-000000000000") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    // ── Pastovyklė Inventory tests ────────────────────────────────────────────
+
+    @Test
+    fun `assign inventory to pastovykle returns 201`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+        val itemId = client.createTestItem(token, tuntasId)
+
+        val response = client.post("/api/events/$eventId/pastovykles/$pid/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "quantity": 3 }""")
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(itemId, body["itemId"]?.jsonPrimitive?.content)
+        assertEquals(3, body["quantityAssigned"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(0, body["quantityReturned"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun `assign inventory with quantity zero returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+        val itemId = client.createTestItem(token, tuntasId)
+
+        val response = client.post("/api/events/$eventId/pastovykles/$pid/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "quantity": 0 }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `assign inventory with nonexistent item returns 404`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+
+        val response = client.post("/api/events/$eventId/pastovykles/$pid/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "00000000-0000-0000-0000-000000000000", "quantity": 1 }""")
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    @Test
+    fun `assign inventory to nonexistent pastovykle returns 404`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val itemId = client.createTestItem(token, tuntasId)
+
+        val response = client.post("/api/events/$eventId/pastovykles/00000000-0000-0000-0000-000000000000/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "quantity": 1 }""")
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    @Test
+    fun `get pastovykle inventory returns 200 with list`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+        val itemId = client.createTestItem(token, tuntasId)
+
+        client.post("/api/events/$eventId/pastovykles/$pid/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "quantity": 2 }""")
+        }
+
+        val response = client.get("/api/events/$eventId/pastovykles/$pid/inventory") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(1, body["total"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun `update inventory assignment to mark return returns 200`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+        val itemId = client.createTestItem(token, tuntasId)
+
+        val assignResponse = client.post("/api/events/$eventId/pastovykles/$pid/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "quantity": 4 }""")
+        }
+        val invId = Json.parseToJsonElement(assignResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.put("/api/events/$eventId/pastovykles/$pid/inventory/$invId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantityReturned": 4 }""")
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(4, body["quantityReturned"]?.jsonPrimitive?.content?.toInt())
+        assertNotNull(body["returnedAt"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `update inventory returned quantity exceeding assigned returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+        val itemId = client.createTestItem(token, tuntasId)
+
+        val assignResponse = client.post("/api/events/$eventId/pastovykles/$pid/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "quantity": 2 }""")
+        }
+        val invId = Json.parseToJsonElement(assignResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.put("/api/events/$eventId/pastovykles/$pid/inventory/$invId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantityReturned": 99 }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `remove inventory assignment with no returns returns 200`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+        val itemId = client.createTestItem(token, tuntasId)
+
+        val assignResponse = client.post("/api/events/$eventId/pastovykles/$pid/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "quantity": 2 }""")
+        }
+        val invId = Json.parseToJsonElement(assignResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.delete("/api/events/$eventId/pastovykles/$pid/inventory/$invId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+    }
+
+    @Test
+    fun `remove inventory assignment with partial return returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+        val itemId = client.createTestItem(token, tuntasId)
+
+        val assignResponse = client.post("/api/events/$eventId/pastovykles/$pid/inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "quantity": 4 }""")
+        }
+        val invId = Json.parseToJsonElement(assignResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        client.put("/api/events/$eventId/pastovykles/$pid/inventory/$invId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantityReturned": 2 }""")
+        }
+
+        val response = client.delete("/api/events/$eventId/pastovykles/$pid/inventory/$invId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `remove nonexistent inventory assignment returns 404`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pid = client.createTestPastovykle(token, tuntasId, eventId)
+
+        val response = client.delete("/api/events/$eventId/pastovykles/$pid/inventory/00000000-0000-0000-0000-000000000000") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    // ── Auth tests ────────────────────────────────────────────────────────────
+
+    @Test
+    fun `create pastovykle without token returns 401`() = testApplication {
+        configureFullApp()
+        val (_, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.post("/api/events/00000000-0000-0000-0000-000000000000/pastovykles") {
+            contentType(ContentType.Application.Json)
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Vilkai" }""")
+        }
+
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+    }
+
+    @Test
+    fun `get pastovykles without token returns 401`() = testApplication {
+        configureFullApp()
+        val (_, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.get("/api/events/00000000-0000-0000-0000-000000000000/pastovykles") {
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+    }
+
+    @Test
+    fun `assign inventory without token returns 401`() = testApplication {
+        configureFullApp()
+        val (_, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.post("/api/events/00000000-0000-0000-0000-000000000000/pastovykles/00000000-0000-0000-0000-000000000000/inventory") {
+            contentType(ContentType.Application.Json)
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "00000000-0000-0000-0000-000000000000", "quantity": 1 }""")
+        }
+
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+    }
 }

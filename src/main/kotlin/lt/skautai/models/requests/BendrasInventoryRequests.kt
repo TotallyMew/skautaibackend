@@ -4,11 +4,10 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class CreateBendrasInventoryRequestRequest(
-    val itemId: String,
+    val itemId: String? = null,
+    val itemDescription: String? = null,
     val quantity: Int = 1,
-    val startDate: String,
-    val endDate: String,
-    val eventId: String? = null,
+    val neededByDate: String? = null,
     val requestingUnitId: String? = null,
     val needsDraugininkasApproval: Boolean? = null,
     val notes: String? = null

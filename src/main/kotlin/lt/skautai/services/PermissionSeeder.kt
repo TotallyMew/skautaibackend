@@ -116,9 +116,7 @@ object PermissionSeeder {
             "items.delete" to "ALL",
             "items.transfer" to "ALL",
             "items.request.bendras" to "ALL",
-            "items.request.approve.unit" to "ALL",
             "items.request.approve.bendras" to "ALL",
-            "members.view" to "ALL",
             "locations.manage" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
@@ -145,7 +143,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -166,7 +163,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -187,7 +183,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -208,7 +203,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -229,7 +223,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -250,7 +243,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -271,7 +263,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -292,7 +283,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -313,7 +303,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -334,7 +323,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -355,7 +343,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -376,7 +363,6 @@ object PermissionSeeder {
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
-            "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
             "events.view" to "ALL",
             "events.create" to "OWN_UNIT",
@@ -435,6 +421,7 @@ object PermissionSeeder {
         "Vadovas" to listOf(
             "items.view" to "ALL",
             "items.request.bendras" to "ALL",
+            "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
             "events.view" to "ALL",
@@ -444,20 +431,13 @@ object PermissionSeeder {
 
     fun seedPermissions() {
         transaction {
-            val existingCount = Permissions.selectAll().count()
-            if (existingCount > 0L) return@transaction
-
-            for (permName in globalPermissions) {
-                Permissions.insert {
-                    it[name] = permName
-                    it[context] = "GLOBAL"
-                }
-            }
-
-            for (permName in eventPermissions) {
-                Permissions.insert {
-                    it[name] = permName
-                    it[context] = "EVENT"
+            val allPermissions = globalPermissions.map { it to "GLOBAL" } + eventPermissions.map { it to "EVENT" }
+            for ((permName, ctx) in allPermissions) {
+                if (Permissions.selectAll().where { Permissions.name eq permName }.firstOrNull() == null) {
+                    Permissions.insert {
+                        it[name] = permName
+                        it[context] = ctx
+                    }
                 }
             }
         }

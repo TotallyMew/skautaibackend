@@ -340,6 +340,8 @@ CREATE TABLE draugove_requisition_items (
 -- Reservations
 CREATE TABLE reservations (
                               id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                              group_id UUID NOT NULL,
+                              title VARCHAR(200) NOT NULL,
                               item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
                               tuntas_id UUID NOT NULL REFERENCES tuntai(id),
                               reserved_by_user_id UUID NOT NULL REFERENCES users(id),
@@ -454,7 +456,8 @@ CREATE TABLE bendras_inventory_requests (
                                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                             tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
                                             requested_by_user_id UUID NOT NULL REFERENCES users(id),
-                                            item_id UUID NOT NULL REFERENCES items(id),
+                                            item_id UUID REFERENCES items(id),
+                                            item_description TEXT,
                                             quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
                                             event_id UUID REFERENCES events(id),
                                             requesting_unit_id UUID REFERENCES organizational_units(id),
@@ -465,12 +468,12 @@ CREATE TABLE bendras_inventory_requests (
                                             top_level_status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (top_level_status IN ('PENDING', 'APPROVED', 'REJECTED')),
                                             top_level_reviewed_by_user_id UUID REFERENCES users(id),
                                             top_level_rejection_reason TEXT,
-                                            start_date DATE NOT NULL,
-                                            end_date DATE NOT NULL,
+                                            start_date DATE,
+                                            end_date DATE,
                                             notes TEXT,
                                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                            CHECK (end_date >= start_date)
+                                            CHECK (item_id IS NOT NULL OR item_description IS NOT NULL)
 );
 
 CREATE TRIGGER update_bendras_inventory_requests_updated_at
@@ -506,6 +509,7 @@ CREATE INDEX idx_items_tuntas ON items(tuntas_id);
 CREATE INDEX idx_items_custodian ON items(custodian_id);
 CREATE INDEX idx_items_status ON items(status);
 CREATE INDEX idx_reservations_item ON reservations(item_id);
+CREATE INDEX idx_reservations_group ON reservations(group_id);
 CREATE INDEX idx_reservations_dates ON reservations(start_date, end_date);
 CREATE INDEX idx_reservations_status ON reservations(status);
 CREATE INDEX idx_sync_operations_status ON sync_operations(status);

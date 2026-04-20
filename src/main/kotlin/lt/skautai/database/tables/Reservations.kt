@@ -6,6 +6,8 @@ import org.jetbrains.exposed.sql.kotlin.datetime.timestamp
 
 object Reservations : Table("reservations") {
     val id = uuid("id").autoGenerate()
+    val groupId = uuid("group_id")
+    val title = varchar("title", 200)
     val itemId = uuid("item_id").references(Items.id)
     val tuntasId = uuid("tuntas_id").references(Tuntai.id)
     val reservedByUserId = uuid("reserved_by_user_id").references(Users.id)

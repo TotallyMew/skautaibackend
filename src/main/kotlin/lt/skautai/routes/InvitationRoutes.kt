@@ -9,6 +9,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import lt.skautai.models.requests.CreateInvitationRequest
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.plugins.checkPermission
 import lt.skautai.services.InvitationService
 import java.util.*
 
@@ -35,6 +36,16 @@ fun Route.invitationRoutes(invitationService: InvitationService) {
                 }
 
                 val request = call.receive<CreateInvitationRequest>()
+                val targetOrgUnitId = request.organizationalUnitId?.let {
+                    try {
+                        UUID.fromString(it)
+                    } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid organizational unit ID"))
+                    }
+                }
+
+                if (!checkPermission("invitations.create", tuntasUUID, targetOrgUnitId)) return@post
+
                 invitationService.createInvitation(userId, tuntasUUID, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create invitation")) }

@@ -3,9 +3,15 @@ package lt.skautai.models.requests
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class CreateReservationRequest(
+data class CreateReservationItemRequest(
     val itemId: String,
-    val quantity: Int = 1,
+    val quantity: Int = 1
+)
+
+@Serializable
+data class CreateReservationRequest(
+    val title: String,
+    val items: List<CreateReservationItemRequest>,
     val startDate: String,
     val endDate: String,
     val requestingUnitId: String? = null,
