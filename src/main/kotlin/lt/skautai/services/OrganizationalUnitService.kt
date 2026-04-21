@@ -347,6 +347,7 @@ class OrganizationalUnitService {
     }
 
     private fun toResponse(row: ResultRow): OrganizationalUnitResponse {
+        val unitId = row[OrganizationalUnits.id]
         val acceptedRankId = row[OrganizationalUnits.acceptedRankId]
         val acceptedRankName = acceptedRankId?.let {
             Roles.selectAll()
@@ -354,15 +355,33 @@ class OrganizationalUnitService {
                 .firstOrNull()
                 ?.get(Roles.name)
         }
+        val memberCount = UnitAssignments.selectAll()
+            .where {
+                (UnitAssignments.organizationalUnitId eq unitId) and
+                        (UnitAssignments.tuntasId eq row[OrganizationalUnits.tuntasId]) and
+                        (UnitAssignments.leftAt.isNull())
+            }
+            .count()
+            .toInt()
+        val itemCount = Items.selectAll()
+            .where {
+                (Items.custodianId eq unitId) and
+                        (Items.tuntasId eq row[OrganizationalUnits.tuntasId]) and
+                        (Items.status neq "INACTIVE")
+            }
+            .count()
+            .toInt()
 
         return OrganizationalUnitResponse(
-            id = row[OrganizationalUnits.id].toString(),
+            id = unitId.toString(),
             tuntasId = row[OrganizationalUnits.tuntasId].toString(),
             name = row[OrganizationalUnits.name],
             type = row[OrganizationalUnits.type],
             subType = row[OrganizationalUnits.subtype],
             acceptedRankId = acceptedRankId?.toString(),
             acceptedRankName = acceptedRankName,
+            memberCount = memberCount,
+            itemCount = itemCount,
             createdAt = row[OrganizationalUnits.createdAt].toString()
         )
     }

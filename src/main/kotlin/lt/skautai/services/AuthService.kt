@@ -98,6 +98,12 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 it[this.tuntasId] = tuntasId
             }
 
+            VadovasRankSupport.ensureVadovasRank(
+                userId = userId,
+                tuntasId = tuntasId,
+                assignedByUserId = userId
+            )
+
             val token = generateToken(userId.toString(), request.email, "user")
             Result.success(
                 TokenResponse(
@@ -167,12 +173,19 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
             // Insert into correct table based on role type
             when (role[Roles.roleType]) {
-                "LEADERSHIP" -> UserLeadershipRoles.insert {
-                    it[this.userId] = userId
-                    it[this.roleId] = roleId
-                    it[this.tuntasId] = tuntasId
-                    it[organizationalUnitId] = orgUnitId
-                    it[assignedByUserId] = invite[Invitations.createdByUserId]
+                "LEADERSHIP" -> {
+                    UserLeadershipRoles.insert {
+                        it[this.userId] = userId
+                        it[this.roleId] = roleId
+                        it[this.tuntasId] = tuntasId
+                        it[organizationalUnitId] = orgUnitId
+                        it[assignedByUserId] = invite[Invitations.createdByUserId]
+                    }
+                    VadovasRankSupport.ensureVadovasRank(
+                        userId = userId,
+                        tuntasId = tuntasId,
+                        assignedByUserId = invite[Invitations.createdByUserId]
+                    )
                 }
                 "RANK" -> UserRanks.insert {
                     it[this.userId] = userId

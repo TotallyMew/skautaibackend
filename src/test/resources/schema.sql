@@ -139,10 +139,13 @@ CREATE TABLE items (
                        origin VARCHAR(30) NOT NULL DEFAULT 'UNIT_ACQUIRED',
                        name VARCHAR(200) NOT NULL,
                        description TEXT,
-                       category VARCHAR(20) NOT NULL CHECK (category IN ('COLLECTIVE', 'ASSIGNED', 'INDIVIDUAL')),
+                       type VARCHAR(20) NOT NULL CHECK (type IN ('COLLECTIVE', 'ASSIGNED', 'INDIVIDUAL')),
+                       category VARCHAR(30) NOT NULL CHECK (category IN ('CAMPING', 'TOOLS', 'COOKING', 'FIRST_AID', 'UNIFORMS', 'BOOKS', 'PERSONAL_LOANS')),
                        condition VARCHAR(20) DEFAULT 'GOOD' CHECK (condition IN ('GOOD', 'DAMAGED', 'WRITTEN_OFF')),
                        quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
                        location_id UUID REFERENCES locations(id),
+                       temporary_storage_label VARCHAR(255),
+                       source_shared_item_id UUID REFERENCES items(id),
                        responsible_user_id UUID REFERENCES users(id),
                        created_by_user_id UUID REFERENCES users(id),
                        photo_url TEXT,
@@ -316,6 +319,12 @@ CREATE TABLE draugove_requisitions (
                                        created_by_user_id UUID NOT NULL REFERENCES users(id),
                                        reviewed_by_user_id UUID REFERENCES users(id),
                                        status VARCHAR(30) DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'SUBMITTED', 'PARTIALLY_APPROVED', 'APPROVED', 'REJECTED')),
+                                       unit_review_status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (unit_review_status IN ('PENDING', 'APPROVED', 'FORWARDED', 'REJECTED', 'SKIPPED')),
+                                       unit_reviewed_by_user_id UUID REFERENCES users(id),
+                                       unit_reviewed_at TIMESTAMP,
+                                       top_level_review_status VARCHAR(20) NOT NULL DEFAULT 'NOT_REQUIRED' CHECK (top_level_review_status IN ('NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED')),
+                                       top_level_reviewed_by_user_id UUID REFERENCES users(id),
+                                       top_level_reviewed_at TIMESTAMP,
                                        notes TEXT,
                                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -329,11 +338,14 @@ CREATE TRIGGER update_draugove_requisitions_updated_at
 CREATE TABLE draugove_requisition_items (
                                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                             requisition_id UUID NOT NULL REFERENCES draugove_requisitions(id) ON DELETE CASCADE,
-                                            item_id UUID NOT NULL REFERENCES items(id),
+                                            item_id UUID REFERENCES items(id),
+                                            item_name VARCHAR(200),
+                                            item_description TEXT,
                                             quantity_requested INTEGER NOT NULL CHECK (quantity_requested > 0),
                                             quantity_approved INTEGER CHECK (quantity_approved >= 0),
                                             rejection_reason TEXT,
                                             notes TEXT,
+                                            CHECK (item_id IS NOT NULL OR item_name IS NOT NULL),
                                             CHECK (quantity_approved <= quantity_requested)
 );
 
@@ -480,6 +492,13 @@ CREATE TRIGGER update_bendras_inventory_requests_updated_at
     BEFORE UPDATE ON bendras_inventory_requests
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TABLE bendras_inventory_request_items (
+                                                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                                request_id UUID NOT NULL REFERENCES bendras_inventory_requests(id) ON DELETE CASCADE,
+                                                item_id UUID NOT NULL REFERENCES items(id),
+                                                quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0)
+);
+
 -- Unit assignments (replaces user_draugove_memberships)
 CREATE TABLE unit_assignments (
                                   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -532,6 +551,7 @@ CREATE INDEX idx_bendras_inventory_requests_tuntas ON bendras_inventory_requests
 CREATE INDEX idx_bendras_inventory_requests_user ON bendras_inventory_requests(requested_by_user_id);
 CREATE INDEX idx_bendras_inventory_requests_item ON bendras_inventory_requests(item_id);
 CREATE INDEX idx_bendras_inventory_requests_top_status ON bendras_inventory_requests(top_level_status);
+CREATE INDEX idx_bendras_inventory_request_items_request ON bendras_inventory_request_items(request_id);
 CREATE INDEX idx_unit_assignments_user ON unit_assignments(user_id);
 CREATE INDEX idx_unit_assignments_tuntas ON unit_assignments(tuntas_id);
 CREATE INDEX idx_unit_assignments_unit ON unit_assignments(organizational_unit_id);

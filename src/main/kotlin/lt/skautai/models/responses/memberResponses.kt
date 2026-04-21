@@ -28,6 +28,15 @@ data class MemberRankResponse(
 )
 
 @Serializable
+data class MemberUnitAssignmentResponse(
+    val id: String,
+    val organizationalUnitId: String,
+    val organizationalUnitName: String,
+    val assignmentType: String,
+    val joinedAt: String
+)
+
+@Serializable
 data class MemberResponse(
     val userId: String,
     val name: String,
@@ -35,6 +44,7 @@ data class MemberResponse(
     val email: String,
     val phone: String? = null,
     val joinedAt: String,
+    val unitAssignments: List<MemberUnitAssignmentResponse> = emptyList(),
     val leadershipRoles: List<MemberLeadershipRoleResponse>,
     val ranks: List<MemberRankResponse>
 )

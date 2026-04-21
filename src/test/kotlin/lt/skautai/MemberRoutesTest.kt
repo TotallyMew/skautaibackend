@@ -296,7 +296,7 @@ class MemberRoutesTest {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
             val skautasRoleId = TestHelper.getRoleId(tuntasId, "Skautas")
-            setBody("""{ "roleId": "$skautasRoleId", "expiresAt": "2099-01-01T00:00:00Z" }""")
+            setBody("""{ "roleId": "$skautasRoleId" }""")
         }
         val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content
@@ -362,7 +362,7 @@ class MemberRoutesTest {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
             val skautasRoleId = TestHelper.getRoleId(tuntasId, "Skautas")
-            setBody("""{ "roleId": "$skautasRoleId", "expiresAt": "2099-01-01T00:00:00Z" }""")
+            setBody("""{ "roleId": "$skautasRoleId" }""")
         }
         val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content
@@ -425,7 +425,7 @@ class MemberRoutesTest {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
             val draugininkaasRoleId = TestHelper.getRoleId(tuntasId, "Draugininkas")
-            setBody("""{ "roleId": "$draugininkaasRoleId", "expiresAt": "2099-01-01T00:00:00Z" }""")
+            setBody("""{ "roleId": "$draugininkaasRoleId" }""")
         }
         val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content
@@ -491,7 +491,7 @@ class MemberRoutesTest {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
             val skautasRoleId = TestHelper.getRoleId(tuntasId, "Skautas")
-            setBody("""{ "roleId": "$skautasRoleId", "expiresAt": "2099-01-01T00:00:00Z" }""")
+            setBody("""{ "roleId": "$skautasRoleId" }""")
         }
         val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content

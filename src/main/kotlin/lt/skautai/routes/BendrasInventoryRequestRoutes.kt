@@ -15,6 +15,9 @@ import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.BendrasInventoryRequestService
 import java.util.*
 import lt.skautai.database.tables.BendrasInventoryRequests
+import lt.skautai.database.tables.Roles
+import lt.skautai.database.tables.UserLeadershipRoles
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -39,9 +42,11 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                 val isAdmin = userPerms.any {
                     it.permissionName == "items.request.approve.bendras" && it.scope == "ALL"
                 }
-                val unitIds = if (!isAdmin)
-                    userPerms.firstOrNull()?.userOrgUnitIds?.toList() ?: emptyList()
-                else emptyList()
+                val unitIds = if (isAdmin) {
+                    emptyList()
+                } else {
+                    resolveReviewableUnitIds(userId, tuntasUUID)
+                }
 
                 service.getAllRequests(tuntasUUID, userId, isAdmin, unitIds)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -49,6 +54,9 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
             }
 
             get("{id}") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
@@ -63,9 +71,27 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
                 }
 
-                service.getRequest(requestUUID, tuntasUUID)
+                val userPerms = resolveUserPermissions(userId, tuntasUUID)
+                val isAdmin = userPerms.any {
+                    it.permissionName == "items.request.approve.bendras" && it.scope == "ALL"
+                }
+                val unitIds = if (isAdmin) {
+                    emptyList()
+                } else {
+                    resolveReviewableUnitIds(userId, tuntasUUID)
+                }
+
+                service.getRequest(requestUUID, tuntasUUID, userId, isAdmin, unitIds)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
-                    .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Request not found")) }
+                    .onFailure {
+                        val message = it.message ?: "Request not found"
+                        val status = when {
+                            message.contains("not accessible", ignoreCase = true) -> HttpStatusCode.Forbidden
+                            message.contains("not found", ignoreCase = true) -> HttpStatusCode.NotFound
+                            else -> HttpStatusCode.BadRequest
+                        }
+                        call.respond(status, ErrorResponse(message))
+                    }
             }
 
             post {
@@ -169,5 +195,38 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to process review")) }
             }
         }
+    }
+}
+
+private fun resolveReviewableUnitIds(userId: UUID, tuntasId: UUID): List<UUID> {
+    val unitLeaderRoles = listOf(
+        "Draugininkas",
+        "Draugininko pavaduotojas",
+        "Gildijos pirmininkas",
+        "Gildijos pirmininko pavaduotojas",
+        "Vyr. skautu draugoves draugininkas",
+        "Vyr. skautu draugoves draugininko pavaduotojas",
+        "Vyr. skautu burelio pirmininkas",
+        "Vyr. skautu burelio pirmininko pavaduotojas",
+        "Vyr. skauciu draugoves draugininkas",
+        "Vyr. skauciu draugoves draugininko pavaduotojas",
+        "Vyr. skauciu burelio pirmininkas",
+        "Vyr. skauciu burelio pirmininko pavaduotojas"
+    )
+
+    return transaction {
+        UserLeadershipRoles
+            .innerJoin(Roles)
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.leftAt.isNull() and
+                    UserLeadershipRoles.organizationalUnitId.isNotNull() and
+                    (Roles.name inList unitLeaderRoles)
+            }
+            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
+            .distinct()
     }
 }

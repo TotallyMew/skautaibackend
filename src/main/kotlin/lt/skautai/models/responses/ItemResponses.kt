@@ -3,6 +3,12 @@ package lt.skautai.models.responses
 import kotlinx.serialization.Serializable
 
 @Serializable
+data class ItemDistributionResponse(
+    val holderName: String,
+    val quantity: Int
+)
+
+@Serializable
 data class ItemResponse(
     val id: String,
     val tuntasId: String,
@@ -11,15 +17,20 @@ data class ItemResponse(
     val origin: String,
     val name: String,
     val description: String? = null,
+    val type: String,
     val category: String,
     val condition: String,
     val quantity: Int,
     val locationId: String? = null,
+    val temporaryStorageLabel: String? = null,
+    val sourceSharedItemId: String? = null,
     val responsibleUserId: String? = null,
     val photoUrl: String? = null,
     val purchaseDate: String? = null,
     val purchasePrice: Double? = null,
     val notes: String? = null,
+    val quantityBreakdown: List<ItemDistributionResponse> = emptyList(),
+    val totalQuantityAcrossCustodians: Int = quantity,
     val status: String,
     val createdAt: String,
     val updatedAt: String

@@ -7,6 +7,7 @@ import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
 import lt.skautai.database.tables.Tuntai
 import lt.skautai.services.PermissionSeeder
+import lt.skautai.services.VadovasRankSupport
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -26,6 +27,7 @@ fun Application.module() {
             PermissionSeeder.seedRolePermissions(tuntasId)
         }
     }
+    VadovasRankSupport.backfillExistingLeadershipUsers()
 }
 
 fun Application.configureDatabases() {

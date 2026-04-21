@@ -11,6 +11,8 @@ data class OrganizationalUnitResponse(
     val subType: String? = null,
     val acceptedRankId: String? = null,
     val acceptedRankName: String? = null,
+    val memberCount: Int = 0,
+    val itemCount: Int = 0,
     val createdAt: String
 )
 

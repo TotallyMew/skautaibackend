@@ -18,6 +18,7 @@ class ItemService {
         tuntasId: UUID,
         requestingUserId: UUID,
         custodianId: String? = null,
+        type: String? = null,
         category: String? = null,
         status: String? = null
     ): Result<ItemListResponse> {
@@ -35,9 +36,14 @@ class ItemService {
                 val uuid = try { UUID.fromString(it) } catch (e: Exception) { null }
                 if (uuid != null) query = query.andWhere { Items.custodianId eq uuid }
             }
+            type?.let { query = query.andWhere { Items.type eq it } }
             category?.let { query = query.andWhere { Items.category eq it } }
             status?.let {
-                if (canSeeAll) query = query.andWhere { Items.status eq it }
+                if (canSeeAll) {
+                    query = query.andWhere { Items.status eq it }
+                } else if (it != "ACTIVE") {
+                    return@transaction Result.success(ItemListResponse(items = emptyList(), total = 0))
+                }
             }
 
             val items = query.map { toItemResponse(it) }
@@ -75,8 +81,12 @@ class ItemService {
         isPendingApproval: Boolean = false
     ): Result<ItemResponse> {
         return transaction {
-            if (request.category !in listOf("COLLECTIVE", "ASSIGNED", "INDIVIDUAL")) {
-                return@transaction Result.failure(Exception("Invalid category"))
+            if (request.type !in listOf("COLLECTIVE", "ASSIGNED", "INDIVIDUAL")) {
+                return@transaction Result.failure(Exception("Invalid inventory type"))
+            }
+
+            if (request.category !in listOf("CAMPING", "TOOLS", "COOKING", "FIRST_AID", "UNIFORMS", "BOOKS", "PERSONAL_LOANS")) {
+                return@transaction Result.failure(Exception("Invalid inventory category"))
             }
 
             if (request.origin !in listOf("UNIT_ACQUIRED", "TRANSFERRED_FROM_TUNTAS")) {
@@ -110,6 +120,12 @@ class ItemService {
                 }
             }
 
+            val sourceSharedItemUUID = request.sourceSharedItemId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid source shared item ID"))
+                }
+            }
+
             val responsibleUUID = request.responsibleUserId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid responsible user ID"))
@@ -128,9 +144,12 @@ class ItemService {
                 it[origin] = request.origin
                 it[name] = request.name
                 it[description] = request.description
+                it[type] = request.type
                 it[category] = request.category
                 it[quantity] = request.quantity
                 it[locationId] = locationUUID
+                it[temporaryStorageLabel] = request.temporaryStorageLabel
+                it[sourceSharedItemId] = sourceSharedItemUUID
                 it[responsibleUserId] = responsibleUUID
                 it[Items.createdByUserId] = createdByUserId
                 it[photoUrl] = request.photoUrl
@@ -167,9 +186,15 @@ class ItemService {
                 if (it < 1) return@transaction Result.failure(Exception("Quantity must be at least 1"))
             }
 
-            request.category?.let {
+            request.type?.let {
                 if (it !in listOf("COLLECTIVE", "ASSIGNED", "INDIVIDUAL")) {
-                    return@transaction Result.failure(Exception("Invalid category"))
+                    return@transaction Result.failure(Exception("Invalid inventory type"))
+                }
+            }
+
+            request.category?.let {
+                if (it !in listOf("CAMPING", "TOOLS", "COOKING", "FIRST_AID", "UNIFORMS", "BOOKS", "PERSONAL_LOANS")) {
+                    return@transaction Result.failure(Exception("Invalid inventory category"))
                 }
             }
 
@@ -197,6 +222,12 @@ class ItemService {
                 }
             }
 
+            val sourceSharedItemUUID = request.sourceSharedItemId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid source shared item ID"))
+                }
+            }
+
             val responsibleUUID = request.responsibleUserId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid responsible user ID"))
@@ -212,6 +243,7 @@ class ItemService {
             Items.update({ (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }) {
                 request.name?.let { v -> it[name] = v }
                 request.description?.let { v -> it[description] = v }
+                request.type?.let { v -> it[type] = v }
                 request.category?.let { v -> it[category] = v }
                 request.condition?.let { v -> it[condition] = v }
                 request.quantity?.let { v -> it[quantity] = v }
@@ -221,6 +253,8 @@ class ItemService {
                 request.status?.let { v -> it[status] = v }
                 custodianUUID?.let { v -> it[custodianId] = v }
                 locationUUID?.let { v -> it[locationId] = v }
+                request.temporaryStorageLabel?.let { v -> it[temporaryStorageLabel] = v }
+                sourceSharedItemUUID?.let { v -> it[sourceSharedItemId] = v }
                 responsibleUUID?.let { v -> it[responsibleUserId] = v }
                 purchaseDate?.let { v -> it[this.purchaseDate] = v }
             }
@@ -283,6 +317,29 @@ class ItemService {
                 ?.get(OrganizationalUnits.name)
         }
 
+        val quantityBreakdown = if (custodianId == null) {
+            Items.selectAll()
+                .where {
+                    (Items.sourceSharedItemId eq row[Items.id]) and
+                        (Items.status eq "ACTIVE")
+                }
+                .mapNotNull { linked ->
+                    val linkedCustodianId = linked[Items.custodianId] ?: return@mapNotNull null
+                    val holderName = OrganizationalUnits.selectAll()
+                        .where { OrganizationalUnits.id eq linkedCustodianId }
+                        .firstOrNull()
+                        ?.get(OrganizationalUnits.name)
+                        ?: return@mapNotNull null
+                    lt.skautai.models.responses.ItemDistributionResponse(
+                        holderName = holderName,
+                        quantity = linked[Items.quantity]
+                    )
+                }
+        } else {
+            emptyList()
+        }
+        val totalQuantityAcrossCustodians = row[Items.quantity] + quantityBreakdown.sumOf { it.quantity }
+
         return ItemResponse(
             id = row[Items.id].toString(),
             tuntasId = row[Items.tuntasId].toString(),
@@ -291,15 +348,20 @@ class ItemService {
             origin = row[Items.origin],
             name = row[Items.name],
             description = row[Items.description],
-            category = row[Items.category],
+                type = row[Items.type],
+                category = row[Items.category],
             condition = row[Items.condition],
             quantity = row[Items.quantity],
             locationId = row[Items.locationId]?.toString(),
+            temporaryStorageLabel = row[Items.temporaryStorageLabel],
+            sourceSharedItemId = row[Items.sourceSharedItemId]?.toString(),
             responsibleUserId = row[Items.responsibleUserId]?.toString(),
             photoUrl = row[Items.photoUrl],
             purchaseDate = row[Items.purchaseDate]?.toString(),
             purchasePrice = row[Items.purchasePrice]?.toDouble(),
             notes = row[Items.notes],
+            quantityBreakdown = quantityBreakdown,
+            totalQuantityAcrossCustodians = totalQuantityAcrossCustodians,
             status = row[Items.status],
             createdAt = row[Items.createdAt].toString(),
             updatedAt = row[Items.updatedAt].toString()

@@ -3,6 +3,14 @@ package lt.skautai.models.responses
 import kotlinx.serialization.Serializable
 
 @Serializable
+data class BendrasInventoryRequestItemResponse(
+    val id: String,
+    val itemId: String,
+    val itemName: String,
+    val quantity: Int
+)
+
+@Serializable
 data class BendrasInventoryRequestResponse(
     val id: String,
     val tuntasId: String,
@@ -23,6 +31,7 @@ data class BendrasInventoryRequestResponse(
     val topLevelReviewedByUserId: String? = null,
     val topLevelRejectionReason: String? = null,
     val notes: String? = null,
+    val items: List<BendrasInventoryRequestItemResponse> = emptyList(),
     val createdAt: String,
     val updatedAt: String
 )

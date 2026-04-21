@@ -3,6 +3,12 @@ package lt.skautai.models.requests
 import kotlinx.serialization.Serializable
 
 @Serializable
+data class CreateBendrasInventoryRequestItemRequest(
+    val itemId: String,
+    val quantity: Int = 1
+)
+
+@Serializable
 data class CreateBendrasInventoryRequestRequest(
     val itemId: String? = null,
     val itemDescription: String? = null,
@@ -10,7 +16,8 @@ data class CreateBendrasInventoryRequestRequest(
     val neededByDate: String? = null,
     val requestingUnitId: String? = null,
     val needsDraugininkasApproval: Boolean? = null,
-    val notes: String? = null
+    val notes: String? = null,
+    val items: List<CreateBendrasInventoryRequestItemRequest> = emptyList()
 )
 
 @Serializable

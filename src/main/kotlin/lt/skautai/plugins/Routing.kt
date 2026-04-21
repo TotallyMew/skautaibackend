@@ -10,6 +10,7 @@ import lt.skautai.routes.superAdminRoutes
 import lt.skautai.routes.locationRoutes
 import lt.skautai.routes.memberRoutes
 import lt.skautai.routes.organizationalUnitRoutes
+import lt.skautai.routes.requisitionRoutes
 import lt.skautai.services.AuthService
 import lt.skautai.services.InvitationService
 import lt.skautai.services.ItemService
@@ -22,6 +23,7 @@ import lt.skautai.routes.eventRoutes
 import lt.skautai.routes.userRoutes
 import lt.skautai.services.BendrasInventoryRequestService
 import lt.skautai.services.EventService
+import lt.skautai.services.RequisitionService
 import lt.skautai.routes.rolesRoutes
 
 fun Application.configureRouting() {
@@ -34,6 +36,7 @@ fun Application.configureRouting() {
     val reservationService = ReservationService()
     val eventService = EventService()
     val bendrasInventoryRequestService = BendrasInventoryRequestService()
+    val requisitionService = RequisitionService()
 
     routing {
         authRoutes(authService)
@@ -46,6 +49,7 @@ fun Application.configureRouting() {
         reservationRoutes(reservationService)
         eventRoutes(eventService)
         bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
+        requisitionRoutes(requisitionService)
         userRoutes()
         rolesRoutes()
     }

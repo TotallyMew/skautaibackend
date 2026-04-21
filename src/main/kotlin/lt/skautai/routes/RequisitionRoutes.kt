@@ -1,0 +1,209 @@
+package lt.skautai.routes
+
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.auth.authenticate
+import io.ktor.server.auth.jwt.JWTPrincipal
+import io.ktor.server.auth.principal
+import io.ktor.server.request.receive
+import io.ktor.server.response.respond
+import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
+import io.ktor.server.routing.post
+import io.ktor.server.routing.route
+import lt.skautai.models.requests.CreateRequisitionRequest
+import lt.skautai.models.requests.RequisitionTopLevelReviewRequest
+import lt.skautai.models.requests.RequisitionUnitReviewRequest
+import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.plugins.checkPermission
+import lt.skautai.plugins.resolveUserPermissions
+import lt.skautai.services.RequisitionService
+import java.util.UUID
+import lt.skautai.database.tables.Roles
+import lt.skautai.database.tables.UserLeadershipRoles
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.innerJoin
+import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.transactions.transaction
+
+fun Route.requisitionRoutes(service: RequisitionService) {
+    authenticate("auth-jwt") {
+        route("/api/requisitions") {
+            get {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try {
+                    UUID.fromString(tuntasId)
+                } catch (_: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!checkPermission("items.view", tuntasUUID)) return@get
+
+                val permissions = resolveUserPermissions(userId, tuntasUUID)
+                val isTopLevelReviewer = permissions.any {
+                    it.permissionName == "requisitions.approve" && it.scope == "ALL"
+                }
+                val reviewableUnitIds = if (isTopLevelReviewer) emptyList() else resolveRequisitionReviewableUnitIds(userId, tuntasUUID)
+
+                service.getAllRequests(tuntasUUID, userId, isTopLevelReviewer, reviewableUnitIds)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch requisitions")) }
+            }
+
+            get("{id}") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try {
+                    UUID.fromString(tuntasId)
+                } catch (_: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!checkPermission("items.view", tuntasUUID)) return@get
+
+                val requestId = call.parameters["id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Request ID required"))
+                val requestUUID = try {
+                    UUID.fromString(requestId)
+                } catch (_: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
+                }
+
+                val permissions = resolveUserPermissions(userId, tuntasUUID)
+                val isTopLevelReviewer = permissions.any {
+                    it.permissionName == "requisitions.approve" && it.scope == "ALL"
+                }
+                val reviewableUnitIds = if (isTopLevelReviewer) emptyList() else resolveRequisitionReviewableUnitIds(userId, tuntasUUID)
+
+                service.getRequest(requestUUID, tuntasUUID, userId, isTopLevelReviewer, reviewableUnitIds)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure {
+                        val message = it.message ?: "Request not found"
+                        val status = if (message.contains("accessible", ignoreCase = true)) {
+                            HttpStatusCode.Forbidden
+                        } else {
+                            HttpStatusCode.NotFound
+                        }
+                        call.respond(status, ErrorResponse(message))
+                    }
+            }
+
+            post {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try {
+                    UUID.fromString(tuntasId)
+                } catch (_: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!checkPermission("items.view", tuntasUUID)) return@post
+
+                val request = call.receive<CreateRequisitionRequest>()
+                service.createRequest(tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create requisition")) }
+            }
+
+            post("{id}/unit-review") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try {
+                    UUID.fromString(tuntasId)
+                } catch (_: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!checkPermission("items.view", tuntasUUID)) return@post
+
+                val requestId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Request ID required"))
+                val requestUUID = try {
+                    UUID.fromString(requestId)
+                } catch (_: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
+                }
+
+                val request = call.receive<RequisitionUnitReviewRequest>()
+                service.unitReview(requestUUID, tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to process unit review")) }
+            }
+
+            post("{id}/top-level-review") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try {
+                    UUID.fromString(tuntasId)
+                } catch (_: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!checkPermission("requisitions.approve", tuntasUUID)) return@post
+
+                val requestId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Request ID required"))
+                val requestUUID = try {
+                    UUID.fromString(requestId)
+                } catch (_: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
+                }
+
+                val request = call.receive<RequisitionTopLevelReviewRequest>()
+                service.topLevelReview(requestUUID, tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to process top-level review")) }
+            }
+        }
+    }
+}
+
+private fun resolveRequisitionReviewableUnitIds(userId: UUID, tuntasId: UUID): List<UUID> {
+    val unitLeaderRoles = listOf(
+        "Draugininkas",
+        "Draugininko pavaduotojas",
+        "Gildijos pirmininkas",
+        "Gildijos pirmininko pavaduotojas",
+        "Vyr. skautu draugoves draugininkas",
+        "Vyr. skautu draugoves draugininko pavaduotojas",
+        "Vyr. skautu burelio pirmininkas",
+        "Vyr. skautu burelio pirmininko pavaduotojas",
+        "Vyr. skauciu draugoves draugininkas",
+        "Vyr. skauciu draugoves draugininko pavaduotojas",
+        "Vyr. skauciu burelio pirmininkas",
+        "Vyr. skauciu burelio pirmininko pavaduotojas"
+    )
+
+    return transaction {
+        UserLeadershipRoles
+            .innerJoin(Roles)
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.leftAt.isNull() and
+                    UserLeadershipRoles.organizationalUnitId.isNotNull() and
+                    (Roles.name inList unitLeaderRoles)
+            }
+            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
+            .distinct()
+    }
+}

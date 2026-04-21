@@ -6,6 +6,9 @@ import io.ktor.server.auth.jwt.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import lt.skautai.database.tables.Roles
+import lt.skautai.database.tables.UserLeadershipRoles
+import lt.skautai.database.tables.UserRanks
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.responses.ErrorResponse
@@ -13,6 +16,10 @@ import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.ItemScopeHelper
 import lt.skautai.services.ItemService
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.innerJoin
+import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.*
 
 fun Route.itemRoutes(itemService: ItemService) {
@@ -32,10 +39,11 @@ fun Route.itemRoutes(itemService: ItemService) {
                 if (!checkPermission("items.view", tuntasUUID)) return@get
 
                 val custodianId = call.request.queryParameters["custodianId"]
+                val type = call.request.queryParameters["type"]
                 val category = call.request.queryParameters["category"]
                 val status = call.request.queryParameters["status"]
 
-                itemService.getItems(tuntasUUID, userId, custodianId, category, status)
+                itemService.getItems(tuntasUUID, userId, custodianId, type, category, status)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch items")) }
             }
@@ -79,19 +87,25 @@ fun Route.itemRoutes(itemService: ItemService) {
                     try { UUID.fromString(it) } catch (e: Exception) { null }
                 }
 
-                val isPendingApproval: Boolean
-                if (targetOrgUnitId != null) {
-                    // Assigning to a specific unit — use normal scope check
+                val isPendingApproval: Boolean = if (targetOrgUnitId != null) {
+                    // Assigning to a specific unit uses normal scope check.
                     if (!checkPermission("items.create", tuntasUUID, targetOrgUnitId)) return@post
-                    isPendingApproval = false
+                    false
                 } else {
-                    // Tuntas shared storage — only ALL-scope users allowed (draugininkas cannot create shared items)
+                    // Tuntas shared storage: top-level users create directly;
+                    // unit leaders and Vadovas submit into the approval queue.
                     val userPerms = resolveUserPermissions(userId, tuntasUUID)
-                    val createPerm = userPerms.find { it.permissionName == "items.create" }
-                    if (createPerm == null || createPerm.scope != "ALL") {
+                    val canCreateDirectly = userPerms.any {
+                        it.permissionName == "items.create" && it.scope == "ALL"
+                    }
+                    val canSubmitForApproval = userPerms.any {
+                        it.permissionName == "items.create" && it.scope == "OWN_UNIT"
+                    } || userHasAnyRole(userId, tuntasUUID, sharedInventoryAdditionRequesterRoles)
+
+                    if (!canCreateDirectly && !canSubmitForApproval) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                     }
-                    isPendingApproval = false
+                    !canCreateDirectly
                 }
 
                 itemService.createItem(tuntasUUID, userId, request, isPendingApproval)
@@ -148,6 +162,52 @@ fun Route.itemRoutes(itemService: ItemService) {
                     .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Item deactivated")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to delete item")) }
             }
+        }
+    }
+}
+
+private val sharedInventoryAdditionRequesterRoles = setOf(
+    "Draugininkas",
+    "Draugininko pavaduotojas",
+    "Gildijos pirmininkas",
+    "Gildijos pirmininko pavaduotojas",
+    "Vyr. skautu draugoves draugininkas",
+    "Vyr. skautu draugoves draugininko pavaduotojas",
+    "Vyr. skautu burelio pirmininkas",
+    "Vyr. skautu burelio pirmininko pavaduotojas",
+    "Vyr. skauciu draugoves draugininkas",
+    "Vyr. skauciu draugoves draugininko pavaduotojas",
+    "Vyr. skauciu burelio pirmininkas",
+    "Vyr. skauciu burelio pirmininko pavaduotojas",
+    "Vadovas"
+)
+
+private fun userHasAnyRole(userId: UUID, tuntasId: UUID, roleNames: Set<String>): Boolean {
+    return transaction {
+        val hasLeadershipRole = UserLeadershipRoles
+            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull()) and
+                    (Roles.name inList roleNames)
+            }
+            .firstOrNull() != null
+
+        if (hasLeadershipRole) {
+            true
+        } else {
+            UserRanks
+                .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
+                .selectAll()
+                .where {
+                    (UserRanks.userId eq userId) and
+                        (UserRanks.tuntasId eq tuntasId) and
+                        (Roles.name inList roleNames)
+                }
+                .firstOrNull() != null
         }
     }
 }

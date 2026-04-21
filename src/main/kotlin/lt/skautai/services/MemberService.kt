@@ -123,6 +123,12 @@ class MemberService {
                 .where { UserLeadershipRoles.id eq assignmentId }
                 .first()
 
+            VadovasRankSupport.ensureVadovasRank(
+                userId = targetUserId,
+                tuntasId = tuntasId,
+                assignedByUserId = assignedByUserId
+            )
+
             Result.success(
                 toLeadershipRoleResponse(
                     assignment,
@@ -331,6 +337,24 @@ class MemberService {
             }
             .map { row -> toRankResponse(row, row[Roles.name]) }
 
+        val unitAssignments = UnitAssignments
+            .innerJoin(OrganizationalUnits, { UnitAssignments.organizationalUnitId }, { OrganizationalUnits.id })
+            .selectAll()
+            .where {
+                (UnitAssignments.userId eq userId) and
+                        (UnitAssignments.tuntasId eq tuntasId) and
+                        (UnitAssignments.leftAt.isNull())
+            }
+            .map { row ->
+                MemberUnitAssignmentResponse(
+                    id = row[UnitAssignments.id].toString(),
+                    organizationalUnitId = row[UnitAssignments.organizationalUnitId].toString(),
+                    organizationalUnitName = row[OrganizationalUnits.name],
+                    assignmentType = row[UnitAssignments.assignmentType],
+                    joinedAt = row[UnitAssignments.joinedAt].toString()
+                )
+            }
+
         return MemberResponse(
             userId = membershipRow[Users.id].toString(),
             name = membershipRow[Users.name],
@@ -338,6 +362,7 @@ class MemberService {
             email = membershipRow[Users.email],
             phone = membershipRow[Users.phone],
             joinedAt = membershipRow[UserTuntasMemberships.joinedAt].toString(),
+            unitAssignments = unitAssignments,
             leadershipRoles = leadershipRoles,
             ranks = ranks
         )
