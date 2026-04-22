@@ -1,6 +1,7 @@
 package lt.skautai.services
 
 import lt.skautai.database.tables.*
+import lt.skautai.models.requests.AcceptInvitationRequest
 import lt.skautai.models.requests.CreateInvitationRequest
 import lt.skautai.models.responses.InvitationResponse
 import lt.skautai.plugins.resolveUserPermissions
@@ -59,6 +60,9 @@ class InvitationService {
             validateOwnUnitInvitation(userId, tuntasId, roleUUID, orgUnitUUID)
                 ?.let { return@transaction Result.failure(Exception(it)) }
 
+            LeadershipRoleRules.validatePrincipalUnitLeaderSlot(roleUUID, tuntasId, orgUnitUUID)
+                ?.let { return@transaction Result.failure(Exception(it)) }
+
             val code = generateCode()
             val expiresAt = Clock.System.now().plus(request.expiresInHours.hours)
 
@@ -76,7 +80,172 @@ class InvitationService {
                     code = code,
                     roleName = role[Roles.name],
                     tuntasName = tuntas[Tuntai.name],
-                    expiresAt = expiresAt.toString()
+                    expiresAt = expiresAt.toString(),
+                    organizationalUnitId = orgUnitUUID?.toString(),
+                    organizationalUnitName = orgUnitUUID?.let { getOrgUnitName(it) }
+                )
+            )
+        }
+    }
+
+    fun acceptInvitation(
+        userId: UUID,
+        activeTuntasId: UUID,
+        request: AcceptInvitationRequest
+    ): Result<InvitationResponse> {
+        return transaction {
+            val code = request.code.trim().uppercase()
+            if (code.isBlank()) {
+                return@transaction Result.failure(Exception("Invite code is required"))
+            }
+
+            val invite = Invitations.selectAll()
+                .where { Invitations.code eq code }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Invalid invite code"))
+
+            if (invite[Invitations.usedByUserId] != null) {
+                return@transaction Result.failure(Exception("Invite code already used"))
+            }
+
+            val now = Clock.System.now()
+            if (invite[Invitations.expiresAt] < now) {
+                return@transaction Result.failure(Exception("Invite code expired"))
+            }
+
+            val inviteTuntasId = invite[Invitations.tuntasId]
+            if (inviteTuntasId != activeTuntasId) {
+                return@transaction Result.failure(Exception("Invite code belongs to another tuntas"))
+            }
+
+            val tuntas = Tuntai.selectAll()
+                .where { Tuntai.id eq activeTuntasId }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Tuntas not found"))
+
+            if (tuntas[Tuntai.status] != "ACTIVE") {
+                return@transaction Result.failure(Exception("Tuntas is not active"))
+            }
+
+            UserTuntasMemberships.selectAll()
+                .where {
+                    (UserTuntasMemberships.userId eq userId) and
+                        (UserTuntasMemberships.tuntasId eq activeTuntasId) and
+                        UserTuntasMemberships.leftAt.isNull()
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("You must already be a member of this tuntas"))
+
+            val roleId = invite[Invitations.roleId]
+            val role = Roles.selectAll()
+                .where {
+                    (Roles.id eq roleId) and
+                        (Roles.tuntasId eq activeTuntasId)
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Role not found in this tuntas"))
+
+            val orgUnitId = invite[Invitations.organizationalUnitId]
+            if (orgUnitId != null) {
+                OrganizationalUnits.selectAll()
+                    .where {
+                        (OrganizationalUnits.id eq orgUnitId) and
+                            (OrganizationalUnits.tuntasId eq activeTuntasId)
+                    }
+                    .firstOrNull()
+                    ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
+
+                validatePrimaryUnitAssignment(userId, activeTuntasId, orgUnitId)
+                    ?.let { return@transaction Result.failure(Exception(it)) }
+            }
+
+            when (role[Roles.roleType]) {
+                "LEADERSHIP" -> {
+                    LeadershipRoleRules.validatePrincipalUnitLeaderSlot(roleId, activeTuntasId, orgUnitId)
+                        ?.let { return@transaction Result.failure(Exception(it)) }
+
+                    val exists = UserLeadershipRoles.selectAll()
+                        .where {
+                            (UserLeadershipRoles.userId eq userId) and
+                                (UserLeadershipRoles.roleId eq roleId) and
+                                (UserLeadershipRoles.tuntasId eq activeTuntasId) and
+                                (UserLeadershipRoles.organizationalUnitId eq orgUnitId) and
+                                (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                                UserLeadershipRoles.leftAt.isNull()
+                        }
+                        .firstOrNull() != null
+
+                    if (!exists) {
+                        UserLeadershipRoles.insert {
+                            it[this.userId] = userId
+                            it[this.roleId] = roleId
+                            it[tuntasId] = activeTuntasId
+                            it[organizationalUnitId] = orgUnitId
+                            it[assignedByUserId] = invite[Invitations.createdByUserId]
+                        }
+                    }
+                    VadovasRankSupport.ensureVadovasRank(
+                        userId = userId,
+                        tuntasId = activeTuntasId,
+                        assignedByUserId = invite[Invitations.createdByUserId]
+                    )
+                }
+                "RANK" -> {
+                    val exists = UserRanks.selectAll()
+                        .where {
+                            (UserRanks.userId eq userId) and
+                                (UserRanks.roleId eq roleId) and
+                                (UserRanks.tuntasId eq activeTuntasId)
+                        }
+                        .firstOrNull() != null
+
+                    if (!exists) {
+                        UserRanks.insert {
+                            it[this.userId] = userId
+                            it[this.roleId] = roleId
+                            it[tuntasId] = activeTuntasId
+                            it[assignedByUserId] = invite[Invitations.createdByUserId]
+                        }
+                    }
+                }
+                else -> return@transaction Result.failure(Exception("Unknown role type"))
+            }
+
+            if (orgUnitId != null) {
+                val unitAssignmentExists = UnitAssignments.selectAll()
+                    .where {
+                        (UnitAssignments.userId eq userId) and
+                            (UnitAssignments.organizationalUnitId eq orgUnitId) and
+                            (UnitAssignments.tuntasId eq activeTuntasId) and
+                            (UnitAssignments.assignmentType eq "MEMBER") and
+                            UnitAssignments.leftAt.isNull()
+                    }
+                    .firstOrNull() != null
+
+                if (!unitAssignmentExists) {
+                    UnitAssignments.insert {
+                        it[this.userId] = userId
+                        it[organizationalUnitId] = orgUnitId
+                        it[tuntasId] = activeTuntasId
+                        it[assignmentType] = "MEMBER"
+                        it[assignedByUserId] = invite[Invitations.createdByUserId]
+                    }
+                }
+            }
+
+            Invitations.update({ Invitations.id eq invite[Invitations.id] }) {
+                it[usedByUserId] = userId
+                it[usedAt] = now
+            }
+
+            Result.success(
+                InvitationResponse(
+                    code = code,
+                    roleName = role[Roles.name],
+                    tuntasName = tuntas[Tuntai.name],
+                    expiresAt = invite[Invitations.expiresAt].toString(),
+                    organizationalUnitId = orgUnitId?.toString(),
+                    organizationalUnitName = orgUnitId?.let { getOrgUnitName(it) }
                 )
             )
         }
@@ -225,6 +394,46 @@ class InvitationService {
     private fun generateCode(): String {
         val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         return (1..8).map { chars.random() }.joinToString("")
+    }
+
+    private fun validatePrimaryUnitAssignment(
+        userId: UUID,
+        tuntasId: UUID,
+        targetOrgUnitId: UUID
+    ): String? {
+        val targetUnit = OrganizationalUnits.selectAll()
+            .where {
+                (OrganizationalUnits.id eq targetOrgUnitId) and
+                    (OrganizationalUnits.tuntasId eq tuntasId)
+            }
+            .firstOrNull()
+            ?: return "Organizational unit not found in this tuntas"
+
+        val existingPrimary = UnitAssignments
+            .innerJoin(OrganizationalUnits, { UnitAssignments.organizationalUnitId }, { OrganizationalUnits.id })
+            .selectAll()
+            .where {
+                (UnitAssignments.userId eq userId) and
+                    (UnitAssignments.tuntasId eq tuntasId) and
+                    (UnitAssignments.assignmentType eq "MEMBER") and
+                    UnitAssignments.leftAt.isNull() and
+                    (OrganizationalUnits.type eq targetUnit[OrganizationalUnits.type]) and
+                    (UnitAssignments.organizationalUnitId neq targetOrgUnitId)
+            }
+            .firstOrNull()
+
+        return if (existingPrimary != null) {
+            "User already has an active primary membership in a unit of this type"
+        } else {
+            null
+        }
+    }
+
+    private fun getOrgUnitName(orgUnitId: UUID): String? {
+        return OrganizationalUnits.selectAll()
+            .where { OrganizationalUnits.id eq orgUnitId }
+            .firstOrNull()
+            ?.get(OrganizationalUnits.name)
     }
 
     private data class OwnUnitInviteContext(

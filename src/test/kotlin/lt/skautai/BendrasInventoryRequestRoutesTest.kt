@@ -44,7 +44,7 @@ class BendrasInventoryRequestRoutesTest {
             setBody("""
             {
                 "name": "$name",
-                "category": "COLLECTIVE",
+                "type": "COLLECTIVE", "category": "CAMPING",
                 "quantity": $quantity
             }
         """.trimIndent())
@@ -104,6 +104,28 @@ class BendrasInventoryRequestRoutesTest {
             .jsonObject["id"]!!.jsonPrimitive.content
     }
 
+    private fun firstMemberId(tuntasId: String): String = transaction {
+        var id = ""
+        exec("SELECT user_id FROM user_tuntas_memberships WHERE tuntas_id = '$tuntasId' LIMIT 1") { rs ->
+            if (rs.next()) id = rs.getString("user_id")
+        }
+        id
+    }
+
+    private suspend fun ApplicationTestBuilder.assignToUnit(
+        token: String,
+        tuntasId: String,
+        unitId: String,
+        userId: String
+    ) {
+        client.post("/api/organizational-units/$unitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$userId", "assignmentType": "MEMBER" }""")
+        }
+    }
+
     @Test
     fun `create bendras request as Skautas with draugove requires draugininkas approval`() = testApplication {
         configureFullApp()
@@ -148,8 +170,15 @@ class BendrasInventoryRequestRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = createItem(token, tuntasId)
+        val draugoveId = createDraugove(token, tuntasId)
 
         val (draugininkasToken, _) = registerSecondUser(token, tuntasId, "Draugininkas")
+        val draugininkasId = transaction {
+            var id = ""
+            exec("SELECT id FROM users WHERE email = 'second@test.com' LIMIT 1") { rs -> if (rs.next()) id = rs.getString("id") }
+            id
+        }
+        assignToUnit(token, tuntasId, draugoveId, draugininkasId)
 
         val response = client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
@@ -161,6 +190,7 @@ class BendrasInventoryRequestRoutesTest {
                     "quantity": 1,
                     "startDate": "2099-01-01",
                     "endDate": "2099-01-10"
+                    ,"requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }
@@ -176,6 +206,8 @@ class BendrasInventoryRequestRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = createItem(token, tuntasId)
+        val draugoveId = createDraugove(token, tuntasId)
+        assignToUnit(token, tuntasId, draugoveId, firstMemberId(tuntasId))
 
         client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
@@ -186,7 +218,8 @@ class BendrasInventoryRequestRoutesTest {
                     "itemId": "$itemId",
                     "quantity": 1,
                     "startDate": "2099-01-01",
-                    "endDate": "2099-01-10"
+                    "endDate": "2099-01-10",
+                    "requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }
@@ -206,6 +239,8 @@ class BendrasInventoryRequestRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = createItem(token, tuntasId)
+        val draugoveId = createDraugove(token, tuntasId)
+        assignToUnit(token, tuntasId, draugoveId, firstMemberId(tuntasId))
 
         val createResponse = client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
@@ -216,7 +251,8 @@ class BendrasInventoryRequestRoutesTest {
                     "itemId": "$itemId",
                     "quantity": 1,
                     "startDate": "2099-01-01",
-                    "endDate": "2099-01-10"
+                    "endDate": "2099-01-10",
+                    "requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }
@@ -238,6 +274,8 @@ class BendrasInventoryRequestRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = createItem(token, tuntasId)
+        val draugoveId = createDraugove(token, tuntasId)
+        assignToUnit(token, tuntasId, draugoveId, firstMemberId(tuntasId))
 
         val createResponse = client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
@@ -248,7 +286,8 @@ class BendrasInventoryRequestRoutesTest {
                     "itemId": "$itemId",
                     "quantity": 1,
                     "startDate": "2099-01-01",
-                    "endDate": "2099-01-10"
+                    "endDate": "2099-01-10",
+                    "requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }
@@ -268,6 +307,8 @@ class BendrasInventoryRequestRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = createItem(token, tuntasId)
+        val draugoveId = createDraugove(token, tuntasId)
+        assignToUnit(token, tuntasId, draugoveId, firstMemberId(tuntasId))
 
         val createResponse = client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
@@ -278,7 +319,8 @@ class BendrasInventoryRequestRoutesTest {
                     "itemId": "$itemId",
                     "quantity": 1,
                     "startDate": "2099-01-01",
-                    "endDate": "2099-01-10"
+                    "endDate": "2099-01-10",
+                    "requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }
@@ -379,10 +421,12 @@ class BendrasInventoryRequestRoutesTest {
     }
 
     @Test
-    fun `top level approve creates reservation automatically`() = testApplication {
+    fun `top level approve transfers shared item to requesting unit`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = createItem(token, tuntasId)
+        val draugoveId = createDraugove(token, tuntasId)
+        assignToUnit(token, tuntasId, draugoveId, firstMemberId(tuntasId))
 
         // Tuntininkas creates and approves own request (no draugininkas needed)
         val createResponse = client.post("/api/inventory-requests") {
@@ -394,7 +438,8 @@ class BendrasInventoryRequestRoutesTest {
                     "itemId": "$itemId",
                     "quantity": 1,
                     "startDate": "2099-01-01",
-                    "endDate": "2099-01-10"
+                    "endDate": "2099-01-10",
+                    "requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }
@@ -412,20 +457,27 @@ class BendrasInventoryRequestRoutesTest {
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals("APPROVED", body["topLevelStatus"]?.jsonPrimitive?.content)
 
-        // Verify reservation was auto-created
+        // Verify shared inventory was transferred to the requesting unit.
         transaction {
-            exec("SELECT COUNT(*) as cnt FROM reservations WHERE item_id = '$itemId' AND status = 'APPROVED'") { rs ->
+            exec("SELECT COUNT(*) as cnt FROM item_transfers WHERE item_id = '$itemId' AND to_custodian_id = '$draugoveId'") { rs ->
                 assertTrue(rs.next())
                 assertEquals(1, rs.getInt("cnt"))
+            }
+            exec("SELECT quantity, origin FROM items WHERE source_shared_item_id = '$itemId' AND custodian_id = '$draugoveId'") { rs ->
+                assertTrue(rs.next())
+                assertEquals(1, rs.getInt("quantity"))
+                assertEquals("TRANSFERRED_FROM_TUNTAS", rs.getString("origin"))
             }
         }
     }
 
     @Test
-    fun `top level reject does not create reservation`() = testApplication {
+    fun `top level reject does not transfer shared item`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = createItem(token, tuntasId)
+        val draugoveId = createDraugove(token, tuntasId)
+        assignToUnit(token, tuntasId, draugoveId, firstMemberId(tuntasId))
 
         val createResponse = client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
@@ -436,7 +488,8 @@ class BendrasInventoryRequestRoutesTest {
                     "itemId": "$itemId",
                     "quantity": 1,
                     "startDate": "2099-01-01",
-                    "endDate": "2099-01-10"
+                    "endDate": "2099-01-10",
+                    "requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }
@@ -453,7 +506,7 @@ class BendrasInventoryRequestRoutesTest {
         assertEquals(HttpStatusCode.OK, response.status)
 
         transaction {
-            exec("SELECT COUNT(*) as cnt FROM reservations WHERE item_id = '$itemId'") { rs ->
+            exec("SELECT COUNT(*) as cnt FROM item_transfers WHERE item_id = '$itemId'") { rs ->
                 assertTrue(rs.next())
                 assertEquals(0, rs.getInt("cnt"))
             }
@@ -465,6 +518,8 @@ class BendrasInventoryRequestRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = createItem(token, tuntasId, quantity = 2)
+        val draugoveId = createDraugove(token, tuntasId)
+        assignToUnit(token, tuntasId, draugoveId, firstMemberId(tuntasId))
 
         val response = client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
@@ -475,7 +530,8 @@ class BendrasInventoryRequestRoutesTest {
                     "itemId": "$itemId",
                     "quantity": 10,
                     "startDate": "2099-01-01",
-                    "endDate": "2099-01-10"
+                    "endDate": "2099-01-10",
+                    "requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }
@@ -488,6 +544,7 @@ class BendrasInventoryRequestRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = createItem(token, tuntasId)
+        val draugoveId = createDraugove(token, tuntasId)
 
         val response = client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
@@ -497,7 +554,8 @@ class BendrasInventoryRequestRoutesTest {
                     "itemId": "$itemId",
                     "quantity": 1,
                     "startDate": "2099-01-01",
-                    "endDate": "2099-01-10"
+                    "endDate": "2099-01-10",
+                    "requestingUnitId": "$draugoveId"
                 }
             """.trimIndent())
         }

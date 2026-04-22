@@ -8,3 +8,8 @@ data class CreateInvitationRequest(
     val organizationalUnitId: String? = null,
     val expiresInHours: Int = 48
 )
+
+@Serializable
+data class AcceptInvitationRequest(
+    val code: String
+)

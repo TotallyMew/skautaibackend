@@ -12,7 +12,7 @@ import java.util.*
 
 class MemberService {
 
-    fun getMembers(tuntasId: UUID): Result<MemberListResponse> {
+    fun getMembers(tuntasId: UUID, visibleUnitIds: Set<UUID>? = null): Result<MemberListResponse> {
         return transaction {
             val memberships = UserTuntasMemberships
                 .innerJoin(Users, { UserTuntasMemberships.userId }, { Users.id })
@@ -22,7 +22,20 @@ class MemberService {
                             (UserTuntasMemberships.leftAt.isNull())
                 }
 
-            val members = memberships.map { row ->
+            val visibleUserIds = visibleUnitIds?.let { unitIds ->
+                UnitAssignments.selectAll()
+                    .where {
+                        (UnitAssignments.tuntasId eq tuntasId) and
+                            (UnitAssignments.organizationalUnitId inList unitIds.toList()) and
+                            (UnitAssignments.leftAt.isNull())
+                    }
+                    .map { it[UnitAssignments.userId] }
+                    .toSet()
+            }
+
+            val members = memberships.filter { row ->
+                visibleUserIds == null || row[UserTuntasMemberships.userId] in visibleUserIds
+            }.map { row ->
                 val userId = row[UserTuntasMemberships.userId]
                 buildMemberResponse(userId, tuntasId, row)
             }
@@ -31,7 +44,7 @@ class MemberService {
         }
     }
 
-    fun getMember(userId: UUID, tuntasId: UUID): Result<MemberResponse> {
+    fun getMember(userId: UUID, tuntasId: UUID, visibleUnitIds: Set<UUID>? = null, callerUserId: UUID? = null): Result<MemberResponse> {
         return transaction {
             val membership = UserTuntasMemberships
                 .innerJoin(Users, { UserTuntasMemberships.userId }, { Users.id })
@@ -43,6 +56,21 @@ class MemberService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Member not found in this tuntas"))
+
+            if (visibleUnitIds != null && userId != callerUserId) {
+                val isVisible = UnitAssignments.selectAll()
+                    .where {
+                        (UnitAssignments.userId eq userId) and
+                            (UnitAssignments.tuntasId eq tuntasId) and
+                            (UnitAssignments.organizationalUnitId inList visibleUnitIds.toList()) and
+                            (UnitAssignments.leftAt.isNull())
+                    }
+                    .firstOrNull() != null
+
+                if (!isVisible) {
+                    return@transaction Result.failure(Exception("Member not found in this tuntas"))
+                }
+            }
 
             Result.success(buildMemberResponse(userId, tuntasId, membership))
         }
@@ -94,6 +122,9 @@ class MemberService {
                     .firstOrNull()
                     ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
             }
+
+            LeadershipRoleRules.validatePrincipalUnitLeaderSlot(roleUUID, tuntasId, orgUnitUUID)
+                ?.let { return@transaction Result.failure(Exception(it)) }
 
             val startsAt = request.startsAt?.let {
                 try { kotlinx.datetime.Instant.parse(it) } catch (e: Exception) {
@@ -167,6 +198,16 @@ class MemberService {
                 }
             }
 
+            if (orgUnitUUID != null) {
+                OrganizationalUnits.selectAll()
+                    .where {
+                        (OrganizationalUnits.id eq orgUnitUUID) and
+                                (OrganizationalUnits.tuntasId eq tuntasId)
+                    }
+                    .firstOrNull()
+                    ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
+            }
+
             val startsAt = request.startsAt?.let {
                 try { kotlinx.datetime.Instant.parse(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid startsAt format, use ISO 8601"))
@@ -179,6 +220,17 @@ class MemberService {
                 }
             }
 
+            val finalStatus = request.termStatus ?: assignment[UserLeadershipRoles.termStatus]
+            val finalOrgUnit = orgUnitUUID ?: assignment[UserLeadershipRoles.organizationalUnitId]
+            if (finalStatus == "ACTIVE") {
+                LeadershipRoleRules.validatePrincipalUnitLeaderSlot(
+                    roleId = assignment[UserLeadershipRoles.roleId],
+                    tuntasId = tuntasId,
+                    organizationalUnitId = finalOrgUnit,
+                    excludeAssignmentId = assignmentId
+                )?.let { return@transaction Result.failure(Exception(it)) }
+            }
+
             UserLeadershipRoles.update({
                 (UserLeadershipRoles.id eq assignmentId) and
                         (UserLeadershipRoles.userId eq targetUserId) and
@@ -188,8 +240,9 @@ class MemberService {
                 startsAt?.let { v -> it[UserLeadershipRoles.startsAt] = v }
                 expiresAt?.let { v -> it[UserLeadershipRoles.expiresAt] = v }
                 orgUnitUUID?.let { v -> it[organizationalUnitId] = v }
-                if (request.termStatus in listOf("COMPLETED", "RESIGNED")) {
-                    it[leftAt] = kotlinx.datetime.Clock.System.now()
+                when (request.termStatus) {
+                    "ACTIVE" -> it[leftAt] = null
+                    "COMPLETED", "RESIGNED" -> it[leftAt] = kotlinx.datetime.Clock.System.now()
                 }
             }
 
@@ -228,10 +281,45 @@ class MemberService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Leadership role assignment not found"))
 
-            UserLeadershipRoles.deleteWhere {
+            val now = kotlinx.datetime.Clock.System.now()
+            UserLeadershipRoles.update({
                 (UserLeadershipRoles.id eq assignmentId) and
                         (UserLeadershipRoles.userId eq targetUserId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId)
+            }) {
+                it[termStatus] = "RESIGNED"
+                it[leftAt] = now
+            }
+
+            Result.success(Unit)
+        }
+    }
+
+    fun stepDownLeadershipRole(
+        callerUserId: UUID,
+        assignmentId: UUID,
+        tuntasId: UUID
+    ): Result<Unit> {
+        return transaction {
+            UserLeadershipRoles.selectAll()
+                .where {
+                    (UserLeadershipRoles.id eq assignmentId) and
+                            (UserLeadershipRoles.userId eq callerUserId) and
+                            (UserLeadershipRoles.tuntasId eq tuntasId) and
+                            (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                            (UserLeadershipRoles.leftAt.isNull())
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Active leadership role assignment not found"))
+
+            val now = kotlinx.datetime.Clock.System.now()
+            UserLeadershipRoles.update({
+                (UserLeadershipRoles.id eq assignmentId) and
+                        (UserLeadershipRoles.userId eq callerUserId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId)
+            }) {
+                it[termStatus] = "RESIGNED"
+                it[leftAt] = now
             }
 
             Result.success(Unit)
@@ -317,7 +405,26 @@ class MemberService {
             .selectAll()
             .where {
                 (UserLeadershipRoles.userId eq userId) and
-                        (UserLeadershipRoles.tuntasId eq tuntasId)
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        (UserLeadershipRoles.leftAt.isNull())
+            }
+            .map { row ->
+                val orgUnitId = row[UserLeadershipRoles.organizationalUnitId]
+                toLeadershipRoleResponse(
+                    row,
+                    row[Roles.name],
+                    orgUnitId?.let { getOrgUnitName(it) }
+                )
+            }
+
+        val leadershipRoleHistory = UserLeadershipRoles
+            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        ((UserLeadershipRoles.termStatus neq "ACTIVE") or UserLeadershipRoles.leftAt.isNotNull())
             }
             .map { row ->
                 val orgUnitId = row[UserLeadershipRoles.organizationalUnitId]
@@ -364,6 +471,7 @@ class MemberService {
             joinedAt = membershipRow[UserTuntasMemberships.joinedAt].toString(),
             unitAssignments = unitAssignments,
             leadershipRoles = leadershipRoles,
+            leadershipRoleHistory = leadershipRoleHistory,
             ranks = ranks
         )
     }
@@ -434,6 +542,14 @@ class MemberService {
                 it[leftAt] = now
             }
 
+            UnitAssignments.update({
+                (UnitAssignments.userId eq targetUserId) and
+                        (UnitAssignments.tuntasId eq tuntasId) and
+                        (UnitAssignments.leftAt.isNull())
+            }) {
+                it[leftAt] = now
+            }
+
             Result.success(Unit)
         }
     }
@@ -464,6 +580,14 @@ class MemberService {
                         (UserLeadershipRoles.termStatus eq "ACTIVE")
             }) {
                 it[termStatus] = "RESIGNED"
+                it[leftAt] = now
+            }
+
+            UnitAssignments.update({
+                (UnitAssignments.userId eq callerUserId) and
+                        (UnitAssignments.tuntasId eq tuntasId) and
+                        (UnitAssignments.leftAt.isNull())
+            }) {
                 it[leftAt] = now
             }
 

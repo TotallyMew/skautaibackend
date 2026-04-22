@@ -11,6 +11,7 @@ import lt.skautai.models.requests.AssignRankRequest
 import lt.skautai.models.requests.UpdateLeadershipRoleRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.plugins.checkPermission
+import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.MemberService
 import java.util.*
 
@@ -25,9 +26,21 @@ fun Route.memberRoutes(memberService: MemberService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("members.view", tuntasUUID)) return@get
+                val principal = call.principal<JWTPrincipal>()!!
+                val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+                val resolvedPermissions = resolveUserPermissions(callerUserId, tuntasUUID)
+                val memberViewPermissions = resolvedPermissions.filter { it.permissionName == "members.view" }
+                if (memberViewPermissions.isEmpty()) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
-                memberService.getMembers(tuntasUUID)
+                val visibleUnitIds = if (memberViewPermissions.any { it.scope == "ALL" }) {
+                    null
+                } else {
+                    memberViewPermissions.flatMap { it.userOrgUnitIds }.toSet()
+                }
+
+                memberService.getMembers(tuntasUUID, visibleUnitIds)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch members")) }
             }
@@ -39,7 +52,13 @@ fun Route.memberRoutes(memberService: MemberService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("members.view", tuntasUUID)) return@get
+                val principal = call.principal<JWTPrincipal>()!!
+                val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+                val resolvedPermissions = resolveUserPermissions(callerUserId, tuntasUUID)
+                val memberViewPermissions = resolvedPermissions.filter { it.permissionName == "members.view" }
+                if (memberViewPermissions.isEmpty()) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 val userId = call.parameters["userId"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("User ID required"))
@@ -47,7 +66,13 @@ fun Route.memberRoutes(memberService: MemberService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
                 }
 
-                memberService.getMember(userUUID, tuntasUUID)
+                val visibleUnitIds = if (memberViewPermissions.any { it.scope == "ALL" }) {
+                    null
+                } else {
+                    memberViewPermissions.flatMap { it.userOrgUnitIds }.toSet()
+                }
+
+                memberService.getMember(userUUID, tuntasUUID, visibleUnitIds, callerUserId)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Member not found")) }
             }
@@ -132,6 +157,27 @@ fun Route.memberRoutes(memberService: MemberService) {
                         .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Leadership role removed")) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove role")) }
                 }
+            }
+
+            post("me/leadership-roles/{assignmentId}/step-down") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val assignmentId = call.parameters["assignmentId"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Assignment ID required"))
+                val assignmentUUID = try { UUID.fromString(assignmentId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid assignment ID"))
+                }
+
+                memberService.stepDownLeadershipRole(callerUserId, assignmentUUID, tuntasUUID)
+                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Leadership role resigned")) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to step down")) }
             }
 
             route("{userId}/ranks") {

@@ -10,8 +10,10 @@ data class CreateReservationItemRequest(
 
 @Serializable
 data class CreateReservationRequest(
-    val title: String,
-    val items: List<CreateReservationItemRequest>,
+    val title: String = "Rezervacija",
+    val items: List<CreateReservationItemRequest> = emptyList(),
+    val itemId: String? = null,
+    val quantity: Int = 1,
     val startDate: String,
     val endDate: String,
     val requestingUnitId: String? = null,

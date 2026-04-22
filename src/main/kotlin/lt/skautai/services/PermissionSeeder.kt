@@ -392,6 +392,7 @@ object PermissionSeeder {
 
         "Vilkas" to listOf(
             "items.view" to "ALL",
+            "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
@@ -400,6 +401,7 @@ object PermissionSeeder {
 
         "Skautas" to listOf(
             "items.view" to "ALL",
+            "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
@@ -408,6 +410,7 @@ object PermissionSeeder {
 
         "Patyres skautas" to listOf(
             "items.view" to "ALL",
+            "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
@@ -416,6 +419,7 @@ object PermissionSeeder {
 
         "Vyr. skautas kandidatas" to listOf(
             "items.view" to "ALL",
+            "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
@@ -424,6 +428,7 @@ object PermissionSeeder {
 
         "Vyr. skautas" to listOf(
             "items.view" to "ALL",
+            "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
@@ -432,6 +437,7 @@ object PermissionSeeder {
 
         "Vadovas" to listOf(
             "items.view" to "ALL",
+            "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "invitations.create" to "OWN_UNIT",
             "reservations.view" to "ALL",

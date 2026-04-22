@@ -5,6 +5,7 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import lt.skautai.TestHelper.configureFullApp
@@ -52,14 +53,16 @@ class OrganizationalUnitRoutesTest {
         token: String,
         tuntasId: String,
         roleName: String,
-        email: String = "second@test.com"
+        email: String = "second@test.com",
+        organizationalUnitId: String? = null
     ): Pair<String, String> {
         val roleId = TestHelper.getRoleId(tuntasId, roleName)
+        val unitField = organizationalUnitId?.let { ", \"organizationalUnitId\": \"$it\"" }.orEmpty()
         val inviteResponse = client.post("/api/invitations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "roleId": "$roleId", "expiresAt": "2099-01-01T00:00:00Z" }""")
+            setBody("""{ "roleId": "$roleId"$unitField, "expiresInHours": 48 }""")
         }
         val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content
@@ -215,6 +218,63 @@ class OrganizationalUnitRoutesTest {
     }
 
     @Test
+    fun `former unit leader still sees own unit and members after step down`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val otherUnitId = createUnit(token, tuntasId, "Vilkai", "VILKU_DRAUGOVE")
+        val (leaderToken, leaderUserId) = registerSecondUser(
+            token = token,
+            tuntasId = tuntasId,
+            roleName = "Draugininkas",
+            email = "former-leader@test.com",
+            organizationalUnitId = unitId
+        )
+        val (_, memberId) = registerSecondUser(token, tuntasId, "Skautas", "member@test.com")
+
+        client.post("/api/organizational-units/$unitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$memberId", "assignmentType": "MEMBER" }""")
+        }
+
+        val leaderDetail = client.get("/api/members/$leaderUserId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val assignmentId = Json.parseToJsonElement(leaderDetail.bodyAsText())
+            .jsonObject["leadershipRoles"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        val stepDown = client.post("/api/members/me/leadership-roles/$assignmentId/step-down") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, stepDown.status)
+
+        val unitsResponse = client.get("/api/organizational-units") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, unitsResponse.status)
+        val unitsBody = Json.parseToJsonElement(unitsResponse.bodyAsText()).jsonObject
+        assertEquals(1, unitsBody["total"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(unitId, unitsBody["units"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content)
+
+        val ownUnitMembersResponse = client.get("/api/organizational-units/$unitId/members") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, ownUnitMembersResponse.status)
+
+        val otherUnitMembersResponse = client.get("/api/organizational-units/$otherUnitId/members") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.Forbidden, otherUnitMembersResponse.status)
+    }
+
+    @Test
     fun `get nonexistent unit returns 404`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
@@ -277,7 +337,7 @@ class OrganizationalUnitRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Palapine", "category": "COLLECTIVE", "quantity": 1, "custodianId": "$unitId" }""")
+            setBody("""{ "name": "Palapine", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 1, "custodianId": "$unitId" }""")
         }
 
         val response = client.delete("/api/organizational-units/$unitId") {
@@ -456,6 +516,343 @@ class OrganizationalUnitRoutesTest {
         }
         val body = Json.parseToJsonElement(getResponse.bodyAsText()).jsonObject
         assertEquals(0, body["total"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun `unit leader can remove member from own unit`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val (leaderToken, _) = registerSecondUser(
+            token = token,
+            tuntasId = tuntasId,
+            roleName = "Draugininkas",
+            email = "leader@test.com",
+            organizationalUnitId = unitId
+        )
+        val (_, memberId) = registerSecondUser(token, tuntasId, "Skautas", "member@test.com")
+
+        client.post("/api/organizational-units/$unitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$memberId", "assignmentType": "MEMBER" }""")
+        }
+
+        val response = client.delete("/api/organizational-units/$unitId/members/$memberId") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+    }
+
+    @Test
+    fun `unit leader cannot remove member from another unit`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val otherUnitId = createUnit(token, tuntasId, "Vilkai", "VILKU_DRAUGOVE")
+        val (leaderToken, _) = registerSecondUser(
+            token = token,
+            tuntasId = tuntasId,
+            roleName = "Draugininkas",
+            email = "leader@test.com",
+            organizationalUnitId = ownUnitId
+        )
+        val (_, memberId) = registerSecondUser(token, tuntasId, "Vilkas", "member@test.com")
+
+        client.post("/api/organizational-units/$otherUnitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$memberId", "assignmentType": "MEMBER" }""")
+        }
+
+        val response = client.delete("/api/organizational-units/$otherUnitId/members/$memberId") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+    }
+
+    @Test
+    fun `leave unit closes own assignment but blocks active leadership`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val (secondToken, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
+
+        client.post("/api/organizational-units/$unitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
+        }
+
+        val draugininkasRoleId = TestHelper.getRoleId(tuntasId, "Draugininkas")
+        client.post("/api/members/$secondUserId/leadership-roles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$draugininkasRoleId", "organizationalUnitId": "$unitId" }""")
+        }
+
+        val blockedLeave = client.post("/api/organizational-units/$unitId/members/me/leave") {
+            header("Authorization", "Bearer $secondToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, blockedLeave.status)
+
+        org.jetbrains.exposed.sql.transactions.transaction {
+            exec("""
+                UPDATE user_leadership_roles
+                SET term_status = 'RESIGNED', left_at = CURRENT_TIMESTAMP
+                WHERE user_id = '$secondUserId' AND tuntas_id = '$tuntasId'
+            """.trimIndent())
+        }
+
+        val leave = client.post("/api/organizational-units/$unitId/members/me/leave") {
+            header("Authorization", "Bearer $secondToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, leave.status)
+
+        org.jetbrains.exposed.sql.transactions.transaction {
+            exec("SELECT left_at FROM unit_assignments WHERE user_id = '$secondUserId' AND organizational_unit_id = '$unitId'") { rs ->
+                assertTrue(rs.next())
+                assertNotNull(rs.getTimestamp("left_at"))
+            }
+            exec("SELECT left_at FROM user_tuntas_memberships WHERE user_id = '$secondUserId' AND tuntas_id = '$tuntasId'") { rs ->
+                assertTrue(rs.next())
+                assertNull(rs.getTimestamp("left_at"))
+            }
+        }
+    }
+
+    @Test
+    fun `leave unit closes only selected unit and keeps other assignments`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val skautuId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val gildijaId = createUnit(token, tuntasId, "Gildija", "GILDIJA")
+        val (memberToken, memberId) = registerSecondUser(token, tuntasId, "Skautas", "multi-unit@test.com")
+
+        client.post("/api/organizational-units/$skautuId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$memberId", "assignmentType": "MEMBER" }""")
+        }
+        client.post("/api/organizational-units/$gildijaId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$memberId", "assignmentType": "MEMBER" }""")
+        }
+
+        val leave = client.post("/api/organizational-units/$skautuId/members/me/leave") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, leave.status)
+
+        org.jetbrains.exposed.sql.transactions.transaction {
+            exec("""
+                SELECT
+                    SUM(CASE WHEN organizational_unit_id = '$skautuId' AND left_at IS NOT NULL THEN 1 ELSE 0 END) AS closed_selected,
+                    SUM(CASE WHEN organizational_unit_id = '$gildijaId' AND left_at IS NULL THEN 1 ELSE 0 END) AS kept_other
+                FROM unit_assignments
+                WHERE user_id = '$memberId'
+            """.trimIndent()) { rs ->
+                assertTrue(rs.next())
+                assertEquals(1, rs.getInt("closed_selected"))
+                assertEquals(1, rs.getInt("kept_other"))
+            }
+            exec("SELECT left_at FROM user_tuntas_memberships WHERE user_id = '$memberId' AND tuntas_id = '$tuntasId'") { rs ->
+                assertTrue(rs.next())
+                assertNull(rs.getTimestamp("left_at"))
+            }
+        }
+    }
+
+    @Test
+    fun `member can leave last unit and stays tuntas member`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val (memberToken, memberId) = registerSecondUser(token, tuntasId, "Skautas", "last-unit@test.com")
+
+        client.post("/api/organizational-units/$unitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$memberId", "assignmentType": "MEMBER" }""")
+        }
+
+        val leave = client.post("/api/organizational-units/$unitId/members/me/leave") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, leave.status)
+
+        org.jetbrains.exposed.sql.transactions.transaction {
+            exec("SELECT left_at FROM unit_assignments WHERE user_id = '$memberId' AND organizational_unit_id = '$unitId'") { rs ->
+                assertTrue(rs.next())
+                assertNotNull(rs.getTimestamp("left_at"))
+            }
+            exec("SELECT left_at FROM user_tuntas_memberships WHERE user_id = '$memberId' AND tuntas_id = '$tuntasId'") { rs ->
+                assertTrue(rs.next())
+                assertNull(rs.getTimestamp("left_at"))
+            }
+        }
+    }
+
+    @Test
+    fun `remove member from unit closes leadership roles for that unit`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
+
+        client.post("/api/organizational-units/$unitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
+        }
+        val draugininkasRoleId = TestHelper.getRoleId(tuntasId, "Draugininkas")
+        client.post("/api/members/$secondUserId/leadership-roles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$draugininkasRoleId", "organizationalUnitId": "$unitId" }""")
+        }
+
+        val response = client.delete("/api/organizational-units/$unitId/members/$secondUserId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+
+        org.jetbrains.exposed.sql.transactions.transaction {
+            exec("SELECT term_status, left_at FROM user_leadership_roles WHERE user_id = '$secondUserId' AND organizational_unit_id = '$unitId'") { rs ->
+                assertTrue(rs.next())
+                assertEquals("RESIGNED", rs.getString("term_status"))
+                assertNotNull(rs.getTimestamp("left_at"))
+            }
+        }
+    }
+
+    @Test
+    fun `unit leader can remove deputy and removed user loses own unit visibility`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val (leaderToken, _) = registerSecondUser(
+            token = token,
+            tuntasId = tuntasId,
+            roleName = "Draugininkas",
+            email = "kick-leader@test.com",
+            organizationalUnitId = unitId
+        )
+        val (deputyToken, deputyId) = registerSecondUser(
+            token = token,
+            tuntasId = tuntasId,
+            roleName = "Draugininko pavaduotojas",
+            email = "kick-deputy@test.com",
+            organizationalUnitId = unitId
+        )
+
+        val response = client.delete("/api/organizational-units/$unitId/members/$deputyId") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+
+        val removedUnitMembers = client.get("/api/organizational-units/$unitId/members") {
+            header("Authorization", "Bearer $deputyToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.Forbidden, removedUnitMembers.status)
+
+        org.jetbrains.exposed.sql.transactions.transaction {
+            exec("SELECT term_status, left_at FROM user_leadership_roles WHERE user_id = '$deputyId' AND organizational_unit_id = '$unitId'") { rs ->
+                assertTrue(rs.next())
+                assertEquals("RESIGNED", rs.getString("term_status"))
+                assertNotNull(rs.getTimestamp("left_at"))
+            }
+            exec("SELECT left_at FROM unit_assignments WHERE user_id = '$deputyId' AND organizational_unit_id = '$unitId'") { rs ->
+                assertTrue(rs.next())
+                assertNotNull(rs.getTimestamp("left_at"))
+            }
+            exec("SELECT left_at FROM user_tuntas_memberships WHERE user_id = '$deputyId' AND tuntas_id = '$tuntasId'") { rs ->
+                assertTrue(rs.next())
+                assertNull(rs.getTimestamp("left_at"))
+            }
+        }
+    }
+
+    @Test
+    fun `move member closes previous primary membership but keeps helper assignment`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unit1Id = createUnit(token, tuntasId, "Skautai 1", "SKAUTU_DRAUGOVE")
+        val unit2Id = createUnit(token, tuntasId, "Gildija", "GILDIJA")
+        val helperUnitId = createUnit(token, tuntasId, "Vilkai", "VILKU_DRAUGOVE")
+        val (_, secondUserId) = registerSecondUser(token, tuntasId, "Skautas")
+
+        client.post("/api/organizational-units/$unit1Id/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
+        }
+        client.post("/api/organizational-units/$helperUnitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "VADOVO_PADEJEJAS" }""")
+        }
+
+        val response = client.post("/api/organizational-units/$unit2Id/members/$secondUserId/move") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(unit2Id, body["organizationalUnitId"]?.jsonPrimitive?.content)
+        assertEquals("MEMBER", body["assignmentType"]?.jsonPrimitive?.content)
+
+        org.jetbrains.exposed.sql.transactions.transaction {
+            exec("""
+                SELECT
+                    SUM(CASE WHEN organizational_unit_id = '$unit1Id' AND assignment_type = 'MEMBER' AND left_at IS NOT NULL THEN 1 ELSE 0 END) AS closed_old,
+                    SUM(CASE WHEN organizational_unit_id = '$unit2Id' AND assignment_type = 'MEMBER' AND left_at IS NULL THEN 1 ELSE 0 END) AS active_new,
+                    SUM(CASE WHEN organizational_unit_id = '$helperUnitId' AND assignment_type = 'VADOVO_PADEJEJAS' AND left_at IS NULL THEN 1 ELSE 0 END) AS active_helper
+                FROM unit_assignments
+                WHERE user_id = '$secondUserId'
+            """.trimIndent()) { rs ->
+                assertTrue(rs.next())
+                assertEquals(1, rs.getInt("closed_old"))
+                assertEquals(1, rs.getInt("active_new"))
+                assertEquals(1, rs.getInt("active_helper"))
+            }
+        }
+
+        val memberResponse = client.get("/api/members/$secondUserId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val memberBody = Json.parseToJsonElement(memberResponse.bodyAsText()).jsonObject
+        val activeUnitIds = memberBody["unitAssignments"]!!.jsonArray
+            .map { it.jsonObject["organizationalUnitId"]!!.jsonPrimitive.content }
+            .toSet()
+        assertFalse(unit1Id in activeUnitIds)
+        assertTrue(unit2Id in activeUnitIds)
+        assertTrue(helperUnitId in activeUnitIds)
     }
 
     @Test

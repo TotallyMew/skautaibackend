@@ -68,6 +68,17 @@ data class ResolvedPermission(
 
 fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermission> {
     return transaction {
+        val isActiveTuntasMember = UserTuntasMemberships
+            .selectAll()
+            .where {
+                (UserTuntasMemberships.userId eq userId) and
+                        (UserTuntasMemberships.tuntasId eq tuntasId) and
+                        (UserTuntasMemberships.leftAt.isNull())
+            }
+            .firstOrNull() != null
+
+        if (!isActiveTuntasMember) return@transaction emptyList()
+
         val leadershipRoleIds = UserLeadershipRoles
             .selectAll()
             .where {

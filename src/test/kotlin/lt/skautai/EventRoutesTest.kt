@@ -457,7 +457,7 @@ class EventRoutesTest {
             setBody("""
                 {
                     "name": "$name",
-                    "category": "COLLECTIVE",
+                    "type": "COLLECTIVE", "category": "CAMPING",
                     "quantity": $quantity
                 }
             """.trimIndent())

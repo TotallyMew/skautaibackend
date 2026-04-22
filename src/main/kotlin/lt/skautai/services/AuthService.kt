@@ -174,6 +174,9 @@ class AuthService(private val environment: ApplicationEnvironment) {
             // Insert into correct table based on role type
             when (role[Roles.roleType]) {
                 "LEADERSHIP" -> {
+                    LeadershipRoleRules.validatePrincipalUnitLeaderSlot(roleId, tuntasId, orgUnitId)
+                        ?.let { return@transaction Result.failure(Exception(it)) }
+
                     UserLeadershipRoles.insert {
                         it[this.userId] = userId
                         it[this.roleId] = roleId

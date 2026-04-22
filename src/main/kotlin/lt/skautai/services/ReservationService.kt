@@ -8,6 +8,7 @@ import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.ReservationMovements
 import lt.skautai.database.tables.Reservations
 import lt.skautai.database.tables.Users
+import lt.skautai.models.requests.CreateReservationItemRequest
 import lt.skautai.models.requests.CreateReservationRequest
 import lt.skautai.models.requests.ReservationMovementRequest
 import lt.skautai.models.requests.ReviewReservationRequest
@@ -102,7 +103,15 @@ class ReservationService {
             if (request.title.isBlank()) {
                 return@transaction Result.failure(Exception("Reservation title is required"))
             }
-            if (request.items.isEmpty()) {
+            val requestedItems = if (request.items.isNotEmpty()) {
+                request.items
+            } else {
+                request.itemId?.let {
+                    listOf(CreateReservationItemRequest(itemId = it, quantity = request.quantity))
+                }.orEmpty()
+            }
+
+            if (requestedItems.isEmpty()) {
                 return@transaction Result.failure(Exception("At least one item must be reserved"))
             }
             if (request.startDate.isBlank()) {
@@ -112,7 +121,7 @@ class ReservationService {
                 return@transaction Result.failure(Exception("End date is required"))
             }
 
-            val normalizedItems = request.items
+            val normalizedItems = requestedItems
                 .groupBy { it.itemId }
                 .mapValues { (_, items) -> items.sumOf { it.quantity } }
 

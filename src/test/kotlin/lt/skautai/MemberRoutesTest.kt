@@ -29,6 +29,56 @@ class MemberRoutesTest {
         TestHelper.cleanTables()
     }
 
+    private suspend fun ApplicationTestBuilder.createUnit(
+        token: String,
+        tuntasId: String,
+        name: String = "Skautai",
+        type: String = "SKAUTU_DRAUGOVE"
+    ): String {
+        val response = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name", "type": "$type" }""")
+        }
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    private suspend fun ApplicationTestBuilder.registerUserWithRole(
+        token: String,
+        tuntasId: String,
+        roleName: String,
+        email: String,
+        organizationalUnitId: String? = null
+    ): Pair<String, String> {
+        val roleId = TestHelper.getRoleId(tuntasId, roleName)
+        val unitField = organizationalUnitId?.let { ", \"organizationalUnitId\": \"$it\"" }.orEmpty()
+        val inviteResponse = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId"$unitField, "expiresInHours": 48 }""")
+        }
+        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        val registerResponse = client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Test",
+                    "surname": "User",
+                    "email": "$email",
+                    "password": "test123",
+                    "inviteCode": "$inviteCode"
+                }
+            """.trimIndent())
+        }
+        val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
+        return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
+    }
+
 
     @Test
     fun `get members returns 200 with tuntininkas`() = testApplication {
@@ -170,6 +220,202 @@ class MemberRoutesTest {
     }
 
     @Test
+    fun `principal unit leader is unique and step down frees slot`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val unitResponse = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Skautai", "type": "SKAUTU_DRAUGOVE" }""")
+        }
+        val unitId = Json.parseToJsonElement(unitResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        val draugininkasRoleId = TestHelper.getRoleId(tuntasId, "Draugininkas")
+        val skautasRoleId = TestHelper.getRoleId(tuntasId, "Skautas")
+
+        suspend fun register(email: String): Pair<String, String> {
+            val inviteResponse = client.post("/api/invitations") {
+                contentType(ContentType.Application.Json)
+                header("Authorization", "Bearer $token")
+                header("X-Tuntas-Id", tuntasId)
+                setBody("""{ "roleId": "$skautasRoleId" }""")
+            }
+            val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
+            val registerResponse = client.post("/api/auth/register/invite") {
+                contentType(ContentType.Application.Json)
+                setBody("""{ "name": "Test", "surname": "User", "email": "$email", "password": "test123", "inviteCode": "$inviteCode" }""")
+            }
+            val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
+            return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
+        }
+
+        val (firstToken, firstUserId) = register("first@test.com")
+        val (_, secondUserId) = register("second@test.com")
+
+        val firstAssign = client.post("/api/members/$firstUserId/leadership-roles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$draugininkasRoleId", "organizationalUnitId": "$unitId" }""")
+        }
+        assertEquals(HttpStatusCode.Created, firstAssign.status)
+        val assignmentId = Json.parseToJsonElement(firstAssign.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val blockedAssign = client.post("/api/members/$secondUserId/leadership-roles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$draugininkasRoleId", "organizationalUnitId": "$unitId" }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, blockedAssign.status)
+
+        val stepDown = client.post("/api/members/me/leadership-roles/$assignmentId/step-down") {
+            header("Authorization", "Bearer $firstToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, stepDown.status)
+
+        val secondAssign = client.post("/api/members/$secondUserId/leadership-roles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$draugininkasRoleId", "organizationalUnitId": "$unitId" }""")
+        }
+        assertEquals(HttpStatusCode.Created, secondAssign.status)
+    }
+
+    @Test
+    fun `step down hides leadership role but keeps unit assignment`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val unitResponse = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Skautai", "type": "SKAUTU_DRAUGOVE" }""")
+        }
+        val unitId = Json.parseToJsonElement(unitResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        val draugininkasRoleId = TestHelper.getRoleId(tuntasId, "Draugininkas")
+
+        val inviteResponse = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$draugininkasRoleId", "organizationalUnitId": "$unitId" }""")
+        }
+        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
+        val registerResponse = client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""{ "name": "Former", "surname": "Leader", "email": "former@test.com", "password": "test123", "inviteCode": "$inviteCode" }""")
+        }
+        val formerLeaderToken = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject["token"]!!.jsonPrimitive.content
+        val formerLeaderId = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject["userId"]!!.jsonPrimitive.content
+
+        val memberBeforeStepDown = client.get("/api/members/$formerLeaderId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val assignmentId = Json.parseToJsonElement(memberBeforeStepDown.bodyAsText())
+            .jsonObject["leadershipRoles"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        val stepDown = client.post("/api/members/me/leadership-roles/$assignmentId/step-down") {
+            header("Authorization", "Bearer $formerLeaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, stepDown.status)
+
+        val memberAfterStepDown = client.get("/api/members/$formerLeaderId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, memberAfterStepDown.status)
+        val body = Json.parseToJsonElement(memberAfterStepDown.bodyAsText()).jsonObject
+        assertEquals(0, body["leadershipRoles"]!!.jsonArray.size)
+        assertEquals(1, body["leadershipRoleHistory"]!!.jsonArray.size)
+        assertEquals(1, body["unitAssignments"]!!.jsonArray.size)
+        assertEquals(unitId, body["unitAssignments"]!!.jsonArray[0].jsonObject["organizationalUnitId"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `deputy can step down and remains unit member`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId)
+        val (deputyToken, deputyUserId) = registerUserWithRole(
+            token,
+            tuntasId,
+            "Draugininko pavaduotojas",
+            "deputy@test.com",
+            unitId
+        )
+
+        val deputyDetail = client.get("/api/members/$deputyUserId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val assignmentId = Json.parseToJsonElement(deputyDetail.bodyAsText())
+            .jsonObject["leadershipRoles"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        val stepDown = client.post("/api/members/me/leadership-roles/$assignmentId/step-down") {
+            header("Authorization", "Bearer $deputyToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, stepDown.status)
+
+        val after = client.get("/api/members/$deputyUserId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val body = Json.parseToJsonElement(after.bodyAsText()).jsonObject
+        assertEquals(0, body["leadershipRoles"]!!.jsonArray.size)
+        assertEquals(1, body["leadershipRoleHistory"]!!.jsonArray.size)
+        assertEquals(1, body["unitAssignments"]!!.jsonArray.size)
+        assertEquals(unitId, body["unitAssignments"]!!.jsonArray[0].jsonObject["organizationalUnitId"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `cannot step down another member role or an already resigned role`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId)
+        val (leaderToken, leaderUserId) = registerUserWithRole(
+            token,
+            tuntasId,
+            "Draugininkas",
+            "leader-stepdown@test.com",
+            unitId
+        )
+        val (memberToken, _) = registerUserWithRole(token, tuntasId, "Skautas", "plain-member@test.com")
+
+        val leaderDetail = client.get("/api/members/$leaderUserId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val assignmentId = Json.parseToJsonElement(leaderDetail.bodyAsText())
+            .jsonObject["leadershipRoles"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        val foreignStepDown = client.post("/api/members/me/leadership-roles/$assignmentId/step-down") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, foreignStepDown.status)
+
+        val firstStepDown = client.post("/api/members/me/leadership-roles/$assignmentId/step-down") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, firstStepDown.status)
+
+        val secondStepDown = client.post("/api/members/me/leadership-roles/$assignmentId/step-down") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, secondStepDown.status)
+    }
+
+    @Test
     fun `remove leadership role returns 200`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
@@ -199,6 +445,19 @@ class MemberRoutesTest {
         }
 
         assertEquals(HttpStatusCode.OK, response.status)
+
+        val memberResponse = client.get("/api/members/$userId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val body = Json.parseToJsonElement(memberResponse.bodyAsText()).jsonObject
+        assertFalse(body["leadershipRoles"]!!.jsonArray.any {
+            it.jsonObject["id"]!!.jsonPrimitive.content == assignmentId
+        })
+        val historyRole = body["leadershipRoleHistory"]!!.jsonArray
+            .first { it.jsonObject["id"]!!.jsonPrimitive.content == assignmentId }
+            .jsonObject
+        assertEquals("RESIGNED", historyRole["termStatus"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -325,6 +584,20 @@ class MemberRoutesTest {
             setBody("""{ "roleId": "$inventorininkaasRoleId", "termNumber": 1 }""")
         }
 
+        val unitResponse = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Skautai", "type": "SKAUTU_DRAUGOVE" }""")
+        }
+        val unitId = Json.parseToJsonElement(unitResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        client.post("/api/organizational-units/$unitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
+        }
+
         // Remove the member
         val response = client.delete("/api/members/$secondUserId/remove") {
             header("Authorization", "Bearer $token")
@@ -346,6 +619,51 @@ class MemberRoutesTest {
             exec("SELECT term_status, left_at FROM user_leadership_roles WHERE user_id = '$secondUserId' AND tuntas_id = '$tuntasId'") { rs ->
                 assertTrue(rs.next())
                 assertEquals("RESIGNED", rs.getString("term_status"))
+                assertNotNull(rs.getTimestamp("left_at"))
+            }
+        }
+
+        transaction {
+            exec("SELECT left_at FROM unit_assignments WHERE user_id = '$secondUserId' AND tuntas_id = '$tuntasId'") { rs ->
+                assertTrue(rs.next())
+                assertNotNull(rs.getTimestamp("left_at"))
+            }
+        }
+    }
+
+    @Test
+    fun `removed member loses tuntas api access and active unit assignments`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId)
+        val (memberToken, memberUserId) = registerUserWithRole(token, tuntasId, "Skautas", "removed-access@test.com")
+
+        client.post("/api/organizational-units/$unitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$memberUserId", "assignmentType": "MEMBER" }""")
+        }
+
+        val remove = client.delete("/api/members/$memberUserId/remove") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, remove.status)
+
+        val members = client.get("/api/members") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.Forbidden, members.status)
+
+        transaction {
+            exec("SELECT left_at FROM user_tuntas_memberships WHERE user_id = '$memberUserId' AND tuntas_id = '$tuntasId'") { rs ->
+                assertTrue(rs.next())
+                assertNotNull(rs.getTimestamp("left_at"))
+            }
+            exec("SELECT left_at FROM unit_assignments WHERE user_id = '$memberUserId' AND organizational_unit_id = '$unitId'") { rs ->
+                assertTrue(rs.next())
                 assertNotNull(rs.getTimestamp("left_at"))
             }
         }

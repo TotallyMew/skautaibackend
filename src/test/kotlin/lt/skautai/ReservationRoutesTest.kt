@@ -52,6 +52,29 @@ class ReservationRoutesTest {
             .jsonObject["id"]!!.jsonPrimitive.content
     }
 
+    private suspend fun HttpClient.registerSecondUser(
+        token: String,
+        tuntasId: String,
+        email: String = "second@test.com"
+    ): Pair<String, String> {
+        val roleId = TestHelper.getRoleId(tuntasId, "Skautas")
+        val inviteResponse = post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId" }""")
+        }
+        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        val registerResponse = post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""{ "name": "Second", "surname": "User", "email": "$email", "password": "test123", "inviteCode": "$inviteCode" }""")
+        }
+        val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
+        return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
+    }
+
     @Test
     fun `create reservation returns 201`() = testApplication {
         configureFullApp()
@@ -74,9 +97,11 @@ class ReservationRoutesTest {
 
         assertEquals(HttpStatusCode.Created, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("PENDING", body["status"]?.jsonPrimitive?.content)
-        assertEquals(2, body["quantity"]?.jsonPrimitive?.content?.toInt())
-        assertEquals(itemId, body["itemId"]?.jsonPrimitive?.content)
+        assertEquals("APPROVED", body["status"]?.jsonPrimitive?.content)
+        assertEquals(2, body["totalQuantity"]?.jsonPrimitive?.content?.toInt())
+        val item = body["items"]!!.jsonArray.first().jsonObject
+        assertEquals(2, item["quantity"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(itemId, item["itemId"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -277,10 +302,11 @@ class ReservationRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = client.createTestItem(token, tuntasId)
+        val (secondToken, _) = client.registerSecondUser(token, tuntasId)
 
         val createResponse = client.post("/api/reservations") {
             contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
+            header("Authorization", "Bearer $secondToken")
             header("X-Tuntas-Id", tuntasId)
             setBody("""
                 {
@@ -313,10 +339,11 @@ class ReservationRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = client.createTestItem(token, tuntasId)
+        val (secondToken, _) = client.registerSecondUser(token, tuntasId)
 
         val createResponse = client.post("/api/reservations") {
             contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
+            header("Authorization", "Bearer $secondToken")
             header("X-Tuntas-Id", tuntasId)
             setBody("""
                 {
@@ -378,11 +405,12 @@ class ReservationRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = client.createTestItem(token, tuntasId, quantity = 10)
+        val (secondToken, _) = client.registerSecondUser(token, tuntasId)
 
         // Create two reservations
         client.post("/api/reservations") {
             contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
+            header("Authorization", "Bearer $secondToken")
             header("X-Tuntas-Id", tuntasId)
             setBody("""
                 {

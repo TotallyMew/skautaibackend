@@ -46,6 +46,7 @@ data class MemberResponse(
     val joinedAt: String,
     val unitAssignments: List<MemberUnitAssignmentResponse> = emptyList(),
     val leadershipRoles: List<MemberLeadershipRoleResponse>,
+    val leadershipRoleHistory: List<MemberLeadershipRoleResponse> = emptyList(),
     val ranks: List<MemberRankResponse>
 )
 

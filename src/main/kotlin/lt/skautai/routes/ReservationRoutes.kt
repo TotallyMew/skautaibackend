@@ -100,7 +100,10 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
 
                 reservationService.getReservation(reservationUUID, tuntasUUID, userId, canViewAll, approvableUnitIds)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
-                    .onFailure { call.respond(HttpStatusCode.Forbidden, ErrorResponse(it.message ?: "Reservation not found")) }
+                    .onFailure {
+                        val status = if (it.message == "Reservation not found") HttpStatusCode.NotFound else HttpStatusCode.Forbidden
+                        call.respond(status, ErrorResponse(it.message ?: "Reservation not found"))
+                    }
             }
 
             post {

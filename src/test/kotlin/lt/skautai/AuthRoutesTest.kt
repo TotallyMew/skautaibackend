@@ -39,6 +39,22 @@ class AuthRoutesTest {
         return id
     }
 
+    private suspend fun ApplicationTestBuilder.createUnit(
+        token: String,
+        tuntasId: String,
+        name: String,
+        type: String
+    ): String {
+        val response = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name", "type": "$type" }""")
+        }
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
     @Test
     fun `register tuntininkas returns 201 with token`() = testApplication {
         configureFullApp()
@@ -496,6 +512,235 @@ class AuthRoutesTest {
         assertEquals(HttpStatusCode.OK, membersResponse.status)
         val body = Json.parseToJsonElement(membersResponse.bodyAsText()).jsonObject
         assertEquals(2, body["total"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun `create invitation for occupied principal unit leader returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val roleId = getRoleId(tuntasId, "Draugininkas")
+
+        val firstInvite = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId", "organizationalUnitId": "$unitId", "expiresInHours": 48 }""")
+        }
+        val firstCode = Json.parseToJsonElement(firstInvite.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Pirmas",
+                    "surname": "Vadovas",
+                    "email": "first-leader@test.com",
+                    "password": "test123",
+                    "inviteCode": "$firstCode"
+                }
+            """.trimIndent())
+        }
+
+        val response = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId", "organizationalUnitId": "$unitId", "expiresInHours": 48 }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `register with principal unit leader invite fails when slot becomes occupied`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val roleId = getRoleId(tuntasId, "Draugininkas")
+
+        fun invitationBody() = """{ "roleId": "$roleId", "organizationalUnitId": "$unitId", "expiresInHours": 48 }"""
+
+        val firstCode = Json.parseToJsonElement(client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(invitationBody())
+        }.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
+
+        val secondCode = Json.parseToJsonElement(client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(invitationBody())
+        }.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
+
+        client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Pirmas",
+                    "surname": "Vadovas",
+                    "email": "first-leader@test.com",
+                    "password": "test123",
+                    "inviteCode": "$firstCode"
+                }
+            """.trimIndent())
+        }
+
+        val response = client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Antras",
+                    "surname": "Vadovas",
+                    "email": "second-leader@test.com",
+                    "password": "test123",
+                    "inviteCode": "$secondCode"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `existing tuntas member can accept unit invitation`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val skautasRoleId = getRoleId(tuntasId, "Skautas")
+        val guildUnitId = createUnit(token, tuntasId, "Gildija", "GILDIJA")
+
+        val firstInvite = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$skautasRoleId", "expiresInHours": 48 }""")
+        }
+        val firstCode = Json.parseToJsonElement(firstInvite.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        val registerResponse = client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Esamas",
+                    "surname": "Narys",
+                    "email": "existing@test.com",
+                    "password": "test123",
+                    "inviteCode": "$firstCode"
+                }
+            """.trimIndent())
+        }
+        val existingToken = Json.parseToJsonElement(registerResponse.bodyAsText())
+            .jsonObject["token"]!!.jsonPrimitive.content
+        val existingUserId = Json.parseToJsonElement(registerResponse.bodyAsText())
+            .jsonObject["userId"]!!.jsonPrimitive.content
+
+        val vadovasRoleId = getRoleId(tuntasId, "Vadovas")
+        val guildInvite = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$vadovasRoleId", "organizationalUnitId": "$guildUnitId", "expiresInHours": 48 }""")
+        }
+        val guildCode = Json.parseToJsonElement(guildInvite.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        val acceptResponse = client.post("/api/invitations/accept") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $existingToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "code": "$guildCode" }""")
+        }
+
+        assertEquals(HttpStatusCode.OK, acceptResponse.status)
+        val body = Json.parseToJsonElement(acceptResponse.bodyAsText()).jsonObject
+        assertEquals("Vadovas", body["roleName"]?.jsonPrimitive?.content)
+        assertEquals(guildUnitId, body["organizationalUnitId"]?.jsonPrimitive?.content)
+
+        transaction {
+            exec("""
+                SELECT COUNT(*) AS count
+                FROM unit_assignments
+                WHERE user_id = '$existingUserId'
+                    AND organizational_unit_id = '$guildUnitId'
+                    AND assignment_type = 'MEMBER'
+                    AND left_at IS NULL
+            """.trimIndent()) { rs ->
+                assertTrue(rs.next())
+                assertEquals(1, rs.getInt("count"))
+            }
+        }
+    }
+
+    @Test
+    fun `existing member accepting principal unit leader invite fails when slot becomes occupied`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val skautasRoleId = getRoleId(tuntasId, "Skautas")
+        val draugininkasRoleId = getRoleId(tuntasId, "Draugininkas")
+
+        suspend fun registerExisting(email: String): String {
+            val invite = client.post("/api/invitations") {
+                contentType(ContentType.Application.Json)
+                header("Authorization", "Bearer $token")
+                header("X-Tuntas-Id", tuntasId)
+                setBody("""{ "roleId": "$skautasRoleId", "expiresInHours": 48 }""")
+            }
+            val code = Json.parseToJsonElement(invite.bodyAsText())
+                .jsonObject["code"]!!.jsonPrimitive.content
+            val register = client.post("/api/auth/register/invite") {
+                contentType(ContentType.Application.Json)
+                setBody("""
+                    {
+                        "name": "Esamas",
+                        "surname": "Narys",
+                        "email": "$email",
+                        "password": "test123",
+                        "inviteCode": "$code"
+                    }
+                """.trimIndent())
+            }
+            return Json.parseToJsonElement(register.bodyAsText())
+                .jsonObject["token"]!!.jsonPrimitive.content
+        }
+
+        val firstToken = registerExisting("first-existing@test.com")
+        val secondToken = registerExisting("second-existing@test.com")
+
+        fun leaderInviteBody() = """{ "roleId": "$draugininkasRoleId", "organizationalUnitId": "$unitId", "expiresInHours": 48 }"""
+        val firstLeaderCode = Json.parseToJsonElement(client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(leaderInviteBody())
+        }.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
+        val secondLeaderCode = Json.parseToJsonElement(client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(leaderInviteBody())
+        }.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
+
+        val firstAccept = client.post("/api/invitations/accept") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $firstToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "code": "$firstLeaderCode" }""")
+        }
+        assertEquals(HttpStatusCode.OK, firstAccept.status)
+
+        val secondAccept = client.post("/api/invitations/accept") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $secondToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "code": "$secondLeaderCode" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, secondAccept.status)
     }
 
 

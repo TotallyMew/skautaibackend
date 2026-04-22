@@ -235,7 +235,7 @@ class LocationRoutesTest {
             setBody("""
                 {
                     "name": "Palapine",
-                    "category": "COLLECTIVE",
+                    "type": "COLLECTIVE", "category": "CAMPING",
                     "quantity": 1,
                     "locationId": "$locationId"
                 }
