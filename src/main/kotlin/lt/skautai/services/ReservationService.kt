@@ -1,14 +1,25 @@
 package lt.skautai.services
 
+import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.OrganizationalUnits
+import lt.skautai.database.tables.ReservationMovements
 import lt.skautai.database.tables.Reservations
+import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateReservationRequest
+import lt.skautai.models.requests.ReservationMovementRequest
+import lt.skautai.models.requests.ReviewReservationRequest
+import lt.skautai.models.requests.UpdateReservationPickupRequest
+import lt.skautai.models.requests.UpdateReservationReturnTimeRequest
 import lt.skautai.models.requests.UpdateReservationStatusRequest
 import lt.skautai.models.responses.ReservationAvailabilityItemResponse
 import lt.skautai.models.responses.ReservationAvailabilityResponse
 import lt.skautai.models.responses.ReservationItemResponse
 import lt.skautai.models.responses.ReservationListResponse
+import lt.skautai.models.responses.ReservationMovementListResponse
+import lt.skautai.models.responses.ReservationMovementResponse
 import lt.skautai.models.responses.ReservationResponse
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -23,8 +34,8 @@ class ReservationService {
     fun getReservations(
         tuntasId: UUID,
         userId: UUID,
-        isAdmin: Boolean,
-        unitIds: List<UUID>,
+        canViewAll: Boolean,
+        approvableUnitIds: List<UUID>,
         itemId: UUID? = null,
         status: String? = null
     ): Result<ReservationListResponse> {
@@ -33,9 +44,9 @@ class ReservationService {
                 .where { Reservations.tuntasId eq tuntasId }
 
             when {
-                isAdmin -> {}
-                unitIds.isNotEmpty() -> query = query.andWhere {
-                    (Reservations.requestingUnitId inList unitIds) or
+                canViewAll -> {}
+                approvableUnitIds.isNotEmpty() -> query = query.andWhere {
+                    (Reservations.requestingUnitId inList approvableUnitIds) or
                         (Reservations.reservedByUserId eq userId)
                 }
                 else -> query = query.andWhere { Reservations.reservedByUserId eq userId }
@@ -58,18 +69,21 @@ class ReservationService {
         }
     }
 
-    fun getReservation(groupId: UUID, tuntasId: UUID): Result<ReservationResponse> {
+    fun getReservation(
+        groupId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        canViewAll: Boolean,
+        approvableUnitIds: Set<UUID>
+    ): Result<ReservationResponse> {
         return transaction {
-            val rows = Reservations.selectAll()
-                .where {
-                    (Reservations.groupId eq groupId) and
-                        (Reservations.tuntasId eq tuntasId)
-                }
-                .orderBy(Reservations.createdAt, SortOrder.ASC)
-                .toList()
+            val rows = reservationRows(groupId, tuntasId)
 
             if (rows.isEmpty()) {
                 return@transaction Result.failure(Exception("Reservation not found"))
+            }
+            if (!canAccessReservation(rows, userId, canViewAll, approvableUnitIds)) {
+                return@transaction Result.failure(Exception("Insufficient permissions"))
             }
 
             Result.success(toReservationResponse(rows))
@@ -79,7 +93,10 @@ class ReservationService {
     fun createReservation(
         tuntasId: UUID,
         reservedByUserId: UUID,
-        request: CreateReservationRequest
+        request: CreateReservationRequest,
+        canApproveTopLevel: Boolean = false,
+        approvableUnitIds: Set<UUID> = emptySet(),
+        userUnitIds: Set<UUID> = emptySet()
     ): Result<ReservationResponse> {
         return transaction {
             if (request.title.isBlank()) {
@@ -87,6 +104,12 @@ class ReservationService {
             }
             if (request.items.isEmpty()) {
                 return@transaction Result.failure(Exception("At least one item must be reserved"))
+            }
+            if (request.startDate.isBlank()) {
+                return@transaction Result.failure(Exception("Start date is required"))
+            }
+            if (request.endDate.isBlank()) {
+                return@transaction Result.failure(Exception("End date is required"))
             }
 
             val normalizedItems = request.items
@@ -134,6 +157,38 @@ class ReservationService {
                 }
             }
 
+            val unitItemCustodianIds = itemRows.values
+                .mapNotNull { it[Items.custodianId] }
+                .distinct()
+            val hasSharedItems = itemRows.values.any { it[Items.custodianId] == null }
+            val hasUnitItems = unitItemCustodianIds.isNotEmpty()
+
+            if (unitItemCustodianIds.size > 1) {
+                return@transaction Result.failure(Exception("Reservation can include items from only one unit inventory"))
+            }
+
+            if (hasUnitItems && requestingUnitUUID != null && requestingUnitUUID != unitItemCustodianIds.single()) {
+                return@transaction Result.failure(Exception("Requesting unit must match selected unit inventory"))
+            }
+            if (!canApproveTopLevel && unitItemCustodianIds.any { it !in userUnitIds }) {
+                return@transaction Result.failure(Exception("You can reserve only your unit inventory"))
+            }
+
+            val inferredRequestingUnitUUID = requestingUnitUUID ?: unitItemCustodianIds.singleOrNull()
+            val canApproveUnit = canApproveTopLevel || unitItemCustodianIds.all { it in approvableUnitIds }
+            val unitReviewStatus = when {
+                !hasUnitItems -> "NOT_REQUIRED"
+                canApproveUnit -> "APPROVED"
+                else -> "PENDING"
+            }
+            val topLevelReviewStatus = when {
+                !hasSharedItems -> "NOT_REQUIRED"
+                canApproveTopLevel -> "APPROVED"
+                else -> "PENDING"
+            }
+            val initialStatus = computeOverallStatus(unitReviewStatus, topLevelReviewStatus)
+            val now = Clock.System.now()
+
             val eventUUID = request.eventId?.let {
                 try {
                     UUID.fromString(it)
@@ -168,12 +223,22 @@ class ReservationService {
                     it[itemId] = UUID.fromString(itemIdString)
                     it[this.tuntasId] = tuntasId
                     it[this.reservedByUserId] = reservedByUserId
-                    it[requestingUnitId] = requestingUnitUUID
+                    it[requestingUnitId] = inferredRequestingUnitUUID
                     it[eventId] = eventUUID
                     it[quantity] = requestedQuantity
                     it[this.startDate] = startDate
                     it[this.endDate] = endDate
-                    it[status] = "PENDING"
+                    it[this.unitReviewStatus] = unitReviewStatus
+                    if (unitReviewStatus == "APPROVED") {
+                        it[unitReviewedByUserId] = reservedByUserId
+                        it[unitReviewedAt] = now
+                    }
+                    it[this.topLevelReviewStatus] = topLevelReviewStatus
+                    if (topLevelReviewStatus == "APPROVED") {
+                        it[topLevelReviewedByUserId] = reservedByUserId
+                        it[topLevelReviewedAt] = now
+                    }
+                    it[status] = initialStatus
                     it[notes] = request.notes
                 }
             }
@@ -301,6 +366,298 @@ class ReservationService {
         }
     }
 
+    fun reviewReservation(
+        groupId: UUID,
+        tuntasId: UUID,
+        reviewerUserId: UUID,
+        level: String,
+        request: ReviewReservationRequest,
+        canApproveTopLevel: Boolean,
+        approvableUnitIds: Set<UUID>
+    ): Result<ReservationResponse> {
+        return transaction {
+            val decision = request.status.uppercase()
+            if (decision !in listOf("APPROVED", "REJECTED")) {
+                return@transaction Result.failure(Exception("Review status must be APPROVED or REJECTED"))
+            }
+
+            val rows = reservationRows(groupId, tuntasId)
+            if (rows.isEmpty()) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
+            if (rows.any { it[Reservations.status] !in listOf("PENDING", "APPROVED") }) {
+                return@transaction Result.failure(Exception("Only pending reservations can be reviewed"))
+            }
+
+            val itemRows = Items.selectAll()
+                .where { Items.id inList rows.map { it[Reservations.itemId] } }
+                .associateBy { it[Items.id] }
+            val unitIds = itemRows.values.mapNotNull { it[Items.custodianId] }.distinct()
+
+            val now = Clock.System.now()
+            val currentUnitStatus = rows.first()[Reservations.unitReviewStatus]
+            val currentTopStatus = rows.first()[Reservations.topLevelReviewStatus]
+            val nextUnitStatus: String
+            val nextTopStatus: String
+
+            when (level) {
+                "unit" -> {
+                    if (currentUnitStatus != "PENDING") {
+                        return@transaction Result.failure(Exception("Unit review is not pending"))
+                    }
+                    if (!canApproveTopLevel && !unitIds.all { it in approvableUnitIds }) {
+                        return@transaction Result.failure(Exception("Insufficient permissions for unit review"))
+                    }
+                    nextUnitStatus = decision
+                    nextTopStatus = currentTopStatus
+                    Reservations.update({
+                        (Reservations.groupId eq groupId) and (Reservations.tuntasId eq tuntasId)
+                    }) {
+                        it[unitReviewStatus] = decision
+                        it[unitReviewedByUserId] = reviewerUserId
+                        it[unitReviewedAt] = now
+                        it[status] = computeOverallStatus(nextUnitStatus, nextTopStatus)
+                        request.notes?.let { value -> it[notes] = value }
+                    }
+                }
+                "top-level" -> {
+                    if (currentTopStatus != "PENDING") {
+                        return@transaction Result.failure(Exception("Top-level review is not pending"))
+                    }
+                    if (!canApproveTopLevel) {
+                        return@transaction Result.failure(Exception("Insufficient permissions for top-level review"))
+                    }
+                    nextUnitStatus = currentUnitStatus
+                    nextTopStatus = decision
+                    Reservations.update({
+                        (Reservations.groupId eq groupId) and (Reservations.tuntasId eq tuntasId)
+                    }) {
+                        it[topLevelReviewStatus] = decision
+                        it[topLevelReviewedByUserId] = reviewerUserId
+                        it[topLevelReviewedAt] = now
+                        it[approvedByUserId] = reviewerUserId
+                        it[status] = computeOverallStatus(nextUnitStatus, nextTopStatus)
+                        request.notes?.let { value -> it[notes] = value }
+                    }
+                }
+                else -> return@transaction Result.failure(Exception("Unknown review level"))
+            }
+
+            Result.success(toReservationResponse(reservationRows(groupId, tuntasId)))
+        }
+    }
+
+    fun getMovements(
+        groupId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        canViewAll: Boolean,
+        approvableUnitIds: Set<UUID>
+    ): Result<ReservationMovementListResponse> {
+        return transaction {
+            val rows = reservationRows(groupId, tuntasId)
+            if (rows.isEmpty()) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
+            if (!canAccessReservation(rows, userId, canViewAll, approvableUnitIds)) {
+                return@transaction Result.failure(Exception("Insufficient permissions"))
+            }
+
+            val movements = movementsForGroup(groupId)
+            Result.success(ReservationMovementListResponse(movements, movements.size))
+        }
+    }
+
+    fun recordMovement(
+        groupId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        type: String,
+        request: ReservationMovementRequest,
+        canApproveTopLevel: Boolean,
+        approvableUnitIds: Set<UUID>
+    ): Result<ReservationResponse> {
+        return transaction {
+            val movementType = type.uppercase()
+            if (movementType !in listOf("ISSUE", "RETURN_MARKED", "RETURN")) {
+                return@transaction Result.failure(Exception("Movement type must be ISSUE, RETURN_MARKED or RETURN"))
+            }
+            if (request.items.isEmpty()) {
+                return@transaction Result.failure(Exception("At least one item is required"))
+            }
+
+            val rows = reservationRows(groupId, tuntasId)
+            if (rows.isEmpty()) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
+
+            val currentStatus = rows.first()[Reservations.status]
+            if (movementType == "ISSUE" && currentStatus !in listOf("APPROVED", "ACTIVE")) {
+                return@transaction Result.failure(Exception("Only approved reservations can be issued"))
+            }
+            if (movementType == "RETURN" && currentStatus != "ACTIVE") {
+                return@transaction Result.failure(Exception("Only active reservations can be returned"))
+            }
+            if (movementType == "RETURN_MARKED" && currentStatus != "ACTIVE") {
+                return@transaction Result.failure(Exception("Only active reservations can be marked as returned"))
+            }
+
+            val reservationItems = rows.associateBy { it[Reservations.itemId] }
+            val itemIds = reservationItems.keys.toList()
+            val itemRows = Items.selectAll()
+                .where { Items.id inList itemIds }
+                .associateBy { it[Items.id] }
+            val currentMovements = movementTotals(groupId)
+
+            request.items.forEach { movementItem ->
+                val itemUUID = try {
+                    UUID.fromString(movementItem.itemId)
+                } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid item ID"))
+                }
+                if (movementItem.quantity < 1) {
+                    return@transaction Result.failure(Exception("Quantity must be at least 1"))
+                }
+
+                val reservationRow = reservationItems[itemUUID]
+                    ?: return@transaction Result.failure(Exception("Item is not part of this reservation"))
+                val item = itemRows[itemUUID]
+                    ?: return@transaction Result.failure(Exception("Item not found"))
+                if (movementType == "RETURN_MARKED") {
+                    if (reservationRow[Reservations.reservedByUserId] != userId) {
+                        return@transaction Result.failure(Exception("Only reservation owner can mark items as returned"))
+                    }
+                } else {
+                    val custodianId = item[Items.custodianId]
+                    val canManageItem = if (custodianId == null) {
+                        canApproveTopLevel
+                    } else {
+                        canApproveTopLevel || custodianId in approvableUnitIds
+                    }
+                    if (!canManageItem) {
+                        return@transaction Result.failure(Exception("Insufficient permissions for ${item[Items.name]}"))
+                    }
+                }
+
+                val totals = currentMovements[itemUUID] ?: MovementTotals()
+                val maxQuantity = when (movementType) {
+                    "ISSUE" -> reservationRow[Reservations.quantity] - totals.issued
+                    "RETURN_MARKED" -> totals.issued - totals.returnedMarked
+                    else -> totals.returnedMarked - totals.returned
+                }
+                if (movementItem.quantity > maxQuantity) {
+                    return@transaction Result.failure(
+                        Exception("Quantity too high for ${item[Items.name]}. Available for $movementType: $maxQuantity")
+                    )
+                }
+
+                ReservationMovements.insert {
+                    it[reservationGroupId] = groupId
+                    it[itemId] = itemUUID
+                    it[this.type] = movementType
+                    it[quantity] = movementItem.quantity
+                    it[performedByUserId] = userId
+                    it[notes] = request.notes
+                    it[createdAt] = Clock.System.now()
+                }
+            }
+
+            val nextTotals = movementTotals(groupId)
+            val allIssuedReturned = rows.all { row ->
+                val totals = nextTotals[row[Reservations.itemId]] ?: MovementTotals()
+                totals.issued > 0 && totals.issued == totals.returned
+            }
+            Reservations.update({
+                (Reservations.groupId eq groupId) and (Reservations.tuntasId eq tuntasId)
+            }) {
+                it[status] = if (movementType == "RETURN" && allIssuedReturned) "RETURNED" else "ACTIVE"
+            }
+
+            Result.success(toReservationResponse(reservationRows(groupId, tuntasId)))
+        }
+    }
+
+    fun updatePickupTime(
+        groupId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        canManageTopLevel: Boolean,
+        approvableUnitIds: Set<UUID>,
+        request: UpdateReservationPickupRequest
+    ): Result<ReservationResponse> {
+        return transaction {
+            val rows = reservationRows(groupId, tuntasId)
+            if (rows.isEmpty()) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
+            if (rows.any { it[Reservations.status] !in listOf("APPROVED", "ACTIVE") }) {
+                return@transaction Result.failure(Exception("Pickup time can be set only for approved reservations"))
+            }
+            val canEditPickup = canAccessReservation(rows, userId, canManageTopLevel, approvableUnitIds)
+            if (!canEditPickup) {
+                return@transaction Result.failure(Exception("Insufficient permissions"))
+            }
+
+            updateTimeProposal(
+                rows = rows,
+                groupId = groupId,
+                tuntasId = tuntasId,
+                userId = userId,
+                value = request.pickupAt,
+                response = request.response,
+                timeColumn = Reservations.pickupAt,
+                statusColumn = Reservations.pickupProposalStatus,
+                proposedAtColumn = Reservations.pickupProposedAt,
+                proposedByColumn = Reservations.pickupProposedByUserId,
+                respondedAtColumn = Reservations.pickupRespondedAt,
+                respondedByColumn = Reservations.pickupRespondedByUserId,
+                label = "pickup"
+            ).getOrElse { return@transaction Result.failure(it) }
+
+            Result.success(toReservationResponse(reservationRows(groupId, tuntasId)))
+        }
+    }
+
+    fun updateReturnTime(
+        groupId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        canManageTopLevel: Boolean,
+        approvableUnitIds: Set<UUID>,
+        request: UpdateReservationReturnTimeRequest
+    ): Result<ReservationResponse> {
+        return transaction {
+            val rows = reservationRows(groupId, tuntasId)
+            if (rows.isEmpty()) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
+            if (rows.any { it[Reservations.status] != "ACTIVE" }) {
+                return@transaction Result.failure(Exception("Return time can be set only for active reservations"))
+            }
+            if (!canAccessReservation(rows, userId, canManageTopLevel, approvableUnitIds)) {
+                return@transaction Result.failure(Exception("Insufficient permissions"))
+            }
+
+            updateTimeProposal(
+                rows = rows,
+                groupId = groupId,
+                tuntasId = tuntasId,
+                userId = userId,
+                value = request.returnAt,
+                response = request.response,
+                timeColumn = Reservations.returnAt,
+                statusColumn = Reservations.returnProposalStatus,
+                proposedAtColumn = Reservations.returnProposedAt,
+                proposedByColumn = Reservations.returnProposedByUserId,
+                respondedAtColumn = Reservations.returnRespondedAt,
+                respondedByColumn = Reservations.returnRespondedByUserId,
+                label = "return"
+            ).getOrElse { return@transaction Result.failure(it) }
+
+            Result.success(toReservationResponse(reservationRows(groupId, tuntasId)))
+        }
+    }
+
     fun cancelReservation(
         groupId: UUID,
         tuntasId: UUID,
@@ -372,18 +729,213 @@ class ReservationService {
         }
     }
 
+    private data class MovementTotals(
+        val issued: Int = 0,
+        val returnedMarked: Int = 0,
+        val returned: Int = 0
+    )
+
+    private fun computeOverallStatus(unitReviewStatus: String, topLevelReviewStatus: String): String {
+        val statuses = listOf(unitReviewStatus, topLevelReviewStatus)
+        return when {
+            statuses.any { it == "REJECTED" } -> "REJECTED"
+            statuses.all { it == "APPROVED" || it == "NOT_REQUIRED" } -> "APPROVED"
+            else -> "PENDING"
+        }
+    }
+
+    private fun reservationRows(groupId: UUID, tuntasId: UUID): List<ResultRow> {
+        return Reservations.selectAll()
+            .where {
+                (Reservations.groupId eq groupId) and
+                    (Reservations.tuntasId eq tuntasId)
+            }
+            .orderBy(Reservations.createdAt, SortOrder.ASC)
+            .toList()
+    }
+
+    private fun updateTimeProposal(
+        rows: List<ResultRow>,
+        groupId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        value: String?,
+        response: String?,
+        timeColumn: Column<Instant?>,
+        statusColumn: Column<String>,
+        proposedAtColumn: Column<Instant?>,
+        proposedByColumn: Column<UUID?>,
+        respondedAtColumn: Column<Instant?>,
+        respondedByColumn: Column<UUID?>,
+        label: String
+    ): Result<Unit> {
+        val normalizedResponse = response?.uppercase()
+        val first = rows.first()
+        val now = Clock.System.now()
+
+        if (normalizedResponse == "ACCEPT") {
+            if (first[statusColumn] != "PENDING" || first[timeColumn] == null) {
+                return Result.failure(Exception("No pending $label proposal"))
+            }
+            if (first[proposedByColumn] == userId) {
+                return Result.failure(Exception("You cannot accept your own $label proposal"))
+            }
+            Reservations.update({
+                (Reservations.groupId eq groupId) and (Reservations.tuntasId eq tuntasId)
+            }) {
+                it[statusColumn] = "ACCEPTED"
+                it[respondedByColumn] = userId
+                it[respondedAtColumn] = now
+            }
+            return Result.success(Unit)
+        }
+
+        if (normalizedResponse != null && normalizedResponse != "PROPOSE") {
+            return Result.failure(Exception("Invalid $label response"))
+        }
+
+        val parsedTime = value?.takeIf { it.isNotBlank() }?.let {
+            try {
+                Instant.parse(it)
+            } catch (e: Exception) {
+                return Result.failure(Exception("Invalid $label time format"))
+            }
+        } ?: return Result.failure(Exception("$label time is required"))
+
+        Reservations.update({
+            (Reservations.groupId eq groupId) and (Reservations.tuntasId eq tuntasId)
+        }) {
+            it[timeColumn] = parsedTime
+            it[statusColumn] = "PENDING"
+            it[proposedByColumn] = userId
+            it[proposedAtColumn] = now
+            it[respondedByColumn] = null
+            it[respondedAtColumn] = null
+        }
+
+        return Result.success(Unit)
+    }
+
+    private fun canAccessReservation(
+        rows: List<ResultRow>,
+        userId: UUID,
+        canViewAll: Boolean,
+        approvableUnitIds: Set<UUID>
+    ): Boolean {
+        if (canViewAll) return true
+        val first = rows.first()
+        if (first[Reservations.reservedByUserId] == userId) return true
+        val requestingUnitId = first[Reservations.requestingUnitId]
+        if (requestingUnitId != null && requestingUnitId in approvableUnitIds) return true
+        val itemIds = rows.map { it[Reservations.itemId] }
+        return Items.select(Items.custodianId)
+            .where { Items.id inList itemIds }
+            .mapNotNull { it[Items.custodianId] }
+            .any { it in approvableUnitIds }
+    }
+
+    private fun movementTotals(groupId: UUID): Map<UUID, MovementTotals> {
+        return ReservationMovements.selectAll()
+            .where { ReservationMovements.reservationGroupId eq groupId }
+            .groupBy { it[ReservationMovements.itemId] }
+            .mapValues { (_, rows) ->
+                MovementTotals(
+                    issued = rows.filter { it[ReservationMovements.type] == "ISSUE" }
+                        .sumOf { it[ReservationMovements.quantity] },
+                    returnedMarked = rows.filter { it[ReservationMovements.type] == "RETURN_MARKED" }
+                        .sumOf { it[ReservationMovements.quantity] },
+                    returned = rows.filter { it[ReservationMovements.type] == "RETURN" }
+                        .sumOf { it[ReservationMovements.quantity] }
+                )
+            }
+    }
+
+    private fun movementsForGroup(groupId: UUID): List<ReservationMovementResponse> {
+        val rows = ReservationMovements.selectAll()
+            .where { ReservationMovements.reservationGroupId eq groupId }
+            .orderBy(ReservationMovements.createdAt, SortOrder.DESC)
+            .toList()
+        val itemsById = if (rows.isEmpty()) {
+            emptyMap()
+        } else {
+            Items.selectAll()
+                .where { Items.id inList rows.map { it[ReservationMovements.itemId] } }
+                .associateBy { it[Items.id] }
+        }
+        return rows.map { row ->
+            val item = itemsById[row[ReservationMovements.itemId]]
+            ReservationMovementResponse(
+                id = row[ReservationMovements.id].toString(),
+                reservationId = row[ReservationMovements.reservationGroupId].toString(),
+                itemId = row[ReservationMovements.itemId].toString(),
+                itemName = item?.get(Items.name),
+                type = row[ReservationMovements.type],
+                quantity = row[ReservationMovements.quantity],
+                performedByUserId = row[ReservationMovements.performedByUserId].toString(),
+                notes = row[ReservationMovements.notes],
+                createdAt = row[ReservationMovements.createdAt].toString()
+            )
+        }
+    }
+
     private fun toReservationResponse(rows: List<ResultRow>): ReservationResponse {
         val first = rows.first()
+        val groupId = first[Reservations.groupId]
+        val startDate = first[Reservations.startDate]
+        val endDate = first[Reservations.endDate]
         val itemsById = Items.selectAll()
             .where { Items.id inList rows.map { it[Reservations.itemId] } }
             .associateBy { it[Items.id] }
+        val reservedByUser = Users.selectAll()
+            .where { Users.id eq first[Reservations.reservedByUserId] }
+            .firstOrNull()
+        val requestingUnit = first[Reservations.requestingUnitId]?.let { unitId ->
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id eq unitId }
+                .firstOrNull()
+        }
+        val custodianIds = itemsById.values.mapNotNull { it[Items.custodianId] }.distinct()
+        val custodiansById = if (custodianIds.isEmpty()) {
+            emptyMap()
+        } else {
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id inList custodianIds }
+                .associateBy { it[OrganizationalUnits.id] }
+        }
+        val movementTotals = movementTotals(groupId)
 
         val reservationItems = rows.map { row ->
             val itemId = row[Reservations.itemId]
+            val item = itemsById[itemId]
+            val custodianId = item?.get(Items.custodianId)
+            val totals = movementTotals[itemId] ?: MovementTotals()
+            val overlappingOtherQuantity = Reservations
+                .select(Reservations.quantity)
+                .where {
+                    (Reservations.itemId eq itemId) and
+                        (Reservations.groupId neq groupId) and
+                        (Reservations.status inList listOf("APPROVED", "ACTIVE")) and
+                        (Reservations.startDate lessEq endDate) and
+                        (Reservations.endDate greaterEq startDate)
+                }
+                .sumOf { it[Reservations.quantity] }
+            val remainingAfterReservation = item?.let {
+                (it[Items.quantity] - overlappingOtherQuantity - row[Reservations.quantity]).coerceAtLeast(0)
+            }
             ReservationItemResponse(
                 itemId = itemId.toString(),
-                itemName = itemsById[itemId]?.get(Items.name) ?: "Unknown",
-                quantity = row[Reservations.quantity]
+                itemName = item?.get(Items.name) ?: "Unknown",
+                quantity = row[Reservations.quantity],
+                custodianId = custodianId?.toString(),
+                custodianName = custodianId?.let { custodiansById[it]?.get(OrganizationalUnits.name) },
+                remainingAfterReservation = remainingAfterReservation,
+                issuedQuantity = totals.issued,
+                returnedQuantity = totals.returned,
+                markedReturnedQuantity = totals.returnedMarked,
+                remainingToIssue = (row[Reservations.quantity] - totals.issued).coerceAtLeast(0),
+                remainingToReturn = (totals.issued - totals.returned).coerceAtLeast(0),
+                remainingToMarkReturned = (totals.issued - totals.returnedMarked).coerceAtLeast(0),
+                remainingToReceive = (totals.returnedMarked - totals.returned).coerceAtLeast(0)
             )
         }.sortedBy { it.itemName.lowercase() }
 
@@ -392,14 +944,34 @@ class ReservationService {
             title = first[Reservations.title],
             tuntasId = first[Reservations.tuntasId].toString(),
             reservedByUserId = first[Reservations.reservedByUserId].toString(),
+            reservedByName = reservedByUser?.let { "${it[Users.name]} ${it[Users.surname]}".trim() },
             approvedByUserId = first[Reservations.approvedByUserId]?.toString(),
             requestingUnitId = first[Reservations.requestingUnitId]?.toString(),
+            requestingUnitName = requestingUnit?.get(OrganizationalUnits.name),
             eventId = first[Reservations.eventId]?.toString(),
             totalItems = reservationItems.size,
             totalQuantity = reservationItems.sumOf { it.quantity },
             startDate = first[Reservations.startDate].toString(),
             endDate = first[Reservations.endDate].toString(),
             status = first[Reservations.status],
+            unitReviewStatus = first[Reservations.unitReviewStatus],
+            unitReviewedByUserId = first[Reservations.unitReviewedByUserId]?.toString(),
+            unitReviewedAt = first[Reservations.unitReviewedAt]?.toString(),
+            topLevelReviewStatus = first[Reservations.topLevelReviewStatus],
+            topLevelReviewedByUserId = first[Reservations.topLevelReviewedByUserId]?.toString(),
+            topLevelReviewedAt = first[Reservations.topLevelReviewedAt]?.toString(),
+            pickupAt = first[Reservations.pickupAt]?.toString(),
+            pickupProposalStatus = first[Reservations.pickupProposalStatus],
+            pickupProposedAt = first[Reservations.pickupProposedAt]?.toString(),
+            pickupProposedByUserId = first[Reservations.pickupProposedByUserId]?.toString(),
+            pickupRespondedAt = first[Reservations.pickupRespondedAt]?.toString(),
+            pickupRespondedByUserId = first[Reservations.pickupRespondedByUserId]?.toString(),
+            returnAt = first[Reservations.returnAt]?.toString(),
+            returnProposalStatus = first[Reservations.returnProposalStatus],
+            returnProposedAt = first[Reservations.returnProposedAt]?.toString(),
+            returnProposedByUserId = first[Reservations.returnProposedByUserId]?.toString(),
+            returnRespondedAt = first[Reservations.returnRespondedAt]?.toString(),
+            returnRespondedByUserId = first[Reservations.returnRespondedByUserId]?.toString(),
             notes = first[Reservations.notes],
             createdAt = first[Reservations.createdAt].toString(),
             updatedAt = rows.maxBy { it[Reservations.updatedAt] }[Reservations.updatedAt].toString(),

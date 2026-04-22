@@ -165,26 +165,27 @@ suspend fun RoutingContext.checkPermission(
 
     val permissions = resolveUserPermissions(userId, tuntasId)
 
-    val matchingPermission = permissions.firstOrNull { it.permissionName == permissionName }
+    val matchingPermissions = permissions.filter { it.permissionName == permissionName }
 
-    if (matchingPermission == null) {
+    if (matchingPermissions.isEmpty()) {
         call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
         return false
     }
 
-    if (matchingPermission.scope == "ALL") return true
+    if (matchingPermissions.any { it.scope == "ALL" }) return true
 
     if (targetOrgUnitId == null) {
         call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
         return false
     }
 
-    if (matchingPermission.userOrgUnitIds.isEmpty()) {
+    val scopedOrgUnitIds = matchingPermissions.flatMap { it.userOrgUnitIds }.toSet()
+    if (scopedOrgUnitIds.isEmpty()) {
         call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
         return false
     }
 
-    if (targetOrgUnitId !in matchingPermission.userOrgUnitIds) {
+    if (targetOrgUnitId !in scopedOrgUnitIds) {
         call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
         return false
     }

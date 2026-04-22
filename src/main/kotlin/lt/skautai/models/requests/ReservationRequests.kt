@@ -24,3 +24,33 @@ data class UpdateReservationStatusRequest(
     val status: String,
     val notes: String? = null
 )
+
+@Serializable
+data class ReviewReservationRequest(
+    val status: String,
+    val notes: String? = null
+)
+
+@Serializable
+data class ReservationMovementItemRequest(
+    val itemId: String,
+    val quantity: Int
+)
+
+@Serializable
+data class ReservationMovementRequest(
+    val items: List<ReservationMovementItemRequest>,
+    val notes: String? = null
+)
+
+@Serializable
+data class UpdateReservationPickupRequest(
+    val pickupAt: String? = null,
+    val response: String? = null
+)
+
+@Serializable
+data class UpdateReservationReturnTimeRequest(
+    val returnAt: String? = null,
+    val response: String? = null
+)

@@ -93,6 +93,10 @@ class ItemService {
                 return@transaction Result.failure(Exception("Invalid origin"))
             }
 
+            if (request.condition !in listOf("GOOD", "DAMAGED", "WRITTEN_OFF")) {
+                return@transaction Result.failure(Exception("Invalid condition"))
+            }
+
             if (request.quantity < 1) {
                 return@transaction Result.failure(Exception("Quantity must be at least 1"))
             }
@@ -146,6 +150,7 @@ class ItemService {
                 it[description] = request.description
                 it[type] = request.type
                 it[category] = request.category
+                it[condition] = request.condition
                 it[quantity] = request.quantity
                 it[locationId] = locationUUID
                 it[temporaryStorageLabel] = request.temporaryStorageLabel
@@ -178,7 +183,7 @@ class ItemService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Item not found"))
 
-            if (existing[Items.status] == "INACTIVE") {
+            if (existing[Items.status] == "INACTIVE" && request.status == null) {
                 return@transaction Result.failure(Exception("Cannot update an inactive item"))
             }
 

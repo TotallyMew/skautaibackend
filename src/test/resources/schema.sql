@@ -363,6 +363,24 @@ CREATE TABLE reservations (
                               quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
                               start_date DATE NOT NULL,
                               end_date DATE NOT NULL,
+                              unit_review_status VARCHAR(20) DEFAULT 'NOT_REQUIRED' CHECK (unit_review_status IN ('NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED')),
+                              unit_reviewed_by_user_id UUID REFERENCES users(id),
+                              unit_reviewed_at TIMESTAMP,
+                              top_level_review_status VARCHAR(20) DEFAULT 'NOT_REQUIRED' CHECK (top_level_review_status IN ('NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED')),
+                              top_level_reviewed_by_user_id UUID REFERENCES users(id),
+                              top_level_reviewed_at TIMESTAMP,
+                              pickup_at TIMESTAMP,
+                              pickup_proposal_status VARCHAR(20) DEFAULT 'NONE' CHECK (pickup_proposal_status IN ('NONE', 'PENDING', 'ACCEPTED')),
+                              pickup_proposed_at TIMESTAMP,
+                              pickup_proposed_by_user_id UUID REFERENCES users(id),
+                              pickup_responded_at TIMESTAMP,
+                              pickup_responded_by_user_id UUID REFERENCES users(id),
+                              return_at TIMESTAMP,
+                              return_proposal_status VARCHAR(20) DEFAULT 'NONE' CHECK (return_proposal_status IN ('NONE', 'PENDING', 'ACCEPTED')),
+                              return_proposed_at TIMESTAMP,
+                              return_proposed_by_user_id UUID REFERENCES users(id),
+                              return_responded_at TIMESTAMP,
+                              return_responded_by_user_id UUID REFERENCES users(id),
                               status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'ACTIVE', 'RETURNED', 'CANCELLED', 'REJECTED')),
                               notes TEXT,
                               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -373,6 +391,17 @@ CREATE TABLE reservations (
 CREATE TRIGGER update_reservations_updated_at
     BEFORE UPDATE ON reservations
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TABLE reservation_movements (
+                                       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                       reservation_group_id UUID NOT NULL,
+                                       item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                                       type VARCHAR(20) NOT NULL CHECK (type IN ('ISSUE', 'RETURN_MARKED', 'RETURN')),
+                                       quantity INTEGER NOT NULL CHECK (quantity > 0),
+                                       performed_by_user_id UUID NOT NULL REFERENCES users(id),
+                                       notes TEXT,
+                                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Return reminders
 CREATE TABLE return_reminders (
@@ -531,6 +560,9 @@ CREATE INDEX idx_reservations_item ON reservations(item_id);
 CREATE INDEX idx_reservations_group ON reservations(group_id);
 CREATE INDEX idx_reservations_dates ON reservations(start_date, end_date);
 CREATE INDEX idx_reservations_status ON reservations(status);
+CREATE INDEX idx_reservation_movements_group ON reservation_movements(reservation_group_id);
+CREATE INDEX idx_reservation_movements_item ON reservation_movements(item_id);
+CREATE INDEX idx_reservation_movements_type ON reservation_movements(type);
 CREATE INDEX idx_sync_operations_status ON sync_operations(status);
 CREATE INDEX idx_sync_operations_device ON sync_operations(device_id);
 CREATE INDEX idx_user_leadership_roles_user ON user_leadership_roles(user_id);

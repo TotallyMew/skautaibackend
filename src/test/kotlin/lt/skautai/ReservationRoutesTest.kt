@@ -42,7 +42,8 @@ class ReservationRoutesTest {
             setBody("""
                 {
                     "name": "$name",
-                    "category": "COLLECTIVE",
+                    "type": "COLLECTIVE",
+                    "category": "CAMPING",
                     "quantity": $quantity
                 }
             """.trimIndent())
@@ -426,5 +427,104 @@ class ReservationRoutesTest {
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(1, body["total"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun `approved reservation serializes remaining movement quantities`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val itemId = client.createTestItem(token, tuntasId, quantity = 5)
+
+        val createResponse = client.post("/api/reservations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "title": "Isdavimui",
+                    "items": [
+                        { "itemId": "$itemId", "quantity": 2 }
+                    ],
+                    "startDate": "2026-08-01",
+                    "endDate": "2026-08-07"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.Created, createResponse.status)
+        val reservationId = Json.parseToJsonElement(createResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.get("/api/reservations/$reservationId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val item = Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["items"]!!.jsonArray.first().jsonObject
+
+        assertEquals(2, item["quantity"]!!.jsonPrimitive.int)
+        assertEquals(0, item["issuedQuantity"]!!.jsonPrimitive.int)
+        assertEquals(0, item["returnedQuantity"]!!.jsonPrimitive.int)
+        assertEquals(0, item["markedReturnedQuantity"]!!.jsonPrimitive.int)
+        assertEquals(2, item["remainingToIssue"]!!.jsonPrimitive.int)
+        assertEquals(0, item["remainingToReturn"]!!.jsonPrimitive.int)
+        assertEquals(0, item["remainingToMarkReturned"]!!.jsonPrimitive.int)
+        assertEquals(0, item["remainingToReceive"]!!.jsonPrimitive.int)
+    }
+
+    @Test
+    fun `issuing reservation updates remaining movement quantities`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val itemId = client.createTestItem(token, tuntasId, quantity = 5)
+
+        val createResponse = client.post("/api/reservations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "title": "Dalinis isdavimas",
+                    "items": [
+                        { "itemId": "$itemId", "quantity": 2 }
+                    ],
+                    "startDate": "2026-09-01",
+                    "endDate": "2026-09-07"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.Created, createResponse.status)
+        val reservationId = Json.parseToJsonElement(createResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val issueResponse = client.post("/api/reservations/$reservationId/issue") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "items": [
+                        { "itemId": "$itemId", "quantity": 1 }
+                    ]
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.OK, issueResponse.status)
+        val body = Json.parseToJsonElement(issueResponse.bodyAsText()).jsonObject
+        val item = body["items"]!!.jsonArray.first().jsonObject
+
+        assertEquals("ACTIVE", body["status"]!!.jsonPrimitive.content)
+        assertEquals(2, item["quantity"]!!.jsonPrimitive.int)
+        assertEquals(1, item["issuedQuantity"]!!.jsonPrimitive.int)
+        assertEquals(0, item["returnedQuantity"]!!.jsonPrimitive.int)
+        assertEquals(0, item["markedReturnedQuantity"]!!.jsonPrimitive.int)
+        assertEquals(1, item["remainingToIssue"]!!.jsonPrimitive.int)
+        assertEquals(1, item["remainingToReturn"]!!.jsonPrimitive.int)
+        assertEquals(1, item["remainingToMarkReturned"]!!.jsonPrimitive.int)
+        assertEquals(0, item["remainingToReceive"]!!.jsonPrimitive.int)
     }
 }

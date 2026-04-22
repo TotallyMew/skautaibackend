@@ -35,9 +35,11 @@ fun Route.userRoutes() {
                 }
                 if (!isMember) return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
 
-                val perms = resolveUserPermissions(userId, tuntasId)
-                    .map { it.permissionName }
-                    .distinct()
+                val resolvedPermissions = resolveUserPermissions(userId, tuntasId)
+                val perms = (
+                    resolvedPermissions.map { it.permissionName } +
+                        resolvedPermissions.map { "${it.permissionName}:${it.scope}" }
+                    ).distinct()
 
                 call.respond(HttpStatusCode.OK, mapOf("permissions" to perms))
             }

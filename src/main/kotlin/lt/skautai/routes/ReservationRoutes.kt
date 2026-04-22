@@ -7,6 +7,10 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import lt.skautai.models.requests.CreateReservationRequest
+import lt.skautai.models.requests.ReservationMovementRequest
+import lt.skautai.models.requests.ReviewReservationRequest
+import lt.skautai.models.requests.UpdateReservationPickupRequest
+import lt.skautai.models.requests.UpdateReservationReturnTimeRequest
 import lt.skautai.models.requests.UpdateReservationStatusRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.plugins.checkPermission
@@ -36,14 +40,15 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                 val status = call.request.queryParameters["status"]
 
                 val userPerms = resolveUserPermissions(userId, tuntasUUID)
-                val isAdmin = userPerms.any {
+                val canViewAll = userPerms.any {
                     it.permissionName == "reservations.approve" && it.scope == "ALL"
                 }
-                val unitIds = if (!isAdmin)
-                    userPerms.firstOrNull()?.userOrgUnitIds?.toList() ?: emptyList()
-                else emptyList()
+                val approvableUnitIds = userPerms
+                    .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
+                    .flatMap { it.userOrgUnitIds }
+                    .distinct()
 
-                reservationService.getReservations(tuntasUUID, userId, isAdmin, unitIds, itemId, status)
+                reservationService.getReservations(tuntasUUID, userId, canViewAll, approvableUnitIds, itemId, status)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch reservations")) }
             }
@@ -68,6 +73,8 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
             }
 
             get("{id}") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
@@ -82,9 +89,18 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
                 }
 
-                reservationService.getReservation(reservationUUID, tuntasUUID)
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canViewAll = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val approvableUnitIds = resolvedPerms
+                    .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
+                    .flatMap { it.userOrgUnitIds }
+                    .toSet()
+
+                reservationService.getReservation(reservationUUID, tuntasUUID, userId, canViewAll, approvableUnitIds)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
-                    .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Reservation not found")) }
+                    .onFailure { call.respond(HttpStatusCode.Forbidden, ErrorResponse(it.message ?: "Reservation not found")) }
             }
 
             post {
@@ -100,10 +116,286 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                 if (!checkPermission("reservations.create", tuntasUUID)) return@post
 
                 val request = call.receive<CreateReservationRequest>()
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canApproveTopLevel = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val approvableUnitIds = resolvedPerms
+                    .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
+                    .flatMap { it.userOrgUnitIds }
+                    .toSet()
+                val userUnitIds = resolvedPerms.flatMap { it.userOrgUnitIds }.toSet()
 
-                reservationService.createReservation(tuntasUUID, userId, request)
+                reservationService.createReservation(
+                    tuntasUUID,
+                    userId,
+                    request,
+                    canApproveTopLevel,
+                    approvableUnitIds,
+                    userUnitIds
+                )
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create reservation")) }
+            }
+
+            post("{id}/unit-review") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                val reservationId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
+                val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
+                }
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canApproveTopLevel = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val approvableUnitIds = resolvedPerms
+                    .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
+                    .flatMap { it.userOrgUnitIds }
+                    .toSet()
+                if (!canApproveTopLevel && approvableUnitIds.isEmpty()) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val request = call.receive<ReviewReservationRequest>()
+                reservationService.reviewReservation(
+                    reservationUUID,
+                    tuntasUUID,
+                    userId,
+                    "unit",
+                    request,
+                    canApproveTopLevel,
+                    approvableUnitIds
+                )
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to review reservation")) }
+            }
+
+            post("{id}/top-level-review") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                val reservationId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
+                val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
+                }
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canApproveTopLevel = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                if (!canApproveTopLevel) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+                val request = call.receive<ReviewReservationRequest>()
+                reservationService.reviewReservation(
+                    reservationUUID,
+                    tuntasUUID,
+                    userId,
+                    "top-level",
+                    request,
+                    canApproveTopLevel = canApproveTopLevel,
+                    approvableUnitIds = emptySet()
+                )
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to review reservation")) }
+            }
+
+            get("{id}/movements") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                if (!checkPermission("reservations.view", tuntasUUID)) return@get
+                val reservationId = call.parameters["id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
+                val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
+                }
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canViewAll = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val approvableUnitIds = resolvedPerms
+                    .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
+                    .flatMap { it.userOrgUnitIds }
+                    .toSet()
+                reservationService.getMovements(reservationUUID, tuntasUUID, userId, canViewAll, approvableUnitIds)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to fetch movements")) }
+            }
+
+            post("{id}/issue") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                val reservationId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
+                val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
+                }
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canApproveTopLevel = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val approvableUnitIds = resolvedPerms
+                    .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
+                    .flatMap { it.userOrgUnitIds }
+                    .toSet()
+                if (!canApproveTopLevel && approvableUnitIds.isEmpty()) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+                val request = call.receive<ReservationMovementRequest>()
+                reservationService.recordMovement(
+                    reservationUUID,
+                    tuntasUUID,
+                    userId,
+                    "ISSUE",
+                    request,
+                    canApproveTopLevel,
+                    approvableUnitIds
+                )
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to issue items")) }
+            }
+
+            post("{id}/return") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                val reservationId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
+                val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
+                }
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canApproveTopLevel = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val approvableUnitIds = resolvedPerms
+                    .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
+                    .flatMap { it.userOrgUnitIds }
+                    .toSet()
+                if (!canApproveTopLevel && approvableUnitIds.isEmpty()) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+                val request = call.receive<ReservationMovementRequest>()
+                reservationService.recordMovement(
+                    reservationUUID,
+                    tuntasUUID,
+                    userId,
+                    "RETURN",
+                    request,
+                    canApproveTopLevel,
+                    approvableUnitIds
+                )
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to return items")) }
+            }
+
+            post("{id}/mark-returned") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                if (!checkPermission("reservations.view", tuntasUUID)) return@post
+                val reservationId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
+                val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
+                }
+                val request = call.receive<ReservationMovementRequest>()
+                reservationService.recordMovement(
+                    reservationUUID,
+                    tuntasUUID,
+                    userId,
+                    "RETURN_MARKED",
+                    request,
+                    canApproveTopLevel = false,
+                    approvableUnitIds = emptySet()
+                )
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to mark items as returned")) }
+            }
+
+            put("{id}/pickup-time") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                if (!checkPermission("reservations.view", tuntasUUID)) return@put
+                val reservationId = call.parameters["id"]
+                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
+                val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
+                }
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canManageTopLevel = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val approvableUnitIds = resolvedPerms
+                    .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
+                    .flatMap { it.userOrgUnitIds }
+                    .toSet()
+                val request = call.receive<UpdateReservationPickupRequest>()
+                reservationService.updatePickupTime(reservationUUID, tuntasUUID, userId, canManageTopLevel, approvableUnitIds, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to update pickup time")) }
+            }
+
+            put("{id}/return-time") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                if (!checkPermission("reservations.view", tuntasUUID)) return@put
+                val reservationId = call.parameters["id"]
+                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
+                val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
+                }
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canManageTopLevel = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val approvableUnitIds = resolvedPerms
+                    .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
+                    .flatMap { it.userOrgUnitIds }
+                    .toSet()
+                val request = call.receive<UpdateReservationReturnTimeRequest>()
+                reservationService.updateReturnTime(reservationUUID, tuntasUUID, userId, canManageTopLevel, approvableUnitIds, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to update return time")) }
             }
 
             put("{id}/status") {

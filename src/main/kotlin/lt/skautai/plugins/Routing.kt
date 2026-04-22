@@ -25,6 +25,7 @@ import lt.skautai.services.BendrasInventoryRequestService
 import lt.skautai.services.EventService
 import lt.skautai.services.RequisitionService
 import lt.skautai.routes.rolesRoutes
+import lt.skautai.routes.uploadRoutes
 
 fun Application.configureRouting() {
     val authService = AuthService(environment)
@@ -52,5 +53,6 @@ fun Application.configureRouting() {
         requisitionRoutes(requisitionService)
         userRoutes()
         rolesRoutes()
+        uploadRoutes()
     }
 }
