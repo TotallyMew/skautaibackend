@@ -1,4 +1,4 @@
-package lt.skautai
+﻿package lt.skautai
 
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -44,7 +44,7 @@ class LocationRoutesTest {
                 {
                     "name": "Garazas",
                     "address": "Vilnius g. 1",
-                    "description": "Pagrindinis sandėlis"
+                    "description": "Pagrindinis sandÄ—lis"
                 }
             """.trimIndent())
         }
@@ -99,7 +99,7 @@ class LocationRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Sandėlis" }""")
+            setBody("""{ "name": "SandÄ—lis" }""")
         }
 
         val response = client.get("/api/locations") {

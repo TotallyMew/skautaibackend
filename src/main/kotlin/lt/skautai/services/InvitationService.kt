@@ -78,6 +78,7 @@ class InvitationService {
             Result.success(
                 InvitationResponse(
                     code = code,
+                    tuntasId = tuntasId.toString(),
                     roleName = role[Roles.name],
                     tuntasName = tuntas[Tuntai.name],
                     expiresAt = expiresAt.toString(),
@@ -90,7 +91,6 @@ class InvitationService {
 
     fun acceptInvitation(
         userId: UUID,
-        activeTuntasId: UUID,
         request: AcceptInvitationRequest
     ): Result<InvitationResponse> {
         return transaction {
@@ -114,12 +114,9 @@ class InvitationService {
             }
 
             val inviteTuntasId = invite[Invitations.tuntasId]
-            if (inviteTuntasId != activeTuntasId) {
-                return@transaction Result.failure(Exception("Invite code belongs to another tuntas"))
-            }
 
             val tuntas = Tuntai.selectAll()
-                .where { Tuntai.id eq activeTuntasId }
+                .where { Tuntai.id eq inviteTuntasId }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Tuntas not found"))
 
@@ -130,17 +127,37 @@ class InvitationService {
             UserTuntasMemberships.selectAll()
                 .where {
                     (UserTuntasMemberships.userId eq userId) and
-                        (UserTuntasMemberships.tuntasId eq activeTuntasId) and
+                        (UserTuntasMemberships.tuntasId eq inviteTuntasId) and
                         UserTuntasMemberships.leftAt.isNull()
                 }
                 .firstOrNull()
-                ?: return@transaction Result.failure(Exception("You must already be a member of this tuntas"))
+                ?: run {
+                    val existingMembership = UserTuntasMemberships.selectAll()
+                        .where {
+                            (UserTuntasMemberships.userId eq userId) and
+                                (UserTuntasMemberships.tuntasId eq inviteTuntasId)
+                        }
+                        .firstOrNull()
+
+                    if (existingMembership != null) {
+                        UserTuntasMemberships.update({ UserTuntasMemberships.id eq existingMembership[UserTuntasMemberships.id] }) {
+                            it[joinedAt] = now
+                            it[leftAt] = null
+                        }
+                    } else {
+                        UserTuntasMemberships.insert {
+                            it[this.userId] = userId
+                            it[this.tuntasId] = inviteTuntasId
+                            it[joinedAt] = now
+                        }
+                    }
+                }
 
             val roleId = invite[Invitations.roleId]
             val role = Roles.selectAll()
                 .where {
                     (Roles.id eq roleId) and
-                        (Roles.tuntasId eq activeTuntasId)
+                        (Roles.tuntasId eq inviteTuntasId)
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Role not found in this tuntas"))
@@ -150,25 +167,25 @@ class InvitationService {
                 OrganizationalUnits.selectAll()
                     .where {
                         (OrganizationalUnits.id eq orgUnitId) and
-                            (OrganizationalUnits.tuntasId eq activeTuntasId)
+                            (OrganizationalUnits.tuntasId eq inviteTuntasId)
                     }
                     .firstOrNull()
                     ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
 
-                validatePrimaryUnitAssignment(userId, activeTuntasId, orgUnitId)
+                validatePrimaryUnitAssignment(userId, inviteTuntasId, orgUnitId)
                     ?.let { return@transaction Result.failure(Exception(it)) }
             }
 
             when (role[Roles.roleType]) {
                 "LEADERSHIP" -> {
-                    LeadershipRoleRules.validatePrincipalUnitLeaderSlot(roleId, activeTuntasId, orgUnitId)
+                    LeadershipRoleRules.validatePrincipalUnitLeaderSlot(roleId, inviteTuntasId, orgUnitId)
                         ?.let { return@transaction Result.failure(Exception(it)) }
 
                     val exists = UserLeadershipRoles.selectAll()
                         .where {
-                            (UserLeadershipRoles.userId eq userId) and
-                                (UserLeadershipRoles.roleId eq roleId) and
-                                (UserLeadershipRoles.tuntasId eq activeTuntasId) and
+                                (UserLeadershipRoles.userId eq userId) and
+                                    (UserLeadershipRoles.roleId eq roleId) and
+                                (UserLeadershipRoles.tuntasId eq inviteTuntasId) and
                                 (UserLeadershipRoles.organizationalUnitId eq orgUnitId) and
                                 (UserLeadershipRoles.termStatus eq "ACTIVE") and
                                 UserLeadershipRoles.leftAt.isNull()
@@ -179,23 +196,23 @@ class InvitationService {
                         UserLeadershipRoles.insert {
                             it[this.userId] = userId
                             it[this.roleId] = roleId
-                            it[tuntasId] = activeTuntasId
+                            it[tuntasId] = inviteTuntasId
                             it[organizationalUnitId] = orgUnitId
                             it[assignedByUserId] = invite[Invitations.createdByUserId]
                         }
                     }
                     VadovasRankSupport.ensureVadovasRank(
                         userId = userId,
-                        tuntasId = activeTuntasId,
+                        tuntasId = inviteTuntasId,
                         assignedByUserId = invite[Invitations.createdByUserId]
                     )
                 }
                 "RANK" -> {
                     val exists = UserRanks.selectAll()
                         .where {
-                            (UserRanks.userId eq userId) and
-                                (UserRanks.roleId eq roleId) and
-                                (UserRanks.tuntasId eq activeTuntasId)
+                                (UserRanks.userId eq userId) and
+                                    (UserRanks.roleId eq roleId) and
+                                (UserRanks.tuntasId eq inviteTuntasId)
                         }
                         .firstOrNull() != null
 
@@ -203,7 +220,7 @@ class InvitationService {
                         UserRanks.insert {
                             it[this.userId] = userId
                             it[this.roleId] = roleId
-                            it[tuntasId] = activeTuntasId
+                            it[tuntasId] = inviteTuntasId
                             it[assignedByUserId] = invite[Invitations.createdByUserId]
                         }
                     }
@@ -214,9 +231,9 @@ class InvitationService {
             if (orgUnitId != null) {
                 val unitAssignmentExists = UnitAssignments.selectAll()
                     .where {
-                        (UnitAssignments.userId eq userId) and
-                            (UnitAssignments.organizationalUnitId eq orgUnitId) and
-                            (UnitAssignments.tuntasId eq activeTuntasId) and
+                            (UnitAssignments.userId eq userId) and
+                                (UnitAssignments.organizationalUnitId eq orgUnitId) and
+                            (UnitAssignments.tuntasId eq inviteTuntasId) and
                             (UnitAssignments.assignmentType eq "MEMBER") and
                             UnitAssignments.leftAt.isNull()
                     }
@@ -226,7 +243,7 @@ class InvitationService {
                     UnitAssignments.insert {
                         it[this.userId] = userId
                         it[organizationalUnitId] = orgUnitId
-                        it[tuntasId] = activeTuntasId
+                        it[tuntasId] = inviteTuntasId
                         it[assignmentType] = "MEMBER"
                         it[assignedByUserId] = invite[Invitations.createdByUserId]
                     }
@@ -241,6 +258,7 @@ class InvitationService {
             Result.success(
                 InvitationResponse(
                     code = code,
+                    tuntasId = inviteTuntasId.toString(),
                     roleName = role[Roles.name],
                     tuntasName = tuntas[Tuntai.name],
                     expiresAt = invite[Invitations.expiresAt].toString(),

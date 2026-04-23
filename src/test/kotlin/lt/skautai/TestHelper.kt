@@ -1,4 +1,4 @@
-package lt.skautai
+﻿package lt.skautai
 
 import io.ktor.client.*
 import io.ktor.client.request.*
@@ -29,6 +29,7 @@ import lt.skautai.routes.requisitionRoutes
 import lt.skautai.routes.reservationRoutes
 import lt.skautai.services.ReservationService
 import lt.skautai.routes.eventRoutes
+import lt.skautai.routes.userRoutes
 import lt.skautai.services.EventService
 
 object TestHelper {
@@ -124,6 +125,7 @@ object TestHelper {
                 eventRoutes(eventService)
                 bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
                 requisitionRoutes(requisitionService)
+                userRoutes()
 
             }
         }
@@ -131,7 +133,7 @@ object TestHelper {
 
     suspend fun HttpClient.registerAndActivateTuntininkas(
         email: String = "tuntininkas@test.com",
-        password: String = "test123",
+        password: String = "testas123",
         tuntasName: String = "Test Tuntas"
     ): Pair<String, String> {
         val response = post("/api/auth/register") {
@@ -143,7 +145,7 @@ object TestHelper {
                     "email": "$email",
                     "password": "$password",
                     "tuntasName": "$tuntasName",
-                    "tuntasKrastas": "Vilnius"
+                    "tuntasKrastas": "Vilniaus"
                 }
             """.trimIndent())
         }

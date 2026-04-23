@@ -1,4 +1,4 @@
-package lt.skautai
+﻿package lt.skautai
 
 import io.ktor.client.HttpClient
 import io.ktor.client.request.*
@@ -69,7 +69,7 @@ class ReservationRoutesTest {
 
         val registerResponse = post("/api/auth/register/invite") {
             contentType(ContentType.Application.Json)
-            setBody("""{ "name": "Second", "surname": "User", "email": "$email", "password": "test123", "inviteCode": "$inviteCode" }""")
+            setBody("""{ "name": "Second", "surname": "User", "email": "$email", "password": "testas123", "inviteCode": "$inviteCode" }""")
         }
         val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
         return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content

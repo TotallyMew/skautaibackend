@@ -5,7 +5,7 @@ import org.jetbrains.exposed.sql.kotlin.datetime.timestamp
 
 object Tuntai : Table("tuntai") {
     val id = uuid("id").autoGenerate()
-    val name = varchar("name", 100)
+    val name = varchar("name", 100).uniqueIndex()
     val krastas = varchar("krastas", 100).nullable()
     val contactEmail = varchar("contact_email", 255).nullable()
     val status = varchar("status", 20).default("PENDING")

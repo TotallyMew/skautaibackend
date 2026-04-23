@@ -105,6 +105,9 @@ fun Route.memberRoutes(memberService: MemberService) {
                 }
 
                 put("{assignmentId}") {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+
                     val tuntasId = call.request.headers["X-Tuntas-Id"]
                         ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                     val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
@@ -127,12 +130,15 @@ fun Route.memberRoutes(memberService: MemberService) {
 
                     val request = call.receive<UpdateLeadershipRoleRequest>()
 
-                    memberService.updateLeadershipRole(userUUID, assignmentUUID, tuntasUUID, request)
+                    memberService.updateLeadershipRole(userUUID, assignmentUUID, tuntasUUID, callerUserId, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to update role")) }
                 }
 
                 delete("{assignmentId}") {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+
                     val tuntasId = call.request.headers["X-Tuntas-Id"]
                         ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                     val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
@@ -153,7 +159,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                         return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid assignment ID"))
                     }
 
-                    memberService.removeLeadershipRole(userUUID, assignmentUUID, tuntasUUID)
+                    memberService.removeLeadershipRole(userUUID, assignmentUUID, tuntasUUID, callerUserId)
                         .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Leadership role removed")) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove role")) }
                 }
@@ -234,6 +240,9 @@ fun Route.memberRoutes(memberService: MemberService) {
                 }
             }
             delete("{userId}/remove") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
                     ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
@@ -248,7 +257,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                     return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
                 }
 
-                memberService.removeMember(userUUID, tuntasUUID)
+                memberService.removeMember(userUUID, tuntasUUID, callerUserId)
                     .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Member removed")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove member")) }
             }

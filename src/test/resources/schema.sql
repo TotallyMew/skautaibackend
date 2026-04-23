@@ -21,7 +21,7 @@ CREATE TABLE super_admins (
 
 CREATE TABLE tuntai (
                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                        name VARCHAR(100) NOT NULL,
+                        name VARCHAR(100) UNIQUE NOT NULL,
                         krastas VARCHAR(100),
                         contact_email VARCHAR(255),
                         status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACTIVE', 'SUSPENDED', 'REJECTED')),

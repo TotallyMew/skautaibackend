@@ -62,17 +62,8 @@ fun Route.invitationRoutes(invitationService: InvitationService) {
                     return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
                 }
 
-                val tuntasId = call.request.headers["X-Tuntas-Id"]
-                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
-
-                val tuntasUUID = try {
-                    UUID.fromString(tuntasId)
-                } catch (e: Exception) {
-                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
-                }
-
                 val request = call.receive<AcceptInvitationRequest>()
-                invitationService.acceptInvitation(userId, tuntasUUID, request)
+                invitationService.acceptInvitation(userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to accept invitation")) }
             }

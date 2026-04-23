@@ -1,4 +1,4 @@
-package lt.skautai
+﻿package lt.skautai
 
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -31,7 +31,7 @@ class OrganizationalUnitRoutesTest {
         TestHelper.cleanTables()
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private suspend fun ApplicationTestBuilder.createUnit(
         token: String,
@@ -74,7 +74,7 @@ class OrganizationalUnitRoutesTest {
                     "name": "Second",
                     "surname": "User",
                     "email": "$email",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$inviteCode"
                 }
             """.trimIndent())
@@ -83,7 +83,7 @@ class OrganizationalUnitRoutesTest {
         return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
     }
 
-    // ── Unit CRUD ─────────────────────────────────────────────────────────────
+    // â”€â”€ Unit CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `create unit returns 201`() = testApplication {
@@ -348,7 +348,7 @@ class OrganizationalUnitRoutesTest {
         assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
-    // ── Unit membership ───────────────────────────────────────────────────────
+    // â”€â”€ Unit membership â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `assign member returns 201 with assignmentType MEMBER`() = testApplication {

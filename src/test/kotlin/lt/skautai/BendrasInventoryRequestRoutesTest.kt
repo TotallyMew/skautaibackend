@@ -1,4 +1,4 @@
-package lt.skautai
+﻿package lt.skautai
 
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -50,7 +50,7 @@ class BendrasInventoryRequestRoutesTest {
         """.trimIndent())
         }
         val bodyText = response.bodyAsText()
-        println("createItem response: ${response.status} — $bodyText")
+        println("createItem response: ${response.status} â€” $bodyText")
         return Json.parseToJsonElement(bodyText)
             .jsonObject["id"]!!.jsonPrimitive.content
     }
@@ -79,7 +79,7 @@ class BendrasInventoryRequestRoutesTest {
                     "name": "Second",
                     "surname": "User",
                     "email": "$email",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$inviteCode"
                 }
             """.trimIndent())
@@ -367,7 +367,7 @@ class BendrasInventoryRequestRoutesTest {
                 "name": "Draugininkas",
                 "surname": "User",
                 "email": "draugininkas@test.com",
-                "password": "test123",
+                "password": "testas123",
                 "inviteCode": "$inviteCode"
             }
         """.trimIndent())

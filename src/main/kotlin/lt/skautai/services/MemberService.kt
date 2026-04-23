@@ -174,6 +174,7 @@ class MemberService {
         targetUserId: UUID,
         assignmentId: UUID,
         tuntasId: UUID,
+        callerUserId: UUID,
         request: UpdateLeadershipRoleRequest
     ): Result<MemberLeadershipRoleResponse> {
         return transaction {
@@ -218,6 +219,15 @@ class MemberService {
                 try { kotlinx.datetime.Instant.parse(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid expiresAt format, use ISO 8601"))
                 }
+            }
+
+            if (request.termStatus in listOf("COMPLETED", "RESIGNED")) {
+                validateCanChangeTargetLeadership(
+                    callerUserId = callerUserId,
+                    targetUserId = targetUserId,
+                    tuntasId = tuntasId,
+                    targetRoleId = assignment[UserLeadershipRoles.roleId]
+                )?.let { return@transaction Result.failure(Exception(it)) }
             }
 
             val finalStatus = request.termStatus ?: assignment[UserLeadershipRoles.termStatus]
@@ -269,10 +279,11 @@ class MemberService {
     fun removeLeadershipRole(
         targetUserId: UUID,
         assignmentId: UUID,
-        tuntasId: UUID
+        tuntasId: UUID,
+        callerUserId: UUID
     ): Result<Unit> {
         return transaction {
-            UserLeadershipRoles.selectAll()
+            val assignment = UserLeadershipRoles.selectAll()
                 .where {
                     (UserLeadershipRoles.id eq assignmentId) and
                             (UserLeadershipRoles.userId eq targetUserId) and
@@ -280,6 +291,13 @@ class MemberService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Leadership role assignment not found"))
+
+            validateCanChangeTargetLeadership(
+                callerUserId = callerUserId,
+                targetUserId = targetUserId,
+                tuntasId = tuntasId,
+                targetRoleId = assignment[UserLeadershipRoles.roleId]
+            )?.let { return@transaction Result.failure(Exception(it)) }
 
             val now = kotlinx.datetime.Clock.System.now()
             UserLeadershipRoles.update({
@@ -513,7 +531,7 @@ class MemberService {
             assignedAt = row[UserRanks.assignedAt].toString()
         )
     }
-    fun removeMember(targetUserId: UUID, tuntasId: UUID): Result<Unit> {
+    fun removeMember(targetUserId: UUID, tuntasId: UUID, callerUserId: UUID): Result<Unit> {
         return transaction {
             val membership = UserTuntasMemberships.selectAll()
                 .where {
@@ -523,6 +541,12 @@ class MemberService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Member not found in this tuntas"))
+
+            validateCanRemoveMember(
+                callerUserId = callerUserId,
+                targetUserId = targetUserId,
+                tuntasId = tuntasId
+            )?.let { return@transaction Result.failure(Exception(it)) }
 
             val now = kotlinx.datetime.Clock.System.now()
 
@@ -592,6 +616,79 @@ class MemberService {
             }
 
             Result.success(Unit)
+        }
+    }
+
+    private fun validateCanChangeTargetLeadership(
+        callerUserId: UUID,
+        targetUserId: UUID,
+        tuntasId: UUID,
+        targetRoleId: UUID
+    ): String? {
+        if (callerUserId == targetUserId) {
+            return "Use step-down to resign your own leadership role"
+        }
+
+        val callerRank = highestActiveLeadershipRank(callerUserId, tuntasId)
+        val targetRank = roleRank(targetRoleId)
+        return if (callerRank > targetRank) null else "Cannot remove equal or higher leadership role"
+    }
+
+    private fun validateCanRemoveMember(
+        callerUserId: UUID,
+        targetUserId: UUID,
+        tuntasId: UUID
+    ): String? {
+        if (callerUserId == targetUserId) {
+            return "Use resign to leave this tuntas"
+        }
+
+        val callerRank = highestActiveLeadershipRank(callerUserId, tuntasId)
+        val targetRank = highestActiveLeadershipRank(targetUserId, tuntasId)
+        return if (callerRank > targetRank) null else "Cannot remove member with equal or higher leadership role"
+    }
+
+    private fun highestActiveLeadershipRank(userId: UUID, tuntasId: UUID): Int {
+        return UserLeadershipRoles
+            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull())
+            }
+            .map { leadershipRoleRank(it[Roles.name]) }
+            .maxOrNull() ?: 0
+    }
+
+    private fun roleRank(roleId: UUID): Int {
+        val roleName = Roles.selectAll()
+            .where { Roles.id eq roleId }
+            .firstOrNull()
+            ?.get(Roles.name)
+            ?: return 0
+        return leadershipRoleRank(roleName)
+    }
+
+    private fun leadershipRoleRank(roleName: String): Int {
+        return when (roleName) {
+            "Tuntininkas" -> 5
+            "Tuntininko pavaduotojas" -> 4
+            "Inventorininkas" -> 3
+            "Draugininkas",
+            "Gildijos pirmininkas",
+            "Vyr. skautu draugoves draugininkas",
+            "Vyr. skautu burelio pirmininkas",
+            "Vyr. skauciu draugoves draugininkas",
+            "Vyr. skauciu burelio pirmininkas",
+            "Draugininko pavaduotojas",
+            "Gildijos pirmininko pavaduotojas",
+            "Vyr. skautu draugoves draugininko pavaduotojas",
+            "Vyr. skautu burelio pirmininko pavaduotojas",
+            "Vyr. skauciu draugoves draugininko pavaduotojas",
+            "Vyr. skauciu burelio pirmininko pavaduotojas" -> 2
+            else -> 0
         }
     }
 }

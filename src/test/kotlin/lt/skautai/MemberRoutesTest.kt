@@ -1,4 +1,4 @@
-package lt.skautai
+﻿package lt.skautai
 
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -70,7 +70,7 @@ class MemberRoutesTest {
                     "name": "Test",
                     "surname": "User",
                     "email": "$email",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$inviteCode"
                 }
             """.trimIndent())
@@ -181,13 +181,7 @@ class MemberRoutesTest {
     fun `update leadership role term status returns 200`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val listResponse = client.get("/api/members") {
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-        }
-        val userId = Json.parseToJsonElement(listResponse.bodyAsText())
-            .jsonObject["members"]!!.jsonArray[0].jsonObject["userId"]!!.jsonPrimitive.content
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Skautas", "role-update@test.com")
 
         val inventorininkaasRoleId = TestHelper.getRoleId(tuntasId, "Inventorininkas")
 
@@ -244,7 +238,7 @@ class MemberRoutesTest {
             val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
             val registerResponse = client.post("/api/auth/register/invite") {
                 contentType(ContentType.Application.Json)
-                setBody("""{ "name": "Test", "surname": "User", "email": "$email", "password": "test123", "inviteCode": "$inviteCode" }""")
+                setBody("""{ "name": "Test", "surname": "User", "email": "$email", "password": "testas123", "inviteCode": "$inviteCode" }""")
             }
             val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
             return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
@@ -308,7 +302,7 @@ class MemberRoutesTest {
         val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
         val registerResponse = client.post("/api/auth/register/invite") {
             contentType(ContentType.Application.Json)
-            setBody("""{ "name": "Former", "surname": "Leader", "email": "former@test.com", "password": "test123", "inviteCode": "$inviteCode" }""")
+            setBody("""{ "name": "Former", "surname": "Leader", "email": "former@test.com", "password": "testas123", "inviteCode": "$inviteCode" }""")
         }
         val formerLeaderToken = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject["token"]!!.jsonPrimitive.content
         val formerLeaderId = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject["userId"]!!.jsonPrimitive.content
@@ -419,13 +413,7 @@ class MemberRoutesTest {
     fun `remove leadership role returns 200`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val listResponse = client.get("/api/members") {
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-        }
-        val userId = Json.parseToJsonElement(listResponse.bodyAsText())
-            .jsonObject["members"]!!.jsonArray[0].jsonObject["userId"]!!.jsonPrimitive.content
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Skautas", "role-remove@test.com")
 
         val inventorininkaasRoleId = TestHelper.getRoleId(tuntasId, "Inventorininkas")
 
@@ -458,6 +446,72 @@ class MemberRoutesTest {
             .first { it.jsonObject["id"]!!.jsonPrimitive.content == assignmentId }
             .jsonObject
         assertEquals("RESIGNED", historyRole["termStatus"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `deputy cannot remove tuntininkas leadership role`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val (deputyToken, _) = registerUserWithRole(token, tuntasId, "Tuntininko pavaduotojas", "top-deputy@test.com")
+
+        val (tuntininkasUserId, assignmentId) = transaction {
+            var userId = ""
+            var roleAssignmentId = ""
+            exec("""
+                SELECT ulr.user_id, ulr.id
+                FROM user_leadership_roles ulr
+                JOIN roles r ON r.id = ulr.role_id
+                WHERE ulr.tuntas_id = '$tuntasId'
+                    AND r.name = 'Tuntininkas'
+                    AND ulr.left_at IS NULL
+                LIMIT 1
+            """.trimIndent()) { rs ->
+                if (rs.next()) {
+                    userId = rs.getString("user_id")
+                    roleAssignmentId = rs.getString("id")
+                }
+            }
+            userId to roleAssignmentId
+        }
+
+        val response = client.delete("/api/members/$tuntininkasUserId/leadership-roles/$assignmentId") {
+            header("Authorization", "Bearer $deputyToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `leader cannot remove equal rank leadership role`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val (firstDeputyToken, _) = registerUserWithRole(token, tuntasId, "Tuntininko pavaduotojas", "equal-one@test.com")
+        val (_, secondDeputyId) = registerUserWithRole(token, tuntasId, "Tuntininko pavaduotojas", "equal-two@test.com")
+
+        val assignmentId = transaction {
+            var id = ""
+            exec("""
+                SELECT ulr.id
+                FROM user_leadership_roles ulr
+                JOIN roles r ON r.id = ulr.role_id
+                WHERE ulr.user_id = '$secondDeputyId'
+                    AND ulr.tuntas_id = '$tuntasId'
+                    AND r.name = 'Tuntininko pavaduotojas'
+                    AND ulr.left_at IS NULL
+                LIMIT 1
+            """.trimIndent()) { rs ->
+                if (rs.next()) id = rs.getString("id")
+            }
+            id
+        }
+
+        val response = client.delete("/api/members/$secondDeputyId/leadership-roles/$assignmentId") {
+            header("Authorization", "Bearer $firstDeputyToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
     @Test
@@ -567,7 +621,7 @@ class MemberRoutesTest {
                 "name": "Second",
                 "surname": "User",
                 "email": "second@test.com",
-                "password": "test123",
+                "password": "testas123",
                 "inviteCode": "$inviteCode"
             }
         """.trimIndent())
@@ -692,7 +746,7 @@ class MemberRoutesTest {
                 "name": "Second",
                 "surname": "User",
                 "email": "second@test.com",
-                "password": "test123",
+                "password": "testas123",
                 "inviteCode": "$inviteCode"
             }
         """.trimIndent())
@@ -755,7 +809,7 @@ class MemberRoutesTest {
                 "name": "Second",
                 "surname": "User",
                 "email": "second@test.com",
-                "password": "test123",
+                "password": "testas123",
                 "inviteCode": "$inviteCode"
             }
         """.trimIndent())
@@ -821,7 +875,7 @@ class MemberRoutesTest {
                 "name": "Second",
                 "surname": "User",
                 "email": "second@test.com",
-                "password": "test123",
+                "password": "testas123",
                 "inviteCode": "$inviteCode"
             }
         """.trimIndent())
@@ -837,7 +891,7 @@ class MemberRoutesTest {
             header("X-Tuntas-Id", tuntasId)
         }
 
-        // Second user now tries to resign — should fail as they are no longer active
+        // Second user now tries to resign â€” should fail as they are no longer active
         val response = client.post("/api/members/$secondUserId/resign") {
             header("Authorization", "Bearer $secondToken")
             header("X-Tuntas-Id", tuntasId)

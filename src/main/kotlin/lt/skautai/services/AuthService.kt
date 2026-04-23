@@ -20,6 +20,18 @@ class AuthService(private val environment: ApplicationEnvironment) {
     private val secret = environment.config.property("jwt.secret").getString()
     private val issuer = environment.config.property("jwt.issuer").getString()
     private val audience = environment.config.property("jwt.audience").getString()
+    private val emailRegex = Regex("^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}$", RegexOption.IGNORE_CASE)
+    private val allowedKrastai = setOf(
+        "Alytaus",
+        "Kauno",
+        "Klaipėdos",
+        "Marijampolės",
+        "Šiaulių",
+        "Tauragės",
+        "Telšių",
+        "Utenos",
+        "Vilniaus"
+    )
 
     // role name -> role_type
     private val systemRoles = mapOf(
@@ -48,28 +60,48 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
     fun registerTuntininkas(request: RegisterTuntininkasRequest): Result<TokenResponse> {
         return transaction {
+            val name = request.name.trim()
+            val surname = request.surname.trim()
+            val email = normalizeEmail(request.email)
+            val tuntasName = request.tuntasName.trim()
+            val tuntasKrastas = request.tuntasKrastas?.trim().orEmpty()
+
+            validateRequired(name, "Name")?.let { return@transaction Result.failure(Exception(it)) }
+            validateRequired(surname, "Surname")?.let { return@transaction Result.failure(Exception(it)) }
+            validateEmail(email)?.let { return@transaction Result.failure(Exception(it)) }
+            validatePassword(request.password)?.let { return@transaction Result.failure(Exception(it)) }
+            validateRequired(tuntasName, "Tuntas name")?.let { return@transaction Result.failure(Exception(it)) }
+            validateKrastas(tuntasKrastas)?.let { return@transaction Result.failure(Exception(it)) }
+
             val existingUser = Users.selectAll()
-                .where { Users.email eq request.email }
+                .where { Users.email eq email }
                 .firstOrNull()
             if (existingUser != null) {
                 return@transaction Result.failure(Exception("Email already registered"))
             }
 
+            val existingTuntas = Tuntai.selectAll()
+                .where { Tuntai.name.lowerCase() eq tuntasName.lowercase(Locale.ROOT) }
+                .firstOrNull()
+            if (existingTuntas != null) {
+                return@transaction Result.failure(Exception("Tuntas name already exists"))
+            }
+
             val passwordHash = BCrypt.hashpw(request.password, BCrypt.gensalt())
 
             val userId = Users.insert {
-                it[name] = request.name
-                it[surname] = request.surname
-                it[email] = request.email
-                it[this.passwordHash] = passwordHash
-                it[phone] = request.phone
+                it[Users.name] = name
+                it[Users.surname] = surname
+                it[Users.email] = email
+                it[Users.passwordHash] = passwordHash
+                it[Users.phone] = request.phone
             } get Users.id
 
             val tuntasId = Tuntai.insert {
-                it[name] = request.tuntasName
-                it[krastas] = request.tuntasKrastas
-                it[contactEmail] = request.tuntasContactEmail
-                it[status] = "PENDING"
+                it[Tuntai.name] = tuntasName
+                it[Tuntai.krastas] = tuntasKrastas
+                it[Tuntai.contactEmail] = email
+                it[Tuntai.status] = "PENDING"
             } get Tuntai.id
 
             UserTuntasMemberships.insert {
@@ -80,10 +112,10 @@ class AuthService(private val environment: ApplicationEnvironment) {
             // Seed all system roles with correct role_type
             for ((roleName, roleType) in systemRoles) {
                 Roles.insert {
-                    it[this.tuntasId] = tuntasId
-                    it[name] = roleName
-                    it[isSystemRole] = true
-                    it[this.roleType] = roleType
+                    it[Roles.tuntasId] = tuntasId
+                    it[Roles.name] = roleName
+                    it[Roles.isSystemRole] = true
+                    it[Roles.roleType] = roleType
                 }
             }
             PermissionSeeder.seedRolePermissions(tuntasId)
@@ -104,13 +136,13 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 assignedByUserId = userId
             )
 
-            val token = generateToken(userId.toString(), request.email, "user")
+            val token = generateToken(userId.toString(), email, "user")
             Result.success(
                 TokenResponse(
                     token = token,
                     userId = userId.toString(),
-                    email = request.email,
-                    name = request.name
+                    email = email,
+                    name = name
                 )
             )
         }
@@ -118,15 +150,26 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
     fun registerWithInvite(request: RegisterWithInviteRequest): Result<TokenResponse> {
         return transaction {
+            val name = request.name.trim()
+            val surname = request.surname.trim()
+            val email = normalizeEmail(request.email)
+            val inviteCode = request.inviteCode.trim()
+
+            validateRequired(name, "Name")?.let { return@transaction Result.failure(Exception(it)) }
+            validateRequired(surname, "Surname")?.let { return@transaction Result.failure(Exception(it)) }
+            validateEmail(email)?.let { return@transaction Result.failure(Exception(it)) }
+            validatePassword(request.password)?.let { return@transaction Result.failure(Exception(it)) }
+            validateRequired(inviteCode, "Invite code")?.let { return@transaction Result.failure(Exception(it)) }
+
             val existingUser = Users.selectAll()
-                .where { Users.email eq request.email }
+                .where { Users.email eq email }
                 .firstOrNull()
             if (existingUser != null) {
                 return@transaction Result.failure(Exception("Email already registered"))
             }
 
             val invite = Invitations.selectAll()
-                .where { Invitations.code eq request.inviteCode }
+                .where { Invitations.code eq inviteCode }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Invalid invite code"))
 
@@ -159,11 +202,11 @@ class AuthService(private val environment: ApplicationEnvironment) {
             val passwordHash = BCrypt.hashpw(request.password, BCrypt.gensalt())
 
             val userId = Users.insert {
-                it[name] = request.name
-                it[surname] = request.surname
-                it[email] = request.email
-                it[this.passwordHash] = passwordHash
-                it[phone] = request.phone
+                it[Users.name] = name
+                it[Users.surname] = surname
+                it[Users.email] = email
+                it[Users.passwordHash] = passwordHash
+                it[Users.phone] = request.phone
             } get Users.id
 
             UserTuntasMemberships.insert {
@@ -213,14 +256,14 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 it[usedAt] = now
             }
 
-            val token = generateToken(userId.toString(), request.email, "user")
+            val token = generateToken(userId.toString(), email, "user")
             val tuntai = getActiveTuntaiForUser(userId)
             Result.success(
                 TokenResponse(
                     token = token,
                     userId = userId.toString(),
-                    email = request.email,
-                    name = request.name,
+                    email = email,
+                    name = name,
                     tuntai = tuntai
                 )
             )
@@ -229,8 +272,9 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
     fun login(request: LoginRequest): Result<TokenResponse> {
         return transaction {
+            val email = normalizeEmail(request.email)
             val user = Users.selectAll()
-                .where { Users.email eq request.email }
+                .where { Users.email eq email }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Invalid email or password"))
 
@@ -258,8 +302,9 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
     fun loginSuperAdmin(request: LoginRequest): Result<TokenResponse> {
         return transaction {
+            val email = normalizeEmail(request.email)
             val admin = SuperAdmins.selectAll()
-                .where { SuperAdmins.email eq request.email }
+                .where { SuperAdmins.email eq email }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Invalid email or password"))
 
@@ -317,10 +362,45 @@ class AuthService(private val environment: ApplicationEnvironment) {
                     id = it[Tuntai.id].toString(),
                     name = it[Tuntai.name],
                     krastas = it[Tuntai.krastas] ?: "",
-                    contactEmail = it[Tuntai.contactEmail] ?: ""
+                    contactEmail = it[Tuntai.contactEmail] ?: "",
+                    status = it[Tuntai.status]
                 )
             }
     }
+
+    private fun normalizeEmail(email: String): String = email.trim().lowercase(Locale.ROOT)
+
+    private fun validateRequired(value: String, label: String): String? {
+        return if (value.isBlank()) "$label is required" else null
+    }
+
+    private fun validateEmail(email: String): String? {
+        return when {
+            email.isBlank() -> "Email is required"
+            !emailRegex.matches(email) -> "Invalid email format"
+            else -> null
+        }
+    }
+
+    private fun validatePassword(password: String): String? {
+        return when {
+            password.isBlank() -> "Password is required"
+            password.length < 8 -> "Password must be at least 8 characters"
+            password.any { it.isWhitespace() } -> "Password cannot contain spaces"
+            !password.any { it.isLetter() } -> "Password must contain a letter"
+            !password.any { it.isDigit() } -> "Password must contain a number"
+            else -> null
+        }
+    }
+
+    private fun validateKrastas(krastas: String): String? {
+        return when {
+            krastas.isBlank() -> "Krastas is required"
+            krastas !in allowedKrastai -> "Invalid krastas"
+            else -> null
+        }
+    }
+
     private fun generateToken(userId: String, email: String, type: String): String {
         return JWT.create()
             .withAudience(audience)

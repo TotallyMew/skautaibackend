@@ -1,4 +1,4 @@
-package lt.skautai
+﻿package lt.skautai
 
 import io.ktor.client.*
 import io.ktor.client.request.*
@@ -426,7 +426,7 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.Unauthorized, response.status)
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private suspend fun HttpClient.createTestPastovykle(
         token: String,
@@ -466,7 +466,7 @@ class EventRoutesTest {
             .jsonObject["id"]!!.jsonPrimitive.content
     }
 
-    // ── StovyklaDetails tests ─────────────────────────────────────────────────
+    // â”€â”€ StovyklaDetails tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `update stovykla details returns 200 with updated fields`() = testApplication {
@@ -539,7 +539,7 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
-    // ── Pastovyklės CRUD tests ────────────────────────────────────────────────
+    // â”€â”€ PastovyklÄ—s CRUD tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `create pastovykle returns 201`() = testApplication {
@@ -603,7 +603,7 @@ class EventRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Grupė", "ageGroup": "INVALID_GROUP" }""")
+            setBody("""{ "name": "GrupÄ—", "ageGroup": "INVALID_GROUP" }""")
         }
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
@@ -683,12 +683,12 @@ class EventRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Atnaujinta grupė" }""")
+            setBody("""{ "name": "Atnaujinta grupÄ—" }""")
         }
 
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Atnaujinta grupė", body["name"]?.jsonPrimitive?.content)
+        assertEquals("Atnaujinta grupÄ—", body["name"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -760,7 +760,7 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.NotFound, response.status)
     }
 
-    // ── Pastovyklė Inventory tests ────────────────────────────────────────────
+    // â”€â”€ PastovyklÄ— Inventory tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `assign inventory to pastovykle returns 201`() = testApplication {
@@ -990,7 +990,7 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.NotFound, response.status)
     }
 
-    // ── Auth tests ────────────────────────────────────────────────────────────
+    // â”€â”€ Auth tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `create pastovykle without token returns 401`() = testApplication {

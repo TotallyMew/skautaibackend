@@ -1,4 +1,4 @@
-package lt.skautai
+﻿package lt.skautai
 
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -66,9 +66,9 @@ class AuthRoutesTest {
                     "name": "Test",
                     "surname": "User",
                     "email": "test@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "tuntasName": "Test Tuntas",
-                    "tuntasKrastas": "Vilnius"
+                    "tuntasKrastas": "Vilniaus"
                 }
             """.trimIndent())
         }
@@ -77,6 +77,106 @@ class AuthRoutesTest {
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertNotNull(body["token"])
         assertEquals("test@test.com", body["email"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `register stores creator email as tuntas contact email`() = testApplication {
+        configureFullApp()
+
+        val response = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Test",
+                    "surname": "User",
+                    "email": "Creator@TEST.com",
+                    "password": "testas123",
+                    "tuntasName": "Contact Tuntas",
+                    "tuntasKrastas": "Vilniaus",
+                    "tuntasContactEmail": "old-contact@test.com"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("creator@test.com", body["email"]?.jsonPrimitive?.content)
+
+        transaction {
+            exec("SELECT contact_email FROM tuntai WHERE name = 'Contact Tuntas' LIMIT 1") { rs ->
+                assertTrue(rs.next())
+                assertEquals("creator@test.com", rs.getString("contact_email"))
+            }
+        }
+    }
+
+    @Test
+    fun `register rejects invalid email`() = testApplication {
+        configureFullApp()
+
+        val response = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Test",
+                    "surname": "User",
+                    "email": "not-an-email",
+                    "password": "testas123",
+                    "tuntasName": "Test Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Invalid email format", body["error"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `register rejects weak password`() = testApplication {
+        configureFullApp()
+
+        val response = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Test",
+                    "surname": "User",
+                    "email": "weak-password@test.com",
+                    "password": "test123",
+                    "tuntasName": "Test Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Password must be at least 8 characters", body["error"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `register requires valid krastas`() = testApplication {
+        configureFullApp()
+
+        val response = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Test",
+                    "surname": "User",
+                    "email": "invalid-krastas@test.com",
+                    "password": "testas123",
+                    "tuntasName": "Test Tuntas",
+                    "tuntasKrastas": "Vilnius"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Invalid krastas", body["error"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -90,8 +190,9 @@ class AuthRoutesTest {
                     "name": "Test",
                     "surname": "User",
                     "email": "duplicate@test.com",
-                    "password": "test123",
-                    "tuntasName": "Test Tuntas"
+                    "password": "testas123",
+                    "tuntasName": "Test Tuntas",
+                    "tuntasKrastas": "Vilniaus"
                 }
             """.trimIndent())
         }
@@ -103,8 +204,9 @@ class AuthRoutesTest {
                     "name": "Test2",
                     "surname": "User2",
                     "email": "duplicate@test.com",
-                    "password": "test123",
-                    "tuntasName": "Another Tuntas"
+                    "password": "testas123",
+                    "tuntasName": "Another Tuntas",
+                    "tuntasKrastas": "Vilniaus"
                 }
             """.trimIndent())
         }
@@ -112,6 +214,50 @@ class AuthRoutesTest {
         assertEquals(HttpStatusCode.BadRequest, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals("Email already registered", body["error"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `register duplicate tuntas name returns 400 and does not create user`() = testApplication {
+        configureFullApp()
+
+        client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Test",
+                    "surname": "User",
+                    "email": "first-tuntas@test.com",
+                    "password": "testas123",
+                    "tuntasName": "Unique Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+            """.trimIndent())
+        }
+
+        val response = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Test2",
+                    "surname": "User2",
+                    "email": "second-tuntas@test.com",
+                    "password": "testas123",
+                    "tuntasName": "unique tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Tuntas name already exists", body["error"]?.jsonPrimitive?.content)
+
+        transaction {
+            exec("SELECT COUNT(*) AS count FROM users WHERE email = 'second-tuntas@test.com'") { rs ->
+                assertTrue(rs.next())
+                assertEquals(0, rs.getInt("count"))
+            }
+        }
     }
 
     @Test
@@ -125,8 +271,9 @@ class AuthRoutesTest {
                     "name": "Test",
                     "surname": "User",
                     "email": "login@test.com",
-                    "password": "test123",
-                    "tuntasName": "Test Tuntas"
+                    "password": "testas123",
+                    "tuntasName": "Test Tuntas",
+                    "tuntasKrastas": "Vilniaus"
                 }
             """.trimIndent())
         }
@@ -136,7 +283,7 @@ class AuthRoutesTest {
             setBody("""
                 {
                     "email": "login@test.com",
-                    "password": "test123"
+                    "password": "testas123"
                 }
             """.trimIndent())
         }
@@ -157,8 +304,9 @@ class AuthRoutesTest {
                     "name": "Test",
                     "surname": "User",
                     "email": "wrong@test.com",
-                    "password": "test123",
-                    "tuntasName": "Test Tuntas"
+                    "password": "testas123",
+                    "tuntasName": "Test Tuntas",
+                    "tuntasKrastas": "Vilniaus"
                 }
             """.trimIndent())
         }
@@ -185,7 +333,7 @@ class AuthRoutesTest {
             setBody("""
                 {
                     "email": "nonexistent@test.com",
-                    "password": "test123"
+                    "password": "testas123"
                 }
             """.trimIndent())
         }
@@ -316,8 +464,9 @@ class AuthRoutesTest {
                     "name": "Test",
                     "surname": "User",
                     "email": "pending@test.com",
-                    "password": "test123",
-                    "tuntasName": "Pending Tuntas"
+                    "password": "testas123",
+                    "tuntasName": "Pending Tuntas",
+                    "tuntasKrastas": "Vilniaus"
                 }
             """.trimIndent())
         }
@@ -345,6 +494,57 @@ class AuthRoutesTest {
     }
 
     @Test
+    fun `my tuntai includes pending tuntas and updates to active after approval`() = testApplication {
+        configureFullApp()
+
+        val registerResponse = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Pending",
+                    "surname": "Owner",
+                    "email": "pending-status@test.com",
+                    "password": "testas123",
+                    "tuntasName": "Pending Status Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+            """.trimIndent())
+        }
+        val token = Json.parseToJsonElement(registerResponse.bodyAsText())
+            .jsonObject["token"]!!.jsonPrimitive.content
+
+        val pendingResponse = client.get("/api/users/me/tuntai") {
+            header("Authorization", "Bearer $token")
+        }
+        assertEquals(HttpStatusCode.OK, pendingResponse.status)
+        val pendingTuntas = Json.parseToJsonElement(pendingResponse.bodyAsText()).jsonArray[0].jsonObject
+        assertEquals("PENDING", pendingTuntas["status"]!!.jsonPrimitive.content)
+        val tuntasId = pendingTuntas["id"]!!.jsonPrimitive.content
+
+        client.post("/api/setup/super-admin") {
+            contentType(ContentType.Application.Json)
+            setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
+        }
+        val loginResponse = client.post("/api/super-admin/login") {
+            contentType(ContentType.Application.Json)
+            setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
+        }
+        val adminToken = Json.parseToJsonElement(loginResponse.bodyAsText())
+            .jsonObject["token"]!!.jsonPrimitive.content
+
+        val approveResponse = client.post("/api/super-admin/tuntai/$tuntasId/approve") {
+            header("Authorization", "Bearer $adminToken")
+        }
+        assertEquals(HttpStatusCode.OK, approveResponse.status)
+
+        val activeResponse = client.get("/api/users/me/tuntai") {
+            header("Authorization", "Bearer $token")
+        }
+        val activeTuntas = Json.parseToJsonElement(activeResponse.bodyAsText()).jsonArray[0].jsonObject
+        assertEquals("ACTIVE", activeTuntas["status"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `register with valid invite code returns 201`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
@@ -366,7 +566,7 @@ class AuthRoutesTest {
                     "name": "Jonas",
                     "surname": "Jonaitis",
                     "email": "jonas@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$code"
                 }
             """.trimIndent())
@@ -389,7 +589,7 @@ class AuthRoutesTest {
                     "name": "Jonas",
                     "surname": "Jonaitis",
                     "email": "jonas@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "INVALIDCODE"
                 }
             """.trimIndent())
@@ -420,7 +620,7 @@ class AuthRoutesTest {
                     "name": "Jonas",
                     "surname": "Jonaitis",
                     "email": "jonas@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$code"
                 }
             """.trimIndent())
@@ -433,7 +633,7 @@ class AuthRoutesTest {
                     "name": "Petras",
                     "surname": "Petraitis",
                     "email": "petras@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$code"
                 }
             """.trimIndent())
@@ -464,7 +664,7 @@ class AuthRoutesTest {
                     "name": "Test",
                     "surname": "User",
                     "email": "tuntininkas@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$code"
                 }
             """.trimIndent())
@@ -495,7 +695,7 @@ class AuthRoutesTest {
                     "name": "Jonas",
                     "surname": "Jonaitis",
                     "email": "jonas@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$code"
                 }
             """.trimIndent())
@@ -537,7 +737,7 @@ class AuthRoutesTest {
                     "name": "Pirmas",
                     "surname": "Vadovas",
                     "email": "first-leader@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$firstCode"
                 }
             """.trimIndent())
@@ -583,7 +783,7 @@ class AuthRoutesTest {
                     "name": "Pirmas",
                     "surname": "Vadovas",
                     "email": "first-leader@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$firstCode"
                 }
             """.trimIndent())
@@ -596,7 +796,7 @@ class AuthRoutesTest {
                     "name": "Antras",
                     "surname": "Vadovas",
                     "email": "second-leader@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$secondCode"
                 }
             """.trimIndent())
@@ -628,7 +828,7 @@ class AuthRoutesTest {
                     "name": "Esamas",
                     "surname": "Narys",
                     "email": "existing@test.com",
-                    "password": "test123",
+                    "password": "testas123",
                     "inviteCode": "$firstCode"
                 }
             """.trimIndent())
@@ -699,7 +899,7 @@ class AuthRoutesTest {
                         "name": "Esamas",
                         "surname": "Narys",
                         "email": "$email",
-                        "password": "test123",
+                        "password": "testas123",
                         "inviteCode": "$code"
                     }
                 """.trimIndent())
@@ -794,8 +994,9 @@ class AuthRoutesTest {
                 "name": "Test",
                 "surname": "User",
                 "email": "tuntininkas@test.com",
-                "password": "test123",
-                "tuntasName": "Test Tuntas"
+                "password": "testas123",
+                "tuntasName": "Test Tuntas",
+                "tuntasKrastas": "Vilniaus"
             }
         """.trimIndent())
         }
@@ -835,8 +1036,9 @@ class AuthRoutesTest {
                 "name": "Test",
                 "surname": "User",
                 "email": "tuntininkas@test.com",
-                "password": "test123",
-                "tuntasName": "Test Tuntas"
+                "password": "testas123",
+                "tuntasName": "Test Tuntas",
+                "tuntasKrastas": "Vilniaus"
             }
         """.trimIndent())
         }
@@ -922,8 +1124,9 @@ class AuthRoutesTest {
             "name": "Test",
             "surname": "User",
             "email": "tuntininkas2@test.com",
-            "password": "test123",
-            "tuntasName": "Test Tuntas Reject"
+            "password": "testas123",
+            "tuntasName": "Test Tuntas Reject",
+            "tuntasKrastas": "Vilniaus"
         }
     """.trimIndent())
         }
@@ -979,8 +1182,9 @@ class AuthRoutesTest {
             "name": "Test",
             "surname": "User",
             "email": "tuntininkas3@test.com",
-            "password": "test123",
-            "tuntasName": "Test Tuntas Active"
+            "password": "testas123",
+            "tuntasName": "Test Tuntas Active",
+            "tuntasKrastas": "Vilniaus"
         }
     """.trimIndent())
         }
