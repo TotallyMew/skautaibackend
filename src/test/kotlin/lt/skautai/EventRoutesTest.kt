@@ -1031,4 +1031,123 @@ class EventRoutesTest {
 
         assertEquals(HttpStatusCode.Unauthorized, response.status)
     }
+
+    @Test
+    fun `event inventory plan supports missing items buckets and allocations`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val bucketResponse = client.post("/api/events/$eventId/inventory-buckets") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Virtuve", "type": "KITCHEN" }""")
+        }
+        assertEquals(HttpStatusCode.Created, bucketResponse.status)
+        val bucketId = Json.parseToJsonElement(bucketResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val itemResponse = client.post("/api/events/$eventId/inventory-items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Puodai", "plannedQuantity": 4 }""")
+        }
+        assertEquals(HttpStatusCode.Created, itemResponse.status)
+        val itemBody = Json.parseToJsonElement(itemResponse.bodyAsText()).jsonObject
+        val eventInventoryItemId = itemBody["id"]!!.jsonPrimitive.content
+        assertEquals(0, itemBody["availableQuantity"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(4, itemBody["shortageQuantity"]?.jsonPrimitive?.content?.toInt())
+        assertTrue(itemBody["needsPurchase"]?.jsonPrimitive?.content?.toBoolean() == true)
+
+        val allocationResponse = client.post("/api/events/$eventId/inventory-allocations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "eventInventoryItemId": "$eventInventoryItemId", "bucketId": "$bucketId", "quantity": 2 }""")
+        }
+        assertEquals(HttpStatusCode.Created, allocationResponse.status)
+
+        val planResponse = client.get("/api/events/$eventId/inventory-plan") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, planResponse.status)
+        val plan = Json.parseToJsonElement(planResponse.bodyAsText()).jsonObject
+        assertTrue(plan["buckets"]!!.jsonArray.size >= 1)
+        assertEquals(1, plan["items"]!!.jsonArray.size)
+        assertEquals(1, plan["allocations"]!!.jsonArray.size)
+        assertEquals(2, plan["items"]!!.jsonArray.first().jsonObject["allocatedQuantity"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun `event purchase can attach invoice complete and add items to inventory`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val itemResponse = client.post("/api/events/$eventId/inventory-items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Puodai", "plannedQuantity": 3 }""")
+        }
+        assertEquals(HttpStatusCode.Created, itemResponse.status)
+        val eventInventoryItemId = Json.parseToJsonElement(itemResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val purchaseResponse = client.post("/api/events/$eventId/purchases") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "items": [
+                        {
+                            "eventInventoryItemId": "$eventInventoryItemId",
+                            "purchasedQuantity": 3,
+                            "unitPrice": 12.50
+                        }
+                    ]
+                }
+            """.trimIndent())
+        }
+        assertEquals(HttpStatusCode.Created, purchaseResponse.status)
+        val purchaseBody = Json.parseToJsonElement(purchaseResponse.bodyAsText()).jsonObject
+        val purchaseId = purchaseBody["id"]!!.jsonPrimitive.content
+        assertEquals("DRAFT", purchaseBody["status"]?.jsonPrimitive?.content)
+        assertEquals(37.5, purchaseBody["totalAmount"]?.jsonPrimitive?.double)
+
+        val invoiceResponse = client.post("/api/events/$eventId/purchases/$purchaseId/invoice") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "invoiceFileUrl": "/uploads/documents/test-invoice.pdf" }""")
+        }
+        assertEquals(HttpStatusCode.OK, invoiceResponse.status)
+        assertEquals(
+            "/uploads/documents/test-invoice.pdf",
+            Json.parseToJsonElement(invoiceResponse.bodyAsText()).jsonObject["invoiceFileUrl"]?.jsonPrimitive?.content
+        )
+
+        val completeResponse = client.post("/api/events/$eventId/purchases/$purchaseId/complete") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, completeResponse.status)
+        assertEquals("PURCHASED", Json.parseToJsonElement(completeResponse.bodyAsText()).jsonObject["status"]?.jsonPrimitive?.content)
+
+        val addResponse = client.post("/api/events/$eventId/purchases/$purchaseId/add-to-inventory") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, addResponse.status)
+        val added = Json.parseToJsonElement(addResponse.bodyAsText()).jsonObject
+        assertEquals("ADDED_TO_INVENTORY", added["status"]?.jsonPrimitive?.content)
+        assertTrue(
+            added["items"]!!.jsonArray.first().jsonObject["addedToInventory"]!!.jsonPrimitive.content.toBoolean()
+        )
+        assertNotNull(added["items"]!!.jsonArray.first().jsonObject["addedToInventoryItemId"]?.jsonPrimitive?.content)
+    }
 }

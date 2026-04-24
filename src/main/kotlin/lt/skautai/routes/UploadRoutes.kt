@@ -18,6 +18,7 @@ import java.io.File
 import java.util.UUID
 
 private val allowedImageExtensions = setOf("jpg", "jpeg", "png", "webp")
+private val allowedDocumentExtensions = setOf("pdf", "jpg", "jpeg", "png")
 
 fun Route.uploadRoutes() {
     route("/uploads/images") {
@@ -29,6 +30,23 @@ fun Route.uploadRoutes() {
             }
 
             val file = File("uploads/images", fileName)
+            if (!file.exists()) {
+                return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("File not found"))
+            }
+
+            call.respondFile(file)
+        }
+    }
+
+    route("/uploads/documents") {
+        get("{fileName}") {
+            val fileName = call.parameters["fileName"]
+                ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("File name required"))
+            if (fileName.contains("/") || fileName.contains("\\")) {
+                return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid file name"))
+            }
+
+            val file = File("uploads/documents", fileName)
             if (!file.exists()) {
                 return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("File not found"))
             }
@@ -66,6 +84,37 @@ fun Route.uploadRoutes() {
             }
             val url = uploadedUrl
                 ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Image file required"))
+            call.respond(HttpStatusCode.Created, UploadResponse(url))
+        }
+
+        post("/api/uploads/documents") {
+            val uploadDir = File("uploads/documents").apply { mkdirs() }
+            var uploadedUrl: String? = null
+            var error: String? = null
+
+            call.receiveMultipart().forEachPart { part ->
+                if (part is PartData.FileItem && uploadedUrl == null && error == null) {
+                    val originalName = part.originalFileName.orEmpty()
+                    val extension = originalName.substringAfterLast('.', "pdf").lowercase()
+                    if (extension !in allowedDocumentExtensions) {
+                        error = "Unsupported document type"
+                    } else {
+                        val fileName = "${UUID.randomUUID()}.$extension"
+                        val target = File(uploadDir, fileName)
+                        part.streamProvider().use { input ->
+                            target.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        uploadedUrl = "/uploads/documents/$fileName"
+                    }
+                }
+                part.dispose()
+            }
+
+            error?.let {
+                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse(it))
+            }
+            val url = uploadedUrl
+                ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Document file required"))
             call.respond(HttpStatusCode.Created, UploadResponse(url))
         }
     }

@@ -310,6 +310,67 @@ CREATE UNIQUE INDEX idx_event_roles_one_komendantas
     ON event_roles(event_id)
     WHERE role = 'KOMENDANTAS';
 
+CREATE TABLE event_inventory_buckets (
+                                          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                          event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                                          pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE SET NULL,
+                                          name VARCHAR(120) NOT NULL,
+                                          type VARCHAR(30) NOT NULL CHECK (type IN ('PROGRAM', 'KITCHEN', 'ADMIN', 'MEDICAL', 'PASTOVYKLE', 'OTHER')),
+                                          notes TEXT
+);
+
+CREATE TABLE event_inventory_items (
+                                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                         event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                                         item_id UUID REFERENCES items(id),
+                                         bucket_id UUID REFERENCES event_inventory_buckets(id) ON DELETE SET NULL,
+                                         reservation_group_id UUID,
+                                         name VARCHAR(200) NOT NULL,
+                                         planned_quantity INTEGER NOT NULL CHECK (planned_quantity > 0),
+                                         available_quantity INTEGER NOT NULL DEFAULT 0 CHECK (available_quantity >= 0),
+                                         needs_purchase BOOLEAN NOT NULL DEFAULT FALSE,
+                                         notes TEXT,
+                                         responsible_user_id UUID REFERENCES users(id),
+                                         created_by_user_id UUID REFERENCES users(id),
+                                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+CREATE TABLE event_inventory_allocations (
+                                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                             event_inventory_item_id UUID NOT NULL REFERENCES event_inventory_items(id) ON DELETE CASCADE,
+                                             bucket_id UUID NOT NULL REFERENCES event_inventory_buckets(id) ON DELETE CASCADE,
+                                             quantity INTEGER NOT NULL CHECK (quantity > 0),
+                                             notes TEXT
+);
+
+CREATE TABLE event_purchases (
+                                  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                  event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                                  purchased_by_user_id UUID REFERENCES users(id),
+                                  status VARCHAR(30) NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'PURCHASED', 'ADDED_TO_INVENTORY', 'CANCELLED')),
+                                  purchase_date DATE,
+                                  total_amount DECIMAL(10, 2),
+                                  invoice_file_url TEXT,
+                                  notes TEXT,
+                                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TRIGGER update_event_purchases_updated_at
+    BEFORE UPDATE ON event_purchases
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TABLE event_purchase_items (
+                                      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                      purchase_id UUID NOT NULL REFERENCES event_purchases(id) ON DELETE CASCADE,
+                                      event_inventory_item_id UUID NOT NULL REFERENCES event_inventory_items(id) ON DELETE CASCADE,
+                                      purchased_quantity INTEGER NOT NULL CHECK (purchased_quantity > 0),
+                                      unit_price DECIMAL(10, 2),
+                                      added_to_inventory_item_id UUID REFERENCES items(id),
+                                      added_to_inventory BOOLEAN NOT NULL DEFAULT FALSE,
+                                      notes TEXT
+);
+
 -- Draugovė requisitions
 CREATE TABLE draugove_requisitions (
                                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -571,6 +632,13 @@ CREATE INDEX idx_user_ranks_user ON user_ranks(user_id);
 CREATE INDEX idx_user_ranks_tuntas ON user_ranks(tuntas_id);
 CREATE INDEX idx_events_tuntas ON events(tuntas_id);
 CREATE INDEX idx_events_dates ON events(start_date, end_date);
+CREATE INDEX idx_event_inventory_buckets_event ON event_inventory_buckets(event_id);
+CREATE INDEX idx_event_inventory_items_event ON event_inventory_items(event_id);
+CREATE INDEX idx_event_inventory_allocations_item ON event_inventory_allocations(event_inventory_item_id);
+CREATE INDEX idx_event_inventory_allocations_bucket ON event_inventory_allocations(bucket_id);
+CREATE INDEX idx_event_purchases_event ON event_purchases(event_id);
+CREATE INDEX idx_event_purchase_items_purchase ON event_purchase_items(purchase_id);
+CREATE INDEX idx_event_purchase_items_inventory_item ON event_purchase_items(event_inventory_item_id);
 CREATE INDEX idx_item_assignments_item ON item_assignments(item_id);
 CREATE INDEX idx_item_assignments_user ON item_assignments(assigned_to_user_id);
 CREATE INDEX idx_draugove_requisitions_tuntas ON draugove_requisitions(tuntas_id);

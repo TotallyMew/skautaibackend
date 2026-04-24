@@ -38,6 +38,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
         "Tuntininkas" to "LEADERSHIP",
         "Tuntininko pavaduotojas" to "LEADERSHIP",
         "Inventorininkas" to "LEADERSHIP",
+        "Finansininkas" to "LEADERSHIP",
         "Draugininkas" to "LEADERSHIP",
         "Draugininko pavaduotojas" to "LEADERSHIP",
         "Gildijos pirmininkas" to "LEADERSHIP",
@@ -170,6 +171,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
             val invite = Invitations.selectAll()
                 .where { Invitations.code eq inviteCode }
+                .forUpdate()
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Invalid invite code"))
 

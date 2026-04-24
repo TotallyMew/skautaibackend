@@ -39,7 +39,8 @@ object PermissionSeeder {
         "events.create",
         "events.manage",
         "events.inventory.distribute",
-        "events.inventory.return"
+        "events.inventory.return",
+        "event_purchases.invoice.download"
     )
 
     // Role name -> list of Pair(permissionName, scope)
@@ -126,6 +127,11 @@ object PermissionSeeder {
             "events.view" to "ALL",
             "events.inventory.distribute" to "ALL",
             "events.inventory.return" to "ALL"
+        ),
+
+        "Finansininkas" to listOf(
+            "events.view" to "ALL",
+            "event_purchases.invoice.download" to "ALL"
         ),
 
         // ── Unit-level leadership (Draugovė / Gildija / Vyr. vienetas) ───────
@@ -395,8 +401,7 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
-            "reservations.create" to "ALL",
-            "events.view" to "ALL"
+            "reservations.create" to "ALL"
         ),
 
         "Skautas" to listOf(
@@ -404,8 +409,7 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
-            "reservations.create" to "ALL",
-            "events.view" to "ALL"
+            "reservations.create" to "ALL"
         ),
 
         "Patyres skautas" to listOf(
@@ -413,8 +417,7 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
-            "reservations.create" to "ALL",
-            "events.view" to "ALL"
+            "reservations.create" to "ALL"
         ),
 
         "Vyr. skautas kandidatas" to listOf(
@@ -422,8 +425,7 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
-            "reservations.create" to "ALL",
-            "events.view" to "ALL"
+            "reservations.create" to "ALL"
         ),
 
         "Vyr. skautas" to listOf(
@@ -431,8 +433,7 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
             "reservations.view" to "ALL",
-            "reservations.create" to "ALL",
-            "events.view" to "ALL"
+            "reservations.create" to "ALL"
         ),
 
         "Vadovas" to listOf(
@@ -463,6 +464,7 @@ object PermissionSeeder {
 
     fun seedRolePermissions(tuntasId: UUID) {
         transaction {
+            ensureFinansininkasRole(tuntasId)
             val permissionIds = Permissions.selectAll()
                 .associate { it[Permissions.name] to it[Permissions.id] }
 
@@ -491,6 +493,20 @@ object PermissionSeeder {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private fun ensureFinansininkasRole(tuntasId: UUID) {
+        val exists = Roles.selectAll()
+            .where { (Roles.tuntasId eq tuntasId) and (Roles.name eq "Finansininkas") }
+            .firstOrNull() != null
+        if (!exists) {
+            Roles.insert {
+                it[Roles.tuntasId] = tuntasId
+                it[Roles.name] = "Finansininkas"
+                it[Roles.isSystemRole] = true
+                it[Roles.roleType] = "LEADERSHIP"
             }
         }
     }
