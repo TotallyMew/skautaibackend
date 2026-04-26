@@ -22,6 +22,8 @@ data class ItemResponse(
     val condition: String,
     val quantity: Int,
     val locationId: String? = null,
+    val locationName: String? = null,
+    val locationPath: String? = null,
     val temporaryStorageLabel: String? = null,
     val sourceSharedItemId: String? = null,
     val responsibleUserId: String? = null,

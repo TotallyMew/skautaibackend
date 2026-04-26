@@ -12,6 +12,7 @@ import lt.skautai.database.tables.UserRanks
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.ItemScopeHelper
@@ -159,7 +160,7 @@ fun Route.itemRoutes(itemService: ItemService) {
                 if (!checkPermission("items.delete", tuntasUUID, deleteTargetOrgUnitId)) return@delete
 
                 itemService.deleteItem(itemUUID, tuntasUUID)
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Item deactivated")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Item deactivated")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to delete item")) }
             }
         }

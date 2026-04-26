@@ -126,8 +126,14 @@ CREATE TABLE locations (
                            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                            tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
                            name VARCHAR(100) NOT NULL,
+                           visibility VARCHAR(20) NOT NULL DEFAULT 'PUBLIC' CHECK (visibility IN ('PRIVATE', 'UNIT', 'PUBLIC')),
+                           parent_location_id UUID REFERENCES locations(id) ON DELETE RESTRICT,
+                           owner_user_id UUID REFERENCES users(id),
+                           owner_unit_id UUID REFERENCES organizational_units(id),
                            address TEXT,
                            description TEXT,
+                           latitude DECIMAL(9,6),
+                           longitude DECIMAL(9,6),
                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -252,14 +258,6 @@ CREATE TABLE events (
 );
 
 -- Stovykla details
-CREATE TABLE stovykla_details (
-                                  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                                  event_id UUID NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,
-                                  registration_deadline DATE,
-                                  expected_participants INTEGER,
-                                  actual_participants INTEGER
-);
-
 -- Pastovyklės
 CREATE TABLE pastovykles (
                              id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -314,6 +312,7 @@ CREATE TABLE event_inventory_buckets (
                                           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                           event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
                                           pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE SET NULL,
+                                          location_id UUID REFERENCES locations(id),
                                           name VARCHAR(120) NOT NULL,
                                           type VARCHAR(30) NOT NULL CHECK (type IN ('PROGRAM', 'KITCHEN', 'ADMIN', 'MEDICAL', 'PASTOVYKLE', 'OTHER')),
                                           notes TEXT
@@ -341,6 +340,56 @@ CREATE TABLE event_inventory_allocations (
                                              bucket_id UUID NOT NULL REFERENCES event_inventory_buckets(id) ON DELETE CASCADE,
                                              quantity INTEGER NOT NULL CHECK (quantity > 0),
                                              notes TEXT
+);
+
+CREATE TABLE event_inventory_custody (
+                                          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                          event_inventory_item_id UUID NOT NULL REFERENCES event_inventory_items(id) ON DELETE CASCADE,
+                                          parent_custody_id UUID REFERENCES event_inventory_custody(id) ON DELETE SET NULL,
+                                          pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE SET NULL,
+                                          holder_user_id UUID REFERENCES users(id),
+                                          quantity INTEGER NOT NULL CHECK (quantity > 0),
+                                          returned_quantity INTEGER NOT NULL DEFAULT 0 CHECK (returned_quantity >= 0),
+                                          status VARCHAR(20) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'RETURNED', 'CLOSED')),
+                                          created_by_user_id UUID NOT NULL REFERENCES users(id),
+                                          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                          closed_at TIMESTAMP,
+                                          notes TEXT,
+                                          CHECK (returned_quantity <= quantity)
+);
+
+CREATE TABLE event_inventory_requests (
+                                           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                           event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                                           event_inventory_item_id UUID NOT NULL REFERENCES event_inventory_items(id) ON DELETE CASCADE,
+                                           pastovykle_id UUID NOT NULL REFERENCES pastovykles(id) ON DELETE CASCADE,
+                                           requested_by_user_id UUID NOT NULL REFERENCES users(id),
+                                           quantity INTEGER NOT NULL CHECK (quantity > 0),
+                                           status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'FULFILLED', 'SELF_PROVIDED')),
+                                           notes TEXT,
+                                           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                           reviewed_by_user_id UUID REFERENCES users(id),
+                                           reviewed_at TIMESTAMP,
+                                           fulfilled_at TIMESTAMP,
+                                           resolved_by_user_id UUID REFERENCES users(id)
+);
+
+CREATE TABLE event_inventory_movements (
+                                            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                            event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                                            event_inventory_item_id UUID NOT NULL REFERENCES event_inventory_items(id) ON DELETE CASCADE,
+                                            custody_id UUID REFERENCES event_inventory_custody(id) ON DELETE SET NULL,
+                                            inventory_request_id UUID REFERENCES event_inventory_requests(id) ON DELETE SET NULL,
+                                            movement_type VARCHAR(30) NOT NULL CHECK (movement_type IN ('PASTOVYKLE_REQUEST', 'ASSIGN_TO_PASTOVYKLE', 'CHECKOUT_TO_PERSON', 'RETURN_TO_PASTOVYKLE', 'RETURN_TO_EVENT_STORAGE', 'TRANSFER')),
+                                            quantity INTEGER NOT NULL CHECK (quantity > 0),
+                                            from_pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE SET NULL,
+                                            to_pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE SET NULL,
+                                            from_user_id UUID REFERENCES users(id),
+                                            to_user_id UUID REFERENCES users(id),
+                                            performed_by_user_id UUID NOT NULL REFERENCES users(id),
+                                            client_request_id VARCHAR(100),
+                                            notes TEXT,
+                                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE event_purchases (
@@ -431,12 +480,14 @@ CREATE TABLE reservations (
                               top_level_reviewed_by_user_id UUID REFERENCES users(id),
                               top_level_reviewed_at TIMESTAMP,
                               pickup_at TIMESTAMP,
+                              pickup_location_id UUID REFERENCES locations(id),
                               pickup_proposal_status VARCHAR(20) DEFAULT 'NONE' CHECK (pickup_proposal_status IN ('NONE', 'PENDING', 'ACCEPTED')),
                               pickup_proposed_at TIMESTAMP,
                               pickup_proposed_by_user_id UUID REFERENCES users(id),
                               pickup_responded_at TIMESTAMP,
                               pickup_responded_by_user_id UUID REFERENCES users(id),
                               return_at TIMESTAMP,
+                              return_location_id UUID REFERENCES locations(id),
                               return_proposal_status VARCHAR(20) DEFAULT 'NONE' CHECK (return_proposal_status IN ('NONE', 'PENDING', 'ACCEPTED')),
                               return_proposed_at TIMESTAMP,
                               return_proposed_by_user_id UUID REFERENCES users(id),
@@ -457,6 +508,7 @@ CREATE TABLE reservation_movements (
                                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                        reservation_group_id UUID NOT NULL,
                                        item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                                       location_id UUID REFERENCES locations(id),
                                        type VARCHAR(20) NOT NULL CHECK (type IN ('ISSUE', 'RETURN_MARKED', 'RETURN')),
                                        quantity INTEGER NOT NULL CHECK (quantity > 0),
                                        performed_by_user_id UUID NOT NULL REFERENCES users(id),
@@ -623,7 +675,10 @@ CREATE INDEX idx_reservations_dates ON reservations(start_date, end_date);
 CREATE INDEX idx_reservations_status ON reservations(status);
 CREATE INDEX idx_reservation_movements_group ON reservation_movements(reservation_group_id);
 CREATE INDEX idx_reservation_movements_item ON reservation_movements(item_id);
+CREATE INDEX idx_reservation_movements_location ON reservation_movements(location_id);
 CREATE INDEX idx_reservation_movements_type ON reservation_movements(type);
+CREATE INDEX idx_locations_parent ON locations(parent_location_id);
+CREATE INDEX idx_locations_visibility ON locations(visibility);
 CREATE INDEX idx_sync_operations_status ON sync_operations(status);
 CREATE INDEX idx_sync_operations_device ON sync_operations(device_id);
 CREATE INDEX idx_user_leadership_roles_user ON user_leadership_roles(user_id);

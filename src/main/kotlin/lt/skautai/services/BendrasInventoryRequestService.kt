@@ -125,11 +125,15 @@ class BendrasInventoryRequestService {
                 return@transaction Result.failure(Exception("Quantity must be at least 1"))
             }
 
-            val neededByDate = request.neededByDate?.let {
+            val resolvedNeededByDateInput = request.neededByDate ?: request.endDate ?: request.startDate
+
+            val neededByDate = resolvedNeededByDateInput?.let {
                 try {
                     kotlinx.datetime.LocalDate.parse(it)
                 } catch (_: Exception) {
-                    return@transaction Result.failure(Exception("Invalid neededByDate format, use YYYY-MM-DD"))
+                    return@transaction Result.failure(
+                        Exception("Invalid neededByDate format, use YYYY-MM-DD")
+                    )
                 }
             }
 
@@ -273,6 +277,7 @@ class BendrasInventoryRequestService {
                     (BendrasInventoryRequests.id eq requestId) and
                         (BendrasInventoryRequests.tuntasId eq tuntasId)
                 }
+                .forUpdate()
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Request not found"))
 
@@ -410,6 +415,7 @@ class BendrasInventoryRequestService {
                             (Items.id eq UUID.fromString(line.itemId)) and
                                 (Items.tuntasId eq tuntasId)
                         }
+                        .forUpdate()
                         .firstOrNull()
                         ?: return@transaction Result.failure(Exception("Shared item not found"))
 

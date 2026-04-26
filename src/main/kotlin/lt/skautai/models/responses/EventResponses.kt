@@ -14,14 +14,6 @@ data class EventRoleResponse(
 )
 
 @Serializable
-data class StovyklaDetailsResponse(
-    val id: String,
-    val registrationDeadline: String? = null,
-    val expectedParticipants: Int? = null,
-    val actualParticipants: Int? = null
-)
-
-@Serializable
 data class EventResponse(
     val id: String,
     val tuntasId: String,
@@ -36,7 +28,6 @@ data class EventResponse(
     val notes: String? = null,
     val createdAt: String,
     val eventRoles: List<EventRoleResponse>,
-    val stovyklaDetails: StovyklaDetailsResponse? = null,
     val inventorySummary: EventInventorySummaryResponse? = null
 )
 
@@ -92,6 +83,8 @@ data class EventInventoryBucketResponse(
     val type: String,
     val pastovykleId: String? = null,
     val pastovykleName: String? = null,
+    val locationId: String? = null,
+    val locationPath: String? = null,
     val notes: String? = null
 )
 
@@ -182,5 +175,89 @@ data class EventPurchaseResponse(
 @Serializable
 data class EventPurchaseListResponse(
     val purchases: List<EventPurchaseResponse>,
+    val total: Int
+)
+
+@Serializable
+data class EventInventoryCustodyResponse(
+    val id: String,
+    val eventInventoryItemId: String,
+    val itemName: String,
+    val pastovykleId: String? = null,
+    val pastovykleName: String? = null,
+    val holderUserId: String? = null,
+    val holderUserName: String? = null,
+    val quantity: Int,
+    val returnedQuantity: Int,
+    val remainingQuantity: Int,
+    val status: String,
+    val createdByUserId: String,
+    val createdByUserName: String? = null,
+    val createdAt: String,
+    val closedAt: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class EventInventoryMovementResponse(
+    val id: String,
+    val eventId: String,
+    val eventInventoryItemId: String,
+    val itemName: String,
+    val custodyId: String? = null,
+    val movementType: String,
+    val quantity: Int,
+    val fromPastovykleId: String? = null,
+    val fromPastovykleName: String? = null,
+    val toPastovykleId: String? = null,
+    val toPastovykleName: String? = null,
+    val fromUserId: String? = null,
+    val fromUserName: String? = null,
+    val toUserId: String? = null,
+    val toUserName: String? = null,
+    val performedByUserId: String,
+    val performedByUserName: String? = null,
+    val notes: String? = null,
+    val createdAt: String
+)
+
+@Serializable
+data class EventInventoryCustodyListResponse(
+    val custody: List<EventInventoryCustodyResponse>,
+    val total: Int
+)
+
+@Serializable
+data class EventInventoryMovementListResponse(
+    val movements: List<EventInventoryMovementResponse>,
+    val total: Int
+)
+
+@Serializable
+data class EventInventoryRequestResponse(
+    val id: String,
+    val eventId: String,
+    val eventInventoryItemId: String,
+    val itemId: String? = null,
+    val itemName: String,
+    val pastovykleId: String,
+    val pastovykleName: String,
+    val requestedByUserId: String,
+    val requestedByName: String? = null,
+    val quantity: Int,
+    val status: String,
+    val notes: String? = null,
+    val createdAt: String,
+    val reviewedAt: String? = null,
+    val reviewedByUserId: String? = null,
+    val reviewedByUserName: String? = null,
+    val fulfilledAt: String? = null,
+    val resolvedByUserId: String? = null,
+    val resolvedByUserName: String? = null
+)
+
+@Serializable
+data class EventInventoryRequestListResponse(
+    val requests: List<EventInventoryRequestResponse>,
     val total: Int
 )

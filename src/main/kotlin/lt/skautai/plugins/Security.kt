@@ -31,9 +31,17 @@ fun Application.configureSecurity() {
                     .build()
             )
             validate { credential ->
-                if (credential.payload.getClaim("userId").asString() != null) {
-                    JWTPrincipal(credential.payload)
-                } else null
+                val userId = credential.payload.getClaim("userId").asString()
+                val tokenType = credential.payload.getClaim("type").asString()
+                val tokenUse = credential.payload.getClaim("tokenUse").asString()
+                if (userId == null || (tokenType != null && tokenType != "user") || (tokenUse != null && tokenUse != "access")) {
+                    return@validate null
+                }
+                val userUuid = runCatching { UUID.fromString(userId) }.getOrNull() ?: return@validate null
+                val userExists = transaction {
+                    Users.selectAll().where { Users.id eq userUuid }.firstOrNull() != null
+                }
+                if (userExists) JWTPrincipal(credential.payload) else null
             }
             challenge { _, _ ->
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "Token is invalid or expired"))
@@ -49,9 +57,17 @@ fun Application.configureSecurity() {
                     .build()
             )
             validate { credential ->
-                if (credential.payload.getClaim("type").asString() == "super_admin") {
-                    JWTPrincipal(credential.payload)
-                } else null
+                val tokenUse = credential.payload.getClaim("tokenUse").asString()
+                if (credential.payload.getClaim("type").asString() != "super_admin" || (tokenUse != null && tokenUse != "access")) {
+                    return@validate null
+                }
+                val adminId = credential.payload.getClaim("userId").asString()
+                    ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                    ?: return@validate null
+                val adminExists = transaction {
+                    SuperAdmins.selectAll().where { SuperAdmins.id eq adminId }.firstOrNull() != null
+                }
+                if (adminExists) JWTPrincipal(credential.payload) else null
             }
             challenge { _, _ ->
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "Super admin access required"))

@@ -13,9 +13,19 @@ import lt.skautai.models.responses.TuntasInfo
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.mindrot.jbcrypt.BCrypt
+import java.util.concurrent.ConcurrentHashMap
 import java.util.*
 import lt.skautai.database.tables.UnitAssignments
 class AuthService(private val environment: ApplicationEnvironment) {
+    companion object {
+        private const val accessTokenLifetimeMs = 8 * 60 * 60 * 1000L
+        private const val refreshTokenLifetimeMs = 30L * 24 * 60 * 60 * 1000
+        private const val maxFailedAttempts = 5
+        private const val rateLimitWindowMs = 15 * 60 * 1000L
+        private const val blockDurationMs = 15 * 60 * 1000L
+        private val failedLoginAttempts = ConcurrentHashMap<String, MutableList<Long>>()
+        private val blockedUntil = ConcurrentHashMap<String, Long>()
+    }
 
     private val secret = environment.config.property("jwt.secret").getString()
     private val issuer = environment.config.property("jwt.issuer").getString()
@@ -137,10 +147,12 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 assignedByUserId = userId
             )
 
-            val token = generateToken(userId.toString(), email, "user")
+            val token = generateAccessToken(userId.toString(), email, "user")
+            val refreshToken = generateRefreshToken(userId.toString(), email, "user")
             Result.success(
                 TokenResponse(
                     token = token,
+                    refreshToken = refreshToken,
                     userId = userId.toString(),
                     email = email,
                     name = name
@@ -258,11 +270,13 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 it[usedAt] = now
             }
 
-            val token = generateToken(userId.toString(), email, "user")
+            val token = generateAccessToken(userId.toString(), email, "user")
+            val refreshToken = generateRefreshToken(userId.toString(), email, "user")
             val tuntai = getActiveTuntaiForUser(userId)
             Result.success(
                 TokenResponse(
                     token = token,
+                    refreshToken = refreshToken,
                     userId = userId.toString(),
                     email = email,
                     name = name,
@@ -272,9 +286,12 @@ class AuthService(private val environment: ApplicationEnvironment) {
         }
     }
 
-    fun login(request: LoginRequest): Result<TokenResponse> {
+    fun login(request: LoginRequest, clientKey: String): Result<TokenResponse> {
+        val email = normalizeEmail(request.email)
+        val rateLimitKey = "user:$clientKey:$email"
+        loginRateLimitError(rateLimitKey)?.let { return Result.failure(Exception(it)) }
+
         return transaction {
-            val email = normalizeEmail(request.email)
             val user = Users.selectAll()
                 .where { Users.email eq email }
                 .firstOrNull()
@@ -284,7 +301,12 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 return@transaction Result.failure(Exception("Invalid email or password"))
             }
 
-            val token = generateToken(
+            val token = generateAccessToken(
+                user[Users.id].toString(),
+                user[Users.email],
+                "user"
+            )
+            val refreshToken = generateRefreshToken(
                 user[Users.id].toString(),
                 user[Users.email],
                 "user"
@@ -293,18 +315,28 @@ class AuthService(private val environment: ApplicationEnvironment) {
             Result.success(
                 TokenResponse(
                     token = token,
+                    refreshToken = refreshToken,
                     userId = user[Users.id].toString(),
                     email = user[Users.email],
                     name = user[Users.name],
                     tuntai = tuntai
                 )
             )
+        }.also { result ->
+            if (result.isSuccess) {
+                clearLoginFailures(rateLimitKey)
+            } else {
+                recordLoginFailure(rateLimitKey)
+            }
         }
     }
 
-    fun loginSuperAdmin(request: LoginRequest): Result<TokenResponse> {
+    fun loginSuperAdmin(request: LoginRequest, clientKey: String): Result<TokenResponse> {
+        val email = normalizeEmail(request.email)
+        val rateLimitKey = "super_admin:$clientKey:$email"
+        loginRateLimitError(rateLimitKey)?.let { return Result.failure(Exception(it)) }
+
         return transaction {
-            val email = normalizeEmail(request.email)
             val admin = SuperAdmins.selectAll()
                 .where { SuperAdmins.email eq email }
                 .firstOrNull()
@@ -314,7 +346,12 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 return@transaction Result.failure(Exception("Invalid email or password"))
             }
 
-            val token = generateToken(
+            val token = generateAccessToken(
+                admin[SuperAdmins.id].toString(),
+                admin[SuperAdmins.email],
+                "super_admin"
+            )
+            val refreshToken = generateRefreshToken(
                 admin[SuperAdmins.id].toString(),
                 admin[SuperAdmins.email],
                 "super_admin"
@@ -322,12 +359,88 @@ class AuthService(private val environment: ApplicationEnvironment) {
             Result.success(
                 TokenResponse(
                     token = token,
+                    refreshToken = refreshToken,
                     userId = admin[SuperAdmins.id].toString(),
                     email = admin[SuperAdmins.email],
                     name = admin[SuperAdmins.name],
                     type = "super_admin"
                 )
             )
+        }.also { result ->
+            if (result.isSuccess) {
+                clearLoginFailures(rateLimitKey)
+            } else {
+                recordLoginFailure(rateLimitKey)
+            }
+        }
+    }
+
+    fun refreshAccessToken(refreshToken: String): Result<TokenResponse> {
+        val decoded = try {
+            JWT.require(Algorithm.HMAC256(secret))
+                .withAudience(audience)
+                .withIssuer(issuer)
+                .build()
+                .verify(refreshToken)
+        } catch (_: Exception) {
+            return Result.failure(Exception("Invalid refresh token"))
+        }
+
+        if (decoded.getClaim("tokenUse").asString() != "refresh") {
+            return Result.failure(Exception("Invalid refresh token"))
+        }
+
+        val userId = decoded.getClaim("userId").asString()
+            ?: return Result.failure(Exception("Invalid refresh token"))
+        val email = decoded.getClaim("email").asString()
+            ?: return Result.failure(Exception("Invalid refresh token"))
+        val type = decoded.getClaim("type").asString()
+            ?: return Result.failure(Exception("Invalid refresh token"))
+        val userUuid = runCatching { UUID.fromString(userId) }.getOrNull()
+            ?: return Result.failure(Exception("Invalid refresh token"))
+
+        return transaction {
+            when (type) {
+                "user" -> {
+                    val user = Users.selectAll()
+                        .where { Users.id eq userUuid }
+                        .firstOrNull()
+                        ?: return@transaction Result.failure(Exception("User not found"))
+
+                    val tuntai = getActiveTuntaiForUser(userUuid)
+                    Result.success(
+                        TokenResponse(
+                            token = generateAccessToken(userId, email, type),
+                            refreshToken = generateRefreshToken(userId, email, type),
+                            userId = userId,
+                            email = user[Users.email],
+                            name = user[Users.name],
+                            type = type,
+                            tuntai = tuntai
+                        )
+                    )
+                }
+
+                "super_admin" -> {
+                    val admin = SuperAdmins.selectAll()
+                        .where { SuperAdmins.id eq userUuid }
+                        .firstOrNull()
+                        ?: return@transaction Result.failure(Exception("Super admin not found"))
+
+                    Result.success(
+                        TokenResponse(
+                            token = generateAccessToken(userId, email, type),
+                            refreshToken = generateRefreshToken(userId, email, type),
+                            userId = userId,
+                            email = admin[SuperAdmins.email],
+                            name = admin[SuperAdmins.name],
+                            type = type
+                        )
+                    )
+                }
+
+                else -> Result.failure(Exception("Invalid refresh token"))
+            }
         }
     }
 
@@ -403,14 +516,57 @@ class AuthService(private val environment: ApplicationEnvironment) {
         }
     }
 
-    private fun generateToken(userId: String, email: String, type: String): String {
+    private fun generateAccessToken(userId: String, email: String, type: String): String {
         return JWT.create()
             .withAudience(audience)
             .withIssuer(issuer)
             .withClaim("userId", userId)
             .withClaim("email", email)
             .withClaim("type", type)
-            .withExpiresAt(Date(System.currentTimeMillis() + 86400000))
+            .withClaim("tokenUse", "access")
+            .withExpiresAt(Date(System.currentTimeMillis() + accessTokenLifetimeMs))
             .sign(Algorithm.HMAC256(secret))
+    }
+
+    private fun generateRefreshToken(userId: String, email: String, type: String): String {
+        return JWT.create()
+            .withAudience(audience)
+            .withIssuer(issuer)
+            .withClaim("userId", userId)
+            .withClaim("email", email)
+            .withClaim("type", type)
+            .withClaim("tokenUse", "refresh")
+            .withExpiresAt(Date(System.currentTimeMillis() + refreshTokenLifetimeMs))
+            .sign(Algorithm.HMAC256(secret))
+    }
+
+    private fun loginRateLimitError(rateLimitKey: String): String? {
+        val now = System.currentTimeMillis()
+        val blockedAt = blockedUntil[rateLimitKey]
+        if (blockedAt != null && blockedAt > now) {
+            return "Too many failed login attempts. Please try again later."
+        }
+        if (blockedAt != null && blockedAt <= now) {
+            blockedUntil.remove(rateLimitKey)
+        }
+        return null
+    }
+
+    private fun recordLoginFailure(rateLimitKey: String) {
+        val now = System.currentTimeMillis()
+        val attempts = failedLoginAttempts.computeIfAbsent(rateLimitKey) { mutableListOf() }
+        synchronized(attempts) {
+            attempts.removeAll { now - it > rateLimitWindowMs }
+            attempts.add(now)
+            if (attempts.size >= maxFailedAttempts) {
+                blockedUntil[rateLimitKey] = now + blockDurationMs
+                attempts.clear()
+            }
+        }
+    }
+
+    private fun clearLoginFailures(rateLimitKey: String) {
+        failedLoginAttempts.remove(rateLimitKey)
+        blockedUntil.remove(rateLimitKey)
     }
 }

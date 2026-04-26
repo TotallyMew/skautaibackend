@@ -18,6 +18,8 @@ data class CreateReservationRequest(
     val endDate: String,
     val requestingUnitId: String? = null,
     val eventId: String? = null,
+    val pickupLocationId: String? = null,
+    val returnLocationId: String? = null,
     val notes: String? = null
 )
 
@@ -42,17 +44,20 @@ data class ReservationMovementItemRequest(
 @Serializable
 data class ReservationMovementRequest(
     val items: List<ReservationMovementItemRequest>,
+    val locationId: String? = null,
     val notes: String? = null
 )
 
 @Serializable
 data class UpdateReservationPickupRequest(
     val pickupAt: String? = null,
+    val pickupLocationId: String? = null,
     val response: String? = null
 )
 
 @Serializable
 data class UpdateReservationReturnTimeRequest(
     val returnAt: String? = null,
+    val returnLocationId: String? = null,
     val response: String? = null
 )

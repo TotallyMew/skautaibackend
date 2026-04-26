@@ -6,7 +6,8 @@ import kotlinx.serialization.Serializable
 data class CreateInvitationRequest(
     val roleId: String,
     val organizationalUnitId: String? = null,
-    val expiresInHours: Int = 48
+    val expiresInHours: Int = 48,
+    val expiresAt: String? = null
 )
 
 @Serializable

@@ -79,7 +79,7 @@ class MemberService {
     fun assignLeadershipRole(
         targetUserId: UUID,
         tuntasId: UUID,
-        assignedByUserId: UUID,
+        assignedByUserId: UUID?,
         request: AssignLeadershipRoleRequest
     ): Result<MemberLeadershipRoleResponse> {
         return transaction {
@@ -157,7 +157,7 @@ class MemberService {
             VadovasRankSupport.ensureVadovasRank(
                 userId = targetUserId,
                 tuntasId = tuntasId,
-                assignedByUserId = assignedByUserId
+                assignedByUserId = assignedByUserId ?: targetUserId
             )
 
             Result.success(
@@ -174,8 +174,9 @@ class MemberService {
         targetUserId: UUID,
         assignmentId: UUID,
         tuntasId: UUID,
-        callerUserId: UUID,
-        request: UpdateLeadershipRoleRequest
+        callerUserId: UUID?,
+        request: UpdateLeadershipRoleRequest,
+        bypassHierarchyValidation: Boolean = false
     ): Result<MemberLeadershipRoleResponse> {
         return transaction {
             val assignment = UserLeadershipRoles.selectAll()
@@ -221,9 +222,11 @@ class MemberService {
                 }
             }
 
-            if (request.termStatus in listOf("COMPLETED", "RESIGNED")) {
+            if (!bypassHierarchyValidation && request.termStatus in listOf("COMPLETED", "RESIGNED")) {
+                val effectiveCallerUserId = callerUserId
+                    ?: return@transaction Result.failure(Exception("Caller user is required"))
                 validateCanChangeTargetLeadership(
-                    callerUserId = callerUserId,
+                    callerUserId = effectiveCallerUserId,
                     targetUserId = targetUserId,
                     tuntasId = tuntasId,
                     targetRoleId = assignment[UserLeadershipRoles.roleId]
@@ -280,7 +283,8 @@ class MemberService {
         targetUserId: UUID,
         assignmentId: UUID,
         tuntasId: UUID,
-        callerUserId: UUID
+        callerUserId: UUID?,
+        bypassHierarchyValidation: Boolean = false
     ): Result<Unit> {
         return transaction {
             val assignment = UserLeadershipRoles.selectAll()
@@ -292,12 +296,16 @@ class MemberService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Leadership role assignment not found"))
 
-            validateCanChangeTargetLeadership(
-                callerUserId = callerUserId,
-                targetUserId = targetUserId,
-                tuntasId = tuntasId,
-                targetRoleId = assignment[UserLeadershipRoles.roleId]
-            )?.let { return@transaction Result.failure(Exception(it)) }
+            if (!bypassHierarchyValidation) {
+                val effectiveCallerUserId = callerUserId
+                    ?: return@transaction Result.failure(Exception("Caller user is required"))
+                validateCanChangeTargetLeadership(
+                    callerUserId = effectiveCallerUserId,
+                    targetUserId = targetUserId,
+                    tuntasId = tuntasId,
+                    targetRoleId = assignment[UserLeadershipRoles.roleId]
+                )?.let { return@transaction Result.failure(Exception(it)) }
+            }
 
             val now = kotlinx.datetime.Clock.System.now()
             UserLeadershipRoles.update({
@@ -319,7 +327,9 @@ class MemberService {
         tuntasId: UUID
     ): Result<Unit> {
         return transaction {
-            UserLeadershipRoles.selectAll()
+            lockActiveTuntininkasAssignments(tuntasId)
+
+            val assignment = UserLeadershipRoles.selectAll()
                 .where {
                     (UserLeadershipRoles.id eq assignmentId) and
                             (UserLeadershipRoles.userId eq callerUserId) and
@@ -329,6 +339,13 @@ class MemberService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Active leadership role assignment not found"))
+
+            validateCanCloseOwnLeadershipRole(
+                callerUserId = callerUserId,
+                tuntasId = tuntasId,
+                assignmentId = assignmentId,
+                roleId = assignment[UserLeadershipRoles.roleId]
+            )?.let { return@transaction Result.failure(Exception(it)) }
 
             val now = kotlinx.datetime.Clock.System.now()
             UserLeadershipRoles.update({
@@ -347,7 +364,7 @@ class MemberService {
     fun assignRank(
         targetUserId: UUID,
         tuntasId: UUID,
-        assignedByUserId: UUID,
+        assignedByUserId: UUID?,
         request: AssignRankRequest
     ): Result<MemberRankResponse> {
         return transaction {
@@ -578,8 +595,38 @@ class MemberService {
         }
     }
 
+    fun superAdminUpdateLeadershipRole(
+        targetUserId: UUID,
+        assignmentId: UUID,
+        tuntasId: UUID,
+        request: UpdateLeadershipRoleRequest
+    ): Result<MemberLeadershipRoleResponse> =
+        updateLeadershipRole(
+            targetUserId = targetUserId,
+            assignmentId = assignmentId,
+            tuntasId = tuntasId,
+            callerUserId = null,
+            request = request,
+            bypassHierarchyValidation = true
+        )
+
+    fun superAdminRemoveLeadershipRole(
+        targetUserId: UUID,
+        assignmentId: UUID,
+        tuntasId: UUID
+    ): Result<Unit> =
+        removeLeadershipRole(
+            targetUserId = targetUserId,
+            assignmentId = assignmentId,
+            tuntasId = tuntasId,
+            callerUserId = null,
+            bypassHierarchyValidation = true
+        )
+
     fun resignMember(callerUserId: UUID, tuntasId: UUID): Result<Unit> {
         return transaction {
+            lockActiveTuntininkasAssignments(tuntasId)
+
             UserTuntasMemberships.selectAll()
                 .where {
                     (UserTuntasMemberships.userId eq callerUserId) and
@@ -588,6 +635,11 @@ class MemberService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("You are not an active member of this tuntas"))
+
+            validateCanResignFromTuntas(
+                callerUserId = callerUserId,
+                tuntasId = tuntasId
+            )?.let { return@transaction Result.failure(Exception(it)) }
 
             val now = kotlinx.datetime.Clock.System.now()
 
@@ -648,6 +700,48 @@ class MemberService {
         return if (callerRank > targetRank) null else "Cannot remove member with equal or higher leadership role"
     }
 
+    private fun validateCanCloseOwnLeadershipRole(
+        callerUserId: UUID,
+        tuntasId: UUID,
+        assignmentId: UUID,
+        roleId: UUID
+    ): String? {
+        if (!isTuntininkasRole(roleId)) {
+            return null
+        }
+
+        val anotherActiveTuntininkasExists = lockActiveTuntininkasAssignments(tuntasId)
+            .any { it[UserLeadershipRoles.id] != assignmentId }
+
+        return if (anotherActiveTuntininkasExists) {
+            null
+        } else {
+            "Negalite atsistatydinti is tuntininko pareigu, kol ju neperleidote kitam nariui"
+        }
+    }
+
+    private fun validateCanResignFromTuntas(
+        callerUserId: UUID,
+        tuntasId: UUID
+    ): String? {
+        val activeTuntininkasAssignments = lockActiveTuntininkasAssignments(tuntasId)
+            .filter { it[UserLeadershipRoles.userId] == callerUserId }
+            .map { it[UserLeadershipRoles.id] }
+
+        if (activeTuntininkasAssignments.isEmpty()) {
+            return null
+        }
+
+        val anotherActiveTuntininkasExists = lockActiveTuntininkasAssignments(tuntasId)
+            .any { it[UserLeadershipRoles.id] !in activeTuntininkasAssignments }
+
+        return if (anotherActiveTuntininkasExists) {
+            null
+        } else {
+            "Negalite atsistatydinti is tuntininko pareigu, kol ju neperleidote kitam nariui"
+        }
+    }
+
     private fun highestActiveLeadershipRank(userId: UUID, tuntasId: UUID): Int {
         return UserLeadershipRoles
             .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
@@ -669,6 +763,27 @@ class MemberService {
             ?.get(Roles.name)
             ?: return 0
         return leadershipRoleRank(roleName)
+    }
+
+    private fun isTuntininkasRole(roleId: UUID): Boolean {
+        return Roles.selectAll()
+            .where { Roles.id eq roleId }
+            .firstOrNull()
+            ?.get(Roles.name) == "Tuntininkas"
+    }
+
+    private fun lockActiveTuntininkasAssignments(tuntasId: UUID): List<ResultRow> {
+        return UserLeadershipRoles
+            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull()) and
+                    (Roles.name eq "Tuntininkas")
+            }
+            .forUpdate()
+            .toList()
     }
 
     private fun leadershipRoleRank(roleName: String): Int {

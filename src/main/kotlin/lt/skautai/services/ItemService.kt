@@ -1,7 +1,9 @@
 package lt.skautai.services
 
 import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
+import lt.skautai.database.tables.Reservations
 import lt.skautai.database.tables.Roles
 import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.models.requests.CreateItemRequest
@@ -10,6 +12,7 @@ import lt.skautai.models.responses.ItemListResponse
 import lt.skautai.models.responses.ItemResponse
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
+import java.io.File
 import java.util.*
 
 class ItemService {
@@ -123,6 +126,13 @@ class ItemService {
                     return@transaction Result.failure(Exception("Invalid location ID"))
                 }
             }
+            validateItemLocation(
+                locationId = locationUUID,
+                tuntasId = tuntasId,
+                itemType = request.type,
+                custodianId = custodianUUID,
+                ownerUserId = createdByUserId
+            )?.let { return@transaction Result.failure(it) }
 
             val sourceSharedItemUUID = request.sourceSharedItemId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
@@ -226,6 +236,15 @@ class ItemService {
                     return@transaction Result.failure(Exception("Invalid location ID"))
                 }
             }
+            val effectiveType = request.type ?: existing[Items.type]
+            val effectiveCustodianId = request.custodianId?.let { custodianUUID } ?: existing[Items.custodianId]
+            validateItemLocation(
+                locationId = locationUUID ?: existing[Items.locationId],
+                tuntasId = tuntasId,
+                itemType = effectiveType,
+                custodianId = effectiveCustodianId,
+                ownerUserId = existing[Items.createdByUserId]
+            )?.let { return@transaction Result.failure(it) }
 
             val sourceSharedItemUUID = request.sourceSharedItemId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
@@ -286,6 +305,20 @@ class ItemService {
                 return@transaction Result.failure(Exception("Item is already inactive"))
             }
 
+            val hasActiveReservations = Reservations.selectAll()
+                .where {
+                    (Reservations.itemId eq itemId) and
+                        (Reservations.tuntasId eq tuntasId) and
+                        (Reservations.status inList listOf("PENDING", "APPROVED", "ACTIVE"))
+                }
+                .firstOrNull() != null
+
+            if (hasActiveReservations) {
+                return@transaction Result.failure(Exception("Item cannot be deactivated while it has active reservations"))
+            }
+
+            deleteManagedUpload(existing[Items.photoUrl], "/uploads/images/", "uploads/images")
+
             Items.update({ (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }) {
                 it[status] = "INACTIVE"
             }
@@ -344,6 +377,17 @@ class ItemService {
             emptyList()
         }
         val totalQuantityAcrossCustodians = row[Items.quantity] + quantityBreakdown.sumOf { it.quantity }
+        val locationId = row[Items.locationId]
+        val locationRows = if (locationId != null) {
+            Locations.selectAll()
+                .where { Locations.tuntasId eq row[Items.tuntasId] }
+                .toList()
+        } else {
+            emptyList()
+        }
+        val locationNodes = locationRows.associate { it[Locations.id] to it.toLocationNodeData() }
+        val locationName = locationId?.let { id -> locationNodes[id]?.name }
+        val locationPath = locationId?.let { id -> buildLocationPath(id, locationNodes) }
 
         return ItemResponse(
             id = row[Items.id].toString(),
@@ -357,7 +401,9 @@ class ItemService {
                 category = row[Items.category],
             condition = row[Items.condition],
             quantity = row[Items.quantity],
-            locationId = row[Items.locationId]?.toString(),
+            locationId = locationId?.toString(),
+            locationName = locationName,
+            locationPath = locationPath,
             temporaryStorageLabel = row[Items.temporaryStorageLabel],
             sourceSharedItemId = row[Items.sourceSharedItemId]?.toString(),
             responsibleUserId = row[Items.responsibleUserId]?.toString(),
@@ -371,5 +417,50 @@ class ItemService {
             createdAt = row[Items.createdAt].toString(),
             updatedAt = row[Items.updatedAt].toString()
         )
+    }
+
+    private fun validateItemLocation(
+        locationId: UUID?,
+        tuntasId: UUID,
+        itemType: String,
+        custodianId: UUID?,
+        ownerUserId: UUID?
+    ): Exception? {
+        if (locationId == null) return null
+        val locationRows = Locations.selectAll()
+            .where { Locations.tuntasId eq tuntasId }
+            .toList()
+        val location = locationRows.firstOrNull { it[Locations.id] == locationId }
+            ?: return Exception("Location not found")
+        val hasChildren = locationRows.any { it[Locations.parentLocationId] == locationId }
+        if (hasChildren) {
+            return Exception("Items can only be assigned to a final sublocation")
+        }
+        return when {
+            itemType == "INDIVIDUAL" -> {
+                if (location[Locations.visibility] != "PRIVATE" || location[Locations.ownerUserId] != ownerUserId) {
+                    Exception("Personal items can only use your private locations")
+                } else null
+            }
+            custodianId != null -> {
+                if (location[Locations.visibility] != "UNIT" || location[Locations.ownerUnitId] != custodianId) {
+                    Exception("Unit inventory items can only use their unit locations")
+                } else null
+            }
+            else -> {
+                if (location[Locations.visibility] != "PUBLIC") {
+                    Exception("Shared inventory items can only use public locations")
+                } else null
+            }
+        }
+    }
+
+    private fun deleteManagedUpload(url: String?, prefix: String, baseDir: String) {
+        val fileName = url?.takeIf { it.startsWith(prefix) }?.removePrefix(prefix) ?: return
+        val root = File(baseDir).canonicalFile
+        val candidate = File(root, fileName).canonicalFile
+        if (candidate.toPath().startsWith(root.toPath()) && candidate.exists()) {
+            candidate.delete()
+        }
     }
 }

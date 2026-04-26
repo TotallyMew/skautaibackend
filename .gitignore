@@ -43,3 +43,6 @@ bin/
 
 ### Environment variables ###
 .env
+
+
+loc.py

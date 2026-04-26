@@ -10,6 +10,7 @@ import lt.skautai.models.requests.AssignLeadershipRoleRequest
 import lt.skautai.models.requests.AssignRankRequest
 import lt.skautai.models.requests.UpdateLeadershipRoleRequest
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.MemberService
@@ -160,7 +161,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                     }
 
                     memberService.removeLeadershipRole(userUUID, assignmentUUID, tuntasUUID, callerUserId)
-                        .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Leadership role removed")) }
+                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Leadership role removed")) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove role")) }
                 }
             }
@@ -182,7 +183,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                 }
 
                 memberService.stepDownLeadershipRole(callerUserId, assignmentUUID, tuntasUUID)
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Leadership role resigned")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Leadership role resigned")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to step down")) }
             }
 
@@ -235,7 +236,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                     }
 
                     memberService.removeRank(userUUID, rankUUID, tuntasUUID)
-                        .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Rank removed")) }
+                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Rank removed")) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove rank")) }
                 }
             }
@@ -258,7 +259,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                 }
 
                 memberService.removeMember(userUUID, tuntasUUID, callerUserId)
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Member removed")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Member removed")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove member")) }
             }
 
@@ -273,7 +274,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                 }
 
                 memberService.resignMember(callerUserId, tuntasUUID)
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Successfully resigned from tuntas")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Successfully resigned from tuntas")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to resign")) }
             }
         }

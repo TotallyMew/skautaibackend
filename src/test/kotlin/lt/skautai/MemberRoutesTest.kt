@@ -900,6 +900,56 @@ class MemberRoutesTest {
         assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
+    @Test
+    fun `tuntininkas cannot resign from tuntas without transferring role`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.post("/api/members/me/resign") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assertTrue(response.bodyAsText().contains("Negalite atsistatydinti is tuntininko pareigu"))
+    }
+
+    @Test
+    fun `tuntininkas cannot step down from leadership role without another active tuntininkas`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val assignmentId = transaction {
+            var id = ""
+            exec("""
+                SELECT ulr.id
+                FROM user_leadership_roles ulr
+                JOIN roles r ON r.id = ulr.role_id
+                WHERE ulr.tuntas_id = '$tuntasId'
+                    AND ulr.user_id = (
+                        SELECT user_id
+                        FROM user_tuntas_memberships
+                        WHERE tuntas_id = '$tuntasId' AND left_at IS NULL
+                        LIMIT 1
+                    )
+                    AND r.name = 'Tuntininkas'
+                    AND ulr.left_at IS NULL
+                LIMIT 1
+            """.trimIndent()) { rs ->
+                if (rs.next()) id = rs.getString("id")
+            }
+            id
+        }
+
+        val response = client.post("/api/members/me/leadership-roles/$assignmentId/step-down") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assertTrue(response.bodyAsText().contains("Negalite atsistatydinti is tuntininko pareigu"))
+    }
+
 
 
 }

@@ -29,3 +29,8 @@ data class LoginRequest(
     val email: String,
     val password: String
 )
+
+@Serializable
+data class RefreshTokenRequest(
+    val refreshToken: String
+)

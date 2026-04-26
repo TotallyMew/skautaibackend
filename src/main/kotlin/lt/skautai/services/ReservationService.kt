@@ -4,6 +4,7 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.ReservationMovements
 import lt.skautai.database.tables.Reservations
@@ -146,13 +147,21 @@ class ReservationService {
                 return@transaction Result.failure(Exception("End date cannot be before start date"))
             }
 
-            val itemRows = Items.selectAll()
-                .where {
-                    (Items.tuntasId eq tuntasId) and
-                        (Items.status eq "ACTIVE") and
-                        (Items.id inList itemIds)
+            val itemRows = itemIds
+                .sortedBy(UUID::toString)
+                .map { itemId ->
+                    val row = Items.selectAll()
+                        .where {
+                            (Items.id eq itemId) and
+                                (Items.tuntasId eq tuntasId) and
+                                (Items.status eq "ACTIVE")
+                        }
+                        .forUpdate()
+                        .firstOrNull()
+                        ?: return@transaction Result.failure(Exception("One or more selected items were not found"))
+                    itemId to row
                 }
-                .associateBy { it[Items.id] }
+                .toMap()
 
             if (itemRows.size != itemIds.size) {
                 return@transaction Result.failure(Exception("One or more selected items were not found"))
@@ -205,6 +214,33 @@ class ReservationService {
                     return@transaction Result.failure(Exception("Invalid event ID"))
                 }
             }
+            val pickupLocationUUID = request.pickupLocationId?.let {
+                try {
+                    UUID.fromString(it)
+                } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid pickup location ID"))
+                }
+            }
+            val returnLocationUUID = request.returnLocationId?.let {
+                try {
+                    UUID.fromString(it)
+                } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid return location ID"))
+                }
+            }
+
+            validateReservationLocation(
+                tuntasId = tuntasId,
+                locationId = pickupLocationUUID,
+                itemRows = itemRows,
+                reservedByUserId = reservedByUserId
+            )?.let { return@transaction Result.failure(it) }
+            validateReservationLocation(
+                tuntasId = tuntasId,
+                locationId = returnLocationUUID,
+                itemRows = itemRows,
+                reservedByUserId = reservedByUserId
+            )?.let { return@transaction Result.failure(it) }
 
             for ((itemIdString, requestedQuantity) in normalizedItems) {
                 val itemUUID = UUID.fromString(itemIdString)
@@ -247,6 +283,8 @@ class ReservationService {
                         it[topLevelReviewedByUserId] = reservedByUserId
                         it[topLevelReviewedAt] = now
                     }
+                    it[pickupLocationId] = pickupLocationUUID
+                    it[returnLocationId] = returnLocationUUID
                     it[status] = initialStatus
                     it[notes] = request.notes
                 }
@@ -560,9 +598,24 @@ class ReservationService {
                     )
                 }
 
+                val movementLocationId = request.locationId?.let {
+                    try {
+                        UUID.fromString(it)
+                    } catch (e: Exception) {
+                        return@transaction Result.failure(Exception("Invalid movement location ID"))
+                    }
+                }
+                validateReservationLocation(
+                    tuntasId = tuntasId,
+                    locationId = movementLocationId,
+                    itemRows = itemRows,
+                    reservedByUserId = rows.first()[Reservations.reservedByUserId]
+                )?.let { return@transaction Result.failure(it) }
+
                 ReservationMovements.insert {
                     it[reservationGroupId] = groupId
                     it[itemId] = itemUUID
+                    it[locationId] = movementLocationId
                     it[this.type] = movementType
                     it[quantity] = movementItem.quantity
                     it[performedByUserId] = userId
@@ -613,8 +666,10 @@ class ReservationService {
                 tuntasId = tuntasId,
                 userId = userId,
                 value = request.pickupAt,
+                locationId = request.pickupLocationId,
                 response = request.response,
                 timeColumn = Reservations.pickupAt,
+                locationColumn = Reservations.pickupLocationId,
                 statusColumn = Reservations.pickupProposalStatus,
                 proposedAtColumn = Reservations.pickupProposedAt,
                 proposedByColumn = Reservations.pickupProposedByUserId,
@@ -653,8 +708,10 @@ class ReservationService {
                 tuntasId = tuntasId,
                 userId = userId,
                 value = request.returnAt,
+                locationId = request.returnLocationId,
                 response = request.response,
                 timeColumn = Reservations.returnAt,
+                locationColumn = Reservations.returnLocationId,
                 statusColumn = Reservations.returnProposalStatus,
                 proposedAtColumn = Reservations.returnProposedAt,
                 proposedByColumn = Reservations.returnProposedByUserId,
@@ -769,8 +826,10 @@ class ReservationService {
         tuntasId: UUID,
         userId: UUID,
         value: String?,
+        locationId: String?,
         response: String?,
         timeColumn: Column<Instant?>,
+        locationColumn: Column<UUID?>,
         statusColumn: Column<String>,
         proposedAtColumn: Column<Instant?>,
         proposedByColumn: Column<UUID?>,
@@ -781,6 +840,9 @@ class ReservationService {
         val normalizedResponse = response?.uppercase()
         val first = rows.first()
         val now = Clock.System.now()
+        val itemRows = Items.selectAll()
+            .where { Items.id inList rows.map { it[Reservations.itemId] } }
+            .associateBy { it[Items.id] }
 
         if (normalizedResponse == "ACCEPT") {
             if (first[statusColumn] != "PENDING" || first[timeColumn] == null) {
@@ -810,11 +872,25 @@ class ReservationService {
                 return Result.failure(Exception("Invalid $label time format"))
             }
         } ?: return Result.failure(Exception("$label time is required"))
+        val parsedLocationId = locationId?.takeIf { it.isNotBlank() }?.let {
+            try {
+                UUID.fromString(it)
+            } catch (e: Exception) {
+                return Result.failure(Exception("Invalid $label location ID"))
+            }
+        }
+        validateReservationLocation(
+            tuntasId = tuntasId,
+            locationId = parsedLocationId,
+            itemRows = itemRows,
+            reservedByUserId = first[Reservations.reservedByUserId]
+        )?.let { return Result.failure(it) }
 
         Reservations.update({
             (Reservations.groupId eq groupId) and (Reservations.tuntasId eq tuntasId)
         }) {
             it[timeColumn] = parsedTime
+            it[locationColumn] = parsedLocationId
             it[statusColumn] = "PENDING"
             it[proposedByColumn] = userId
             it[proposedAtColumn] = now
@@ -871,13 +947,25 @@ class ReservationService {
                 .where { Items.id inList rows.map { it[ReservationMovements.itemId] } }
                 .associateBy { it[Items.id] }
         }
+        val locationRows = rows.mapNotNull { it[ReservationMovements.locationId] }.distinct()
+        val locationNodes = if (locationRows.isEmpty()) {
+            emptyMap()
+        } else {
+            Locations.selectAll()
+                .where { Locations.id inList locationRows }
+                .toList()
+                .associate { it[Locations.id] to it.toLocationNodeData() }
+        }
         return rows.map { row ->
             val item = itemsById[row[ReservationMovements.itemId]]
+            val locationId = row[ReservationMovements.locationId]
             ReservationMovementResponse(
                 id = row[ReservationMovements.id].toString(),
                 reservationId = row[ReservationMovements.reservationGroupId].toString(),
                 itemId = row[ReservationMovements.itemId].toString(),
                 itemName = item?.get(Items.name),
+                locationId = locationId?.toString(),
+                locationPath = locationId?.let { buildLocationPath(it, locationNodes) },
                 type = row[ReservationMovements.type],
                 quantity = row[ReservationMovements.quantity],
                 performedByUserId = row[ReservationMovements.performedByUserId].toString(),
@@ -912,6 +1000,18 @@ class ReservationService {
                 .associateBy { it[OrganizationalUnits.id] }
         }
         val movementTotals = movementTotals(groupId)
+        val locationIds = buildSet {
+            first[Reservations.pickupLocationId]?.let(::add)
+            first[Reservations.returnLocationId]?.let(::add)
+        }
+        val locationNodes = if (locationIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Locations.selectAll()
+                .where { Locations.id inList locationIds.toList() }
+                .toList()
+                .associate { it[Locations.id] to it.toLocationNodeData() }
+        }
 
         val reservationItems = rows.map { row ->
             val itemId = row[Reservations.itemId]
@@ -970,12 +1070,16 @@ class ReservationService {
             topLevelReviewedByUserId = first[Reservations.topLevelReviewedByUserId]?.toString(),
             topLevelReviewedAt = first[Reservations.topLevelReviewedAt]?.toString(),
             pickupAt = first[Reservations.pickupAt]?.toString(),
+            pickupLocationId = first[Reservations.pickupLocationId]?.toString(),
+            pickupLocationPath = first[Reservations.pickupLocationId]?.let { buildLocationPath(it, locationNodes) },
             pickupProposalStatus = first[Reservations.pickupProposalStatus],
             pickupProposedAt = first[Reservations.pickupProposedAt]?.toString(),
             pickupProposedByUserId = first[Reservations.pickupProposedByUserId]?.toString(),
             pickupRespondedAt = first[Reservations.pickupRespondedAt]?.toString(),
             pickupRespondedByUserId = first[Reservations.pickupRespondedByUserId]?.toString(),
             returnAt = first[Reservations.returnAt]?.toString(),
+            returnLocationId = first[Reservations.returnLocationId]?.toString(),
+            returnLocationPath = first[Reservations.returnLocationId]?.let { buildLocationPath(it, locationNodes) },
             returnProposalStatus = first[Reservations.returnProposalStatus],
             returnProposedAt = first[Reservations.returnProposedAt]?.toString(),
             returnProposedByUserId = first[Reservations.returnProposedByUserId]?.toString(),
@@ -986,5 +1090,38 @@ class ReservationService {
             updatedAt = rows.maxBy { it[Reservations.updatedAt] }[Reservations.updatedAt].toString(),
             items = reservationItems
         )
+    }
+
+    private fun validateReservationLocation(
+        tuntasId: UUID,
+        locationId: UUID?,
+        itemRows: Map<UUID, ResultRow>,
+        reservedByUserId: UUID
+    ): Exception? {
+        if (locationId == null) return null
+        val locationRows = Locations.selectAll()
+            .where { Locations.tuntasId eq tuntasId }
+            .toList()
+        val location = locationRows.firstOrNull { it[Locations.id] == locationId }
+            ?: return Exception("Location not found")
+        if (locationRows.any { it[Locations.parentLocationId] == locationId }) {
+            return Exception("Reservations can only use a final sublocation")
+        }
+        val custodianIds = itemRows.values.mapNotNull { it[Items.custodianId] }.toSet()
+        return when (location[Locations.visibility]) {
+            "PUBLIC" -> null
+            "UNIT" -> {
+                val ownerUnitId = location[Locations.ownerUnitId]
+                if (ownerUnitId == null || ownerUnitId !in custodianIds) {
+                    Exception("Selected location does not match reserved unit inventory")
+                } else null
+            }
+            "PRIVATE" -> {
+                if (location[Locations.ownerUserId] != reservedByUserId) {
+                    Exception("Private reservation locations can only belong to reservation owner")
+                } else null
+            }
+            else -> Exception("Invalid location visibility")
+        }
     }
 }

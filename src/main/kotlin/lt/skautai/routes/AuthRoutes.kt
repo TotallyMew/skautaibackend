@@ -6,12 +6,21 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import lt.skautai.models.requests.LoginRequest
+import lt.skautai.models.requests.RefreshTokenRequest
 import lt.skautai.models.requests.RegisterTuntininkasRequest
 import lt.skautai.models.requests.RegisterWithInviteRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.services.AuthService
 
 fun Route.authRoutes(authService: AuthService) {
+    fun ApplicationCall.clientKey(): String =
+        request.headers["X-Forwarded-For"]
+            ?.substringBefore(",")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: request.headers["X-Real-IP"]?.takeIf { it.isNotBlank() }
+            ?: "unknown"
+
     route("/api/auth") {
         post("/register") {
             val request = call.receive<RegisterTuntininkasRequest>()
@@ -29,9 +38,16 @@ fun Route.authRoutes(authService: AuthService) {
 
         post("/login") {
             val request = call.receive<LoginRequest>()
-            authService.login(request)
+            authService.login(request, call.clientKey())
                 .onSuccess { call.respond(HttpStatusCode.OK, it) }
                 .onFailure { call.respond(HttpStatusCode.Unauthorized, ErrorResponse(it.message ?: "Login failed")) }
+        }
+
+        post("/refresh") {
+            val request = call.receive<RefreshTokenRequest>()
+            authService.refreshAccessToken(request.refreshToken)
+                .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                .onFailure { call.respond(HttpStatusCode.Unauthorized, ErrorResponse(it.message ?: "Refresh failed")) }
         }
 
     }
@@ -46,7 +62,7 @@ fun Route.authRoutes(authService: AuthService) {
     route("/api/super-admin") {
         post("/login") {
             val request = call.receive<LoginRequest>()
-            authService.loginSuperAdmin(request)
+            authService.loginSuperAdmin(request, call.clientKey())
                 .onSuccess { call.respond(HttpStatusCode.OK, it) }
                 .onFailure { call.respond(HttpStatusCode.Unauthorized, ErrorResponse(it.message ?: "Login failed")) }
         }

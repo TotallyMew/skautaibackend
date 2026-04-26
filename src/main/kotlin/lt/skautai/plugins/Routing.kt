@@ -42,7 +42,7 @@ fun Application.configureRouting() {
     routing {
         authRoutes(authService)
         invitationRoutes(invitationService)
-        superAdminRoutes()
+        superAdminRoutes(memberService, organizationalUnitService)
         itemRoutes(itemService)
         locationRoutes(locationService)
         organizationalUnitRoutes(organizationalUnitService)

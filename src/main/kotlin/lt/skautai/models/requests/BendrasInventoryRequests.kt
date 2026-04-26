@@ -14,6 +14,8 @@ data class CreateBendrasInventoryRequestRequest(
     val itemDescription: String? = null,
     val quantity: Int = 1,
     val neededByDate: String? = null,
+    val startDate: String? = null,
+    val endDate: String? = null,
     val requestingUnitId: String? = null,
     val needsDraugininkasApproval: Boolean? = null,
     val notes: String? = null,

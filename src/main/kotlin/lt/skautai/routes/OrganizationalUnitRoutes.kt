@@ -10,6 +10,7 @@ import lt.skautai.models.requests.AssignUnitMemberRequest
 import lt.skautai.models.requests.CreateOrganizationalUnitRequest
 import lt.skautai.models.requests.UpdateOrganizationalUnitRequest
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.OrganizationalUnitService
@@ -137,7 +138,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                 }
 
                 service.deleteUnit(unitUUID, tuntasUUID)
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Unit deleted")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Unit deleted")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to delete unit")) }
             }
             route("{id}/members") {
@@ -233,7 +234,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                     }
 
                     service.leaveUnit(unitUUID, tuntasUUID, callerUserId)
-                        .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Left unit")) }
+                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Left unit")) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to leave unit")) }
                 }
 
@@ -259,7 +260,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                     }
 
                     service.removeUnitMember(unitUUID, tuntasUUID, userUUID)
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Member removed from draugove")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Member removed from draugove")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove member")) }
                 }
             }

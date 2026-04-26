@@ -10,6 +10,7 @@ import lt.skautai.models.requests.CreateBendrasInventoryRequestRequest
 import lt.skautai.models.requests.DraugininkasReviewRequest
 import lt.skautai.models.requests.TopLevelReviewRequest
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.BendrasInventoryRequestService
@@ -130,7 +131,7 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                 }
 
                 service.cancelRequest(requestUUID, tuntasUUID, requestingUserId)
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Request cancelled")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Request cancelled")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to cancel request")) }
             }
 

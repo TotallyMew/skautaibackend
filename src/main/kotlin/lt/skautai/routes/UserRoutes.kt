@@ -11,6 +11,7 @@ import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserRanks
 import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.resolveUserPermissions
 import kotlinx.datetime.Clock
 import org.jetbrains.exposed.sql.and
@@ -128,7 +129,7 @@ fun Route.userRoutes() {
                 }
 
                 result
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Left tuntas")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Left tuntas")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to leave tuntas")) }
             }
         }

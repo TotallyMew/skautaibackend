@@ -13,6 +13,7 @@ import lt.skautai.models.requests.UpdateReservationPickupRequest
 import lt.skautai.models.requests.UpdateReservationReturnTimeRequest
 import lt.skautai.models.requests.UpdateReservationStatusRequest
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.ReservationService
@@ -455,7 +456,7 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                 }
 
                 reservationService.cancelReservation(reservationUUID, tuntasUUID, userId)
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Reservation cancelled")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Reservation cancelled")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to cancel reservation")) }
             }
         }

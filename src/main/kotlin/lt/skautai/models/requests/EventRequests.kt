@@ -10,9 +10,7 @@ data class CreateEventRequest(
     val endDate: String,
     val locationId: String? = null,
     val organizationalUnitId: String? = null,
-    val notes: String? = null,
-    val registrationDeadline: String? = null,
-    val expectedParticipants: Int? = null
+    val notes: String? = null
 )
 
 @Serializable
@@ -31,13 +29,6 @@ data class AssignEventRoleRequest(
     val userId: String,
     val role: String,
     val targetGroup: String? = null
-)
-
-@Serializable
-data class UpdateStovyklaDetailsRequest(
-    val registrationDeadline: String? = null,
-    val expectedParticipants: Int? = null,
-    val actualParticipants: Int? = null
 )
 
 @Serializable
@@ -77,6 +68,7 @@ data class CreateEventInventoryBucketRequest(
     val name: String,
     val type: String,
     val pastovykleId: String? = null,
+    val locationId: String? = null,
     val notes: String? = null
 )
 
@@ -85,6 +77,7 @@ data class UpdateEventInventoryBucketRequest(
     val name: String? = null,
     val type: String? = null,
     val pastovykleId: String? = null,
+    val locationId: String? = null,
     val notes: String? = null
 )
 
@@ -153,4 +146,41 @@ data class UpdateEventPurchaseRequest(
 @Serializable
 data class AttachEventPurchaseInvoiceRequest(
     val invoiceFileUrl: String
+)
+
+@Serializable
+data class CreateEventInventoryMovementRequest(
+    val eventInventoryItemId: String,
+    val movementType: String,
+    val quantity: Int,
+    val pastovykleId: String? = null,
+    val toUserId: String? = null,
+    val fromCustodyId: String? = null,
+    val requestId: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class CreatePastovykleInventoryRequestRequest(
+    val eventInventoryItemId: String,
+    val quantity: Int,
+    val notes: String? = null
+)
+
+@Serializable
+data class FulfillPastovykleInventoryRequestRequest(
+    val quantity: Int? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class MarkPastovykleInventoryRequestSelfProvidedRequest(
+    val notes: String? = null
+)
+
+@Serializable
+data class AssignUnitInventoryToPastovykleRequest(
+    val itemId: String,
+    val quantity: Int,
+    val notes: String? = null
 )

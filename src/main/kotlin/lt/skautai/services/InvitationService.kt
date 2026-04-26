@@ -8,6 +8,7 @@ import lt.skautai.plugins.resolveUserPermissions
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
 import java.util.*
 import kotlin.time.Duration.Companion.hours
 
@@ -64,7 +65,13 @@ class InvitationService {
                 ?.let { return@transaction Result.failure(Exception(it)) }
 
             val code = generateCode()
-            val expiresAt = Clock.System.now().plus(request.expiresInHours.hours)
+            val expiresAt = request.expiresAt?.let {
+                try {
+                    Instant.parse(it)
+                } catch (_: Exception) {
+                    return@transaction Result.failure(Exception("Invalid expiresAt format, use ISO 8601"))
+                }
+            } ?: Clock.System.now().plus(request.expiresInHours.hours)
 
             Invitations.insert {
                 it[this.tuntasId] = tuntasId
@@ -101,6 +108,7 @@ class InvitationService {
 
             val invite = Invitations.selectAll()
                 .where { Invitations.code eq code }
+                .forUpdate()
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Invalid invite code"))
 

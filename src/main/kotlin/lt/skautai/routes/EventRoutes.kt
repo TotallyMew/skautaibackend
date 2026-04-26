@@ -8,6 +8,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import lt.skautai.models.requests.*
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.EventService
@@ -115,7 +116,7 @@ fun Route.eventRoutes(eventService: EventService) {
                 if (!canManageEvent(eventService, tuntasUUID, eventUUID)) return@delete
 
                 eventService.deleteEvent(eventUUID, tuntasUUID)
-                    .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Event cancelled")) }
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Event cancelled")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to cancel event")) }
             }
 
@@ -166,33 +167,9 @@ fun Route.eventRoutes(eventService: EventService) {
                     }
 
                     eventService.removeEventRole(eventUUID, roleUUID, tuntasUUID)
-                        .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Event role removed")) }
+                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Event role removed")) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove event role")) }
                 }
-            }
-
-            put("{id}/stovykla-details") {
-                val tuntasId = call.request.headers["X-Tuntas-Id"]
-                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
-                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
-                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
-                }
-
-                val eventId = call.parameters["id"]
-                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Event ID required"))
-                val eventUUID = try { UUID.fromString(eventId) } catch (e: Exception) {
-                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid event ID"))
-                }
-                if (!canManageEvent(eventService, tuntasUUID, eventUUID)) return@put
-
-                val request = call.receive<UpdateStovyklaDetailsRequest>()
-
-                eventService.updateStovyklaDetails(eventUUID, tuntasUUID, request)
-                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
-                    .onFailure { e ->
-                        val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
-                        call.respond(status, ErrorResponse(e.message ?: "Failed to update stovykla details"))
-                    }
             }
 
             route("{id}/inventory-plan") {
@@ -239,7 +216,7 @@ fun Route.eventRoutes(eventService: EventService) {
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@delete
                     val bucketUUID = parseUuidParameter("bucketId", "Invalid bucket ID") ?: return@delete
                     eventService.deleteInventoryBucket(eventUUID, bucketUUID, tuntasUUID)
-                        .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Inventory bucket deleted")) }
+                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Inventory bucket deleted")) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to delete inventory bucket")) }
                 }
             }
@@ -286,7 +263,7 @@ fun Route.eventRoutes(eventService: EventService) {
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@delete
                     val inventoryItemUUID = parseUuidParameter("inventoryItemId", "Invalid inventory item ID") ?: return@delete
                     eventService.deleteInventoryItem(eventUUID, inventoryItemUUID, tuntasUUID)
-                        .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Inventory item deleted")) }
+                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Inventory item deleted")) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to delete inventory item")) }
                 }
             }
@@ -319,8 +296,52 @@ fun Route.eventRoutes(eventService: EventService) {
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@delete
                     val allocationUUID = parseUuidParameter("allocationId", "Invalid allocation ID") ?: return@delete
                     eventService.deleteInventoryAllocation(eventUUID, allocationUUID, tuntasUUID)
-                        .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Inventory allocation deleted")) }
+                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Inventory allocation deleted")) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to delete inventory allocation")) }
+                }
+            }
+
+            route("{id}/inventory-custody") {
+                get {
+                    val tuntasUUID = parseTuntasId() ?: return@get
+                    val eventUUID = parseEventId() ?: return@get
+                    if (!canViewEvents(eventService, tuntasUUID)) return@get
+                    eventService.getInventoryCustody(eventUUID, tuntasUUID)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch inventory custody")) }
+                }
+            }
+
+            route("{id}/inventory-movements") {
+                get {
+                    val tuntasUUID = parseTuntasId() ?: return@get
+                    val eventUUID = parseEventId() ?: return@get
+                    if (!canViewEvents(eventService, tuntasUUID)) return@get
+                    eventService.getInventoryMovements(eventUUID, tuntasUUID)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch inventory movements")) }
+                }
+
+                post {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    if (!eventService.isTuntasMember(userId, tuntasUUID)) {
+                        return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
+                    }
+                    val permissions = resolveUserPermissions(userId, tuntasUUID)
+                    val canManageInventory = permissions.any {
+                        (it.permissionName == "events.inventory.distribute" || it.permissionName == "events.manage") && it.scope == "ALL"
+                    } || eventService.canManageEventInventory(eventUUID, tuntasUUID, userId)
+                    val request = call.receive<CreateEventInventoryMovementRequest>()
+                    eventService.createInventoryMovement(eventUUID, tuntasUUID, userId, request, canManageInventory)
+                        .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                        .onFailure { e ->
+                            val message = e.message ?: "Failed to create inventory movement"
+                            val status = if (message == "Insufficient permissions") HttpStatusCode.Forbidden else HttpStatusCode.BadRequest
+                            call.respond(status, ErrorResponse(message))
+                        }
                 }
             }
 
@@ -538,7 +559,7 @@ fun Route.eventRoutes(eventService: EventService) {
                     }
 
                     eventService.deletePastovykle(eventUUID, pidUUID, tuntasUUID)
-                        .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Pastovyklė deleted")) }
+                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Pastovykle deleted")) }
                         .onFailure { e ->
                             val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
                             call.respond(status, ErrorResponse(e.message ?: "Failed to delete pastovyklė"))
@@ -675,12 +696,132 @@ fun Route.eventRoutes(eventService: EventService) {
                         }
 
                         eventService.removeInventoryAssignment(eventUUID, pidUUID, invUUID, tuntasUUID)
-                            .onSuccess { call.respond(HttpStatusCode.OK, ErrorResponse("Inventory assignment removed")) }
+                            .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Inventory assignment removed")) }
                             .onFailure { e ->
                                 val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
                                 call.respond(status, ErrorResponse(e.message ?: "Failed to remove inventory assignment"))
                             }
                     }
+                }
+
+                route("{pid}/requests") {
+                    get {
+                        val tuntasUUID = parseTuntasId() ?: return@get
+                        val eventUUID = parseEventId() ?: return@get
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@get
+                        if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@get
+
+                        eventService.getPastovykleRequests(eventUUID, pastovykleUUID, tuntasUUID)
+                            .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to fetch pastovykle requests"))
+                            }
+                    }
+
+                    post {
+                        val principal = call.principal<JWTPrincipal>()!!
+                        val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                        val tuntasUUID = parseTuntasId() ?: return@post
+                        val eventUUID = parseEventId() ?: return@post
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
+                        if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@post
+
+                        val request = call.receive<CreatePastovykleInventoryRequestRequest>()
+                        eventService.createPastovykleRequest(eventUUID, pastovykleUUID, tuntasUUID, userId, request)
+                            .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to create pastovykle request"))
+                            }
+                    }
+
+                    post("{requestId}/approve") {
+                        val principal = call.principal<JWTPrincipal>()!!
+                        val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                        val tuntasUUID = parseTuntasId() ?: return@post
+                        val eventUUID = parseEventId() ?: return@post
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
+                        val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@post
+                        if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+
+                        eventService.approvePastovykleRequest(eventUUID, pastovykleUUID, requestUUID, tuntasUUID, userId)
+                            .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to approve request"))
+                            }
+                    }
+
+                    post("{requestId}/reject") {
+                        val principal = call.principal<JWTPrincipal>()!!
+                        val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                        val tuntasUUID = parseTuntasId() ?: return@post
+                        val eventUUID = parseEventId() ?: return@post
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
+                        val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@post
+                        if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+
+                        eventService.rejectPastovykleRequest(eventUUID, pastovykleUUID, requestUUID, tuntasUUID, userId)
+                            .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to reject request"))
+                            }
+                    }
+
+                    post("{requestId}/self-provided") {
+                        val principal = call.principal<JWTPrincipal>()!!
+                        val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                        val tuntasUUID = parseTuntasId() ?: return@post
+                        val eventUUID = parseEventId() ?: return@post
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
+                        val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@post
+                        if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@post
+
+                        val request = call.receive<MarkPastovykleInventoryRequestSelfProvidedRequest>()
+                        eventService.markPastovykleRequestSelfProvided(eventUUID, pastovykleUUID, requestUUID, tuntasUUID, userId, request)
+                            .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to mark request as self provided"))
+                            }
+                    }
+
+                    post("{requestId}/fulfill") {
+                        val principal = call.principal<JWTPrincipal>()!!
+                        val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                        val tuntasUUID = parseTuntasId() ?: return@post
+                        val eventUUID = parseEventId() ?: return@post
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
+                        val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@post
+                        if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+
+                        val request = call.receive<FulfillPastovykleInventoryRequestRequest>()
+                        eventService.fulfillPastovykleRequest(eventUUID, pastovykleUUID, requestUUID, tuntasUUID, userId, request)
+                            .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to fulfill request"))
+                            }
+                    }
+                }
+
+                post("{pid}/assign-from-unit") {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
+                    if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@post
+
+                    val request = call.receive<AssignUnitInventoryToPastovykleRequest>()
+                    eventService.assignUnitInventoryToPastovykle(eventUUID, pastovykleUUID, tuntasUUID, userId, request)
+                        .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                        .onFailure { e ->
+                            val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                            call.respond(status, ErrorResponse(e.message ?: "Failed to assign unit inventory"))
+                        }
                 }
             }
         }
@@ -753,6 +894,29 @@ private suspend fun RoutingContext.canManageEventInventory(
     }
     if (resolveUserPermissions(userId, tuntasId).any { it.permissionName == "events.inventory.distribute" && it.scope == "ALL" }) return true
     if (eventService.canManageEventInventory(eventId, tuntasId, userId)) return true
+    call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+    return false
+}
+
+private suspend fun RoutingContext.canAccessPastovykle(
+    eventService: EventService,
+    tuntasId: UUID,
+    eventId: UUID,
+    pastovykleId: UUID
+): Boolean {
+    val principal = call.principal<JWTPrincipal>()
+        ?: return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Not authenticated")).let { false }
+    val userId = try {
+        UUID.fromString(principal.getClaim("userId", String::class))
+    } catch (e: Exception) {
+        return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
+    }
+    val permissions = resolveUserPermissions(userId, tuntasId)
+    if (permissions.any { it.permissionName == "events.inventory.distribute" && it.scope == "ALL" }) return true
+    if (permissions.any { it.permissionName == "events.manage" && it.scope == "ALL" }) return true
+    if (eventService.canManageEvent(eventId, tuntasId, userId)) return true
+    if (eventService.canManageEventInventory(eventId, tuntasId, userId)) return true
+    if (eventService.isPastovykleResponsible(eventId, pastovykleId, tuntasId, userId)) return true
     call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
     return false
 }
