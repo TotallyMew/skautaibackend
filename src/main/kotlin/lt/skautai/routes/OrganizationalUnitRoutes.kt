@@ -198,13 +198,13 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                     }
 
-                    if (!checkPermission("unit.members.manage", tuntasUUID)) return@post
-
                     val unitId = call.parameters["id"]
                         ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Unit ID required"))
                     val unitUUID = try { UUID.fromString(unitId) } catch (e: Exception) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid unit ID"))
                     }
+
+                    if (!checkPermission("unit.members.manage", tuntasUUID, unitUUID)) return@post
 
                     val userId = call.parameters["userId"]
                         ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("User ID required"))

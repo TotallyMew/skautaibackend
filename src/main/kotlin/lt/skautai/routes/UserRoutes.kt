@@ -3,6 +3,7 @@ package lt.skautai.routes
 import io.ktor.http.*
 import io.ktor.server.auth.*
 import io.ktor.server.auth.jwt.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import lt.skautai.database.tables.Tuntai
@@ -10,8 +11,12 @@ import lt.skautai.database.tables.UnitAssignments
 import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserRanks
 import lt.skautai.database.tables.UserTuntasMemberships
+import lt.skautai.database.tables.Users
+import lt.skautai.models.requests.ChangeMyPasswordRequest
+import lt.skautai.models.requests.UpdateMyProfileRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
+import lt.skautai.models.responses.MyProfileResponse
 import lt.skautai.plugins.resolveUserPermissions
 import kotlinx.datetime.Clock
 import org.jetbrains.exposed.sql.and
@@ -20,12 +25,144 @@ import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.update
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.mindrot.jbcrypt.BCrypt
 import java.util.*
 import org.jetbrains.exposed.sql.deleteWhere
+import java.util.Locale
 
 fun Route.userRoutes() {
     authenticate("auth-jwt") {
         route("/api/users/me") {
+            get {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val profile = transaction {
+                    Users.selectAll()
+                        .where { Users.id eq userId }
+                        .firstOrNull()
+                        ?.let {
+                            MyProfileResponse(
+                                userId = it[Users.id].toString(),
+                                name = it[Users.name],
+                                surname = it[Users.surname],
+                                email = it[Users.email],
+                                phone = it[Users.phone],
+                                createdAt = it[Users.createdAt].toString(),
+                                updatedAt = it[Users.updatedAt].toString()
+                            )
+                        }
+                } ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("User not found"))
+
+                call.respond(HttpStatusCode.OK, profile)
+            }
+
+            put("/profile") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val request = call.receive<UpdateMyProfileRequest>()
+
+                val normalizedName = request.name.trim()
+                val normalizedSurname = request.surname.trim()
+                val normalizedEmail = normalizeEmail(request.email)
+                val normalizedPhone = request.phone?.trim()?.takeIf { it.isNotEmpty() }
+
+                validateRequired(normalizedName, "Name")?.let {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse(it))
+                }
+                validateRequired(normalizedSurname, "Surname")?.let {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse(it))
+                }
+                validateEmail(normalizedEmail)?.let {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse(it))
+                }
+                validatePhone(normalizedPhone)?.let {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse(it))
+                }
+
+                val result = transaction {
+                    val existingUser = Users.selectAll()
+                        .where { Users.id eq userId }
+                        .firstOrNull()
+                        ?: return@transaction Result.failure(Exception("User not found"))
+
+                    val emailTaken = Users.selectAll()
+                        .where { (Users.email eq normalizedEmail) and (Users.id neq userId) }
+                        .firstOrNull() != null
+                    if (emailTaken) {
+                        return@transaction Result.failure(Exception("Email already registered"))
+                    }
+
+                    val now = Clock.System.now()
+                    Users.update({ Users.id eq userId }) {
+                        it[name] = normalizedName
+                        it[surname] = normalizedSurname
+                        it[email] = normalizedEmail
+                        it[phone] = normalizedPhone
+                        it[updatedAt] = now
+                    }
+
+                    Result.success(
+                        MyProfileResponse(
+                            userId = existingUser[Users.id].toString(),
+                            name = normalizedName,
+                            surname = normalizedSurname,
+                            email = normalizedEmail,
+                            phone = normalizedPhone,
+                            createdAt = existingUser[Users.createdAt].toString(),
+                            updatedAt = now.toString()
+                        )
+                    )
+                }
+
+                result
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure {
+                        val status = if (it.message == "User not found") HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                        call.respond(status, ErrorResponse(it.message ?: "Failed to update profile"))
+                    }
+            }
+
+            put("/password") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val request = call.receive<ChangeMyPasswordRequest>()
+
+                if (request.currentPassword.isBlank()) {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Current password is required"))
+                }
+                validatePassword(request.newPassword)?.let {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse(it))
+                }
+                if (request.currentPassword == request.newPassword) {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("New password must be different"))
+                }
+
+                val result = transaction {
+                    val user = Users.selectAll()
+                        .where { Users.id eq userId }
+                        .firstOrNull()
+                        ?: return@transaction Result.failure(Exception("User not found"))
+
+                    if (!BCrypt.checkpw(request.currentPassword, user[Users.passwordHash])) {
+                        return@transaction Result.failure(Exception("Invalid current password"))
+                    }
+
+                    Users.update({ Users.id eq userId }) {
+                        it[passwordHash] = BCrypt.hashpw(request.newPassword, BCrypt.gensalt())
+                        it[updatedAt] = Clock.System.now()
+                    }
+                    Result.success(Unit)
+                }
+
+                result
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Password updated")) }
+                    .onFailure {
+                        val status = if (it.message == "User not found") HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                        call.respond(status, ErrorResponse(it.message ?: "Failed to update password"))
+                    }
+            }
+
             get("/permissions") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
@@ -134,4 +271,32 @@ fun Route.userRoutes() {
             }
         }
     }
+}
+
+private val userEmailRegex = Regex("^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}$", RegexOption.IGNORE_CASE)
+
+private fun normalizeEmail(email: String): String = email.trim().lowercase(Locale.ROOT)
+
+private fun validateRequired(value: String, label: String): String? =
+    if (value.isBlank()) "$label is required" else null
+
+private fun validateEmail(email: String): String? = when {
+    email.isBlank() -> "Email is required"
+    !userEmailRegex.matches(email) -> "Invalid email format"
+    else -> null
+}
+
+private fun validatePassword(password: String): String? = when {
+    password.isBlank() -> "Password is required"
+    password.length < 8 -> "Password must be at least 8 characters"
+    password.any { it.isWhitespace() } -> "Password cannot contain spaces"
+    !password.any { it.isLetter() } -> "Password must contain a letter"
+    !password.any { it.isDigit() } -> "Password must contain a number"
+    else -> null
+}
+
+private fun validatePhone(phone: String?): String? {
+    if (phone.isNullOrBlank()) return null
+    val normalized = phone.replace(" ", "")
+    return if (!normalized.matches(Regex("^\\+?[0-9]{6,20}$"))) "Invalid phone format" else null
 }

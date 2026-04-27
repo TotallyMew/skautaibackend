@@ -150,7 +150,7 @@ CREATE TABLE items (
                        category VARCHAR(30) NOT NULL CHECK (category IN ('CAMPING', 'TOOLS', 'COOKING', 'FIRST_AID', 'UNIFORMS', 'BOOKS', 'PERSONAL_LOANS')),
                        condition VARCHAR(20) DEFAULT 'GOOD' CHECK (condition IN ('GOOD', 'DAMAGED', 'WRITTEN_OFF')),
                        quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
-                       location_id UUID REFERENCES locations(id),
+                       location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                        temporary_storage_label VARCHAR(255),
                        source_shared_item_id UUID REFERENCES items(id),
                        responsible_user_id UUID REFERENCES users(id),
@@ -249,7 +249,7 @@ CREATE TABLE events (
                         type VARCHAR(20) NOT NULL CHECK (type IN ('STOVYKLA', 'SUEIGA', 'RENGINYS')),
                         start_date DATE NOT NULL,
                         end_date DATE NOT NULL,
-                        location_id UUID REFERENCES locations(id),
+                        location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                         organizational_unit_id UUID REFERENCES organizational_units(id),
                         created_by_user_id UUID REFERENCES users(id),
                         status VARCHAR(20) DEFAULT 'PLANNING' CHECK (status IN ('PLANNING', 'ACTIVE', 'COMPLETED', 'CANCELLED')),
@@ -314,7 +314,7 @@ CREATE TABLE event_inventory_buckets (
                                           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                           event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
                                           pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE SET NULL,
-                                          location_id UUID REFERENCES locations(id),
+                                          location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                                           name VARCHAR(120) NOT NULL,
                                           type VARCHAR(30) NOT NULL CHECK (type IN ('PROGRAM', 'KITCHEN', 'ADMIN', 'MEDICAL', 'PASTOVYKLE', 'OTHER')),
                                           notes TEXT
@@ -485,14 +485,14 @@ CREATE TABLE reservations (
                               top_level_reviewed_by_user_id UUID REFERENCES users(id),
                               top_level_reviewed_at TIMESTAMP,
                               pickup_at TIMESTAMP,
-                              pickup_location_id UUID REFERENCES locations(id),
+                              pickup_location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                               pickup_proposal_status VARCHAR(20) DEFAULT 'NONE' CHECK (pickup_proposal_status IN ('NONE', 'PENDING', 'ACCEPTED')),
                               pickup_proposed_at TIMESTAMP,
                               pickup_proposed_by_user_id UUID REFERENCES users(id),
                               pickup_responded_at TIMESTAMP,
                               pickup_responded_by_user_id UUID REFERENCES users(id),
                               return_at TIMESTAMP,
-                              return_location_id UUID REFERENCES locations(id),
+                              return_location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                               return_proposal_status VARCHAR(20) DEFAULT 'NONE' CHECK (return_proposal_status IN ('NONE', 'PENDING', 'ACCEPTED')),
                               return_proposed_at TIMESTAMP,
                               return_proposed_by_user_id UUID REFERENCES users(id),
@@ -513,7 +513,7 @@ CREATE TABLE reservation_movements (
                                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                        reservation_group_id UUID NOT NULL,
                                        item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-                                       location_id UUID REFERENCES locations(id),
+                                       location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                                        type VARCHAR(20) NOT NULL CHECK (type IN ('ISSUE', 'RETURN_MARKED', 'RETURN')),
                                        quantity INTEGER NOT NULL CHECK (quantity > 0),
                                        performed_by_user_id UUID NOT NULL REFERENCES users(id),
@@ -681,6 +681,7 @@ CREATE INDEX idx_reservation_movements_group ON reservation_movements(reservatio
 CREATE INDEX idx_reservation_movements_item ON reservation_movements(item_id);
 CREATE INDEX idx_reservation_movements_location ON reservation_movements(location_id);
 CREATE INDEX idx_reservation_movements_type ON reservation_movements(type);
+CREATE INDEX idx_locations_tuntas ON locations(tuntas_id);
 CREATE INDEX idx_locations_parent ON locations(parent_location_id);
 CREATE INDEX idx_locations_visibility ON locations(visibility);
 CREATE INDEX idx_sync_operations_status ON sync_operations(status);

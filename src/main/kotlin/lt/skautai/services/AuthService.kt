@@ -286,9 +286,9 @@ class AuthService(private val environment: ApplicationEnvironment) {
         }
     }
 
-    fun login(request: LoginRequest, clientKey: String): Result<TokenResponse> {
+    fun login(request: LoginRequest): Result<TokenResponse> {
         val email = normalizeEmail(request.email)
-        val rateLimitKey = "user:$clientKey:$email"
+        val rateLimitKey = "user:$email"
         loginRateLimitError(rateLimitKey)?.let { return Result.failure(Exception(it)) }
 
         return transaction {
@@ -331,9 +331,9 @@ class AuthService(private val environment: ApplicationEnvironment) {
         }
     }
 
-    fun loginSuperAdmin(request: LoginRequest, clientKey: String): Result<TokenResponse> {
+    fun loginSuperAdmin(request: LoginRequest): Result<TokenResponse> {
         val email = normalizeEmail(request.email)
-        val rateLimitKey = "super_admin:$clientKey:$email"
+        val rateLimitKey = "super_admin:$email"
         loginRateLimitError(rateLimitKey)?.let { return Result.failure(Exception(it)) }
 
         return transaction {
@@ -445,6 +445,10 @@ class AuthService(private val environment: ApplicationEnvironment) {
     }
 
     fun seedSuperAdmin(request: LoginRequest): Result<MessageResponse> {
+        val email = normalizeEmail(request.email)
+        validateEmail(email)?.let { return Result.failure(Exception(it)) }
+        validatePassword(request.password)?.let { return Result.failure(Exception(it)) }
+
         return transaction {
             val existingAdmin = SuperAdmins.selectAll().firstOrNull()
             if (existingAdmin != null) {
@@ -455,7 +459,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
             SuperAdmins.insert {
                 it[name] = "Super Admin"
-                it[email] = request.email
+                it[this.email] = email
                 it[this.passwordHash] = passwordHash
             }
 
@@ -560,7 +564,6 @@ class AuthService(private val environment: ApplicationEnvironment) {
             attempts.add(now)
             if (attempts.size >= maxFailedAttempts) {
                 blockedUntil[rateLimitKey] = now + blockDurationMs
-                attempts.clear()
             }
         }
     }

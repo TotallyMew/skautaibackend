@@ -76,6 +76,51 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.OK, response.status)
     }
 
+    private suspend fun ApplicationTestBuilder.registerUserWithRole(
+        token: String,
+        tuntasId: String,
+        roleName: String,
+        email: String,
+        organizationalUnitId: String? = null
+    ): Pair<String, String> {
+        val roleId = TestHelper.getRoleId(tuntasId, roleName)
+        val unitField = organizationalUnitId?.let { ", \"organizationalUnitId\": \"$it\"" }.orEmpty()
+        val inviteResponse = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId"$unitField, "expiresInHours": 48 }""")
+        }
+        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        val registerResponse = client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Event",
+                    "surname": "User",
+                    "email": "$email",
+                    "password": "testas123",
+                    "inviteCode": "$inviteCode"
+                }
+            """.trimIndent())
+        }
+        val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
+        return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
+    }
+
+    private suspend fun HttpClient.createUnit(token: String, tuntasId: String, name: String): String {
+        val response = post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name", "type": "SKAUTU_DRAUGOVE" }""")
+        }
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
     @Test
     fun `create stovykla event returns 201 without stovykla details payload`() = testApplication {
         configureFullApp()
@@ -151,6 +196,93 @@ class EventRoutesTest {
         val roles = body["eventRoles"]!!.jsonArray
         assertEquals(1, roles.size)
         assertEquals("VIRSININKAS", roles[0].jsonObject["role"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `vadovas can create event but regular member cannot`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val (memberToken, _) = registerUserWithRole(token, tuntasId, "Skautas", "event-member@test.com")
+        val (vadovasToken, vadovasUserId) = registerUserWithRole(token, tuntasId, "Vadovas", "event-vadovas@test.com")
+
+        val denied = client.post("/api/events") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "name": "Member event",
+                    "type": "SUEIGA",
+                    "startDate": "2026-06-15",
+                    "endDate": "2026-06-15"
+                }
+            """.trimIndent())
+        }
+        assertEquals(HttpStatusCode.Forbidden, denied.status)
+
+        val created = client.post("/api/events") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $vadovasToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "name": "Vadovu sueiga",
+                    "type": "SUEIGA",
+                    "startDate": "2026-06-15",
+                    "endDate": "2026-06-15"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.Created, created.status)
+        val roles = Json.parseToJsonElement(created.bodyAsText()).jsonObject["eventRoles"]!!.jsonArray
+        assertEquals("VIRSININKAS", roles.first().jsonObject["role"]?.jsonPrimitive?.content)
+        assertEquals(vadovasUserId, roles.first().jsonObject["userId"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `event location and organizational unit must belong to same tuntas`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val (otherToken, otherTuntasId) = client.registerAndActivateTuntininkas(
+            email = "other-tuntininkas@test.com",
+            tuntasName = "Other Tuntas"
+        )
+
+        val foreignLocationResponse = client.post("/api/locations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $otherToken")
+            header("X-Tuntas-Id", otherTuntasId)
+            setBody("""{ "name": "Foreign storage" }""")
+        }
+        val foreignLocationId = Json.parseToJsonElement(foreignLocationResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+        val foreignUnitId = client.createUnit(otherToken, otherTuntasId, "Foreign unit")
+
+        val createWithForeignLocation = client.post("/api/events") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "name": "Cross tenant",
+                    "type": "SUEIGA",
+                    "startDate": "2026-06-15",
+                    "endDate": "2026-06-15",
+                    "locationId": "$foreignLocationId"
+                }
+            """.trimIndent())
+        }
+        assertEquals(HttpStatusCode.BadRequest, createWithForeignLocation.status)
+
+        val eventId = client.createTestEvent(token, tuntasId)
+        val updateWithForeignUnit = client.put("/api/events/$eventId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "organizationalUnitId": "$foreignUnitId" }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, updateWithForeignUnit.status)
     }
 
     @Test
@@ -364,21 +496,15 @@ class EventRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val eventId = client.createTestEvent(token, tuntasId)
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Vadovas", "delegated-virsininkas@test.com")
 
-        val membersResponse = client.get("/api/members") {
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-        }
-        val userId = Json.parseToJsonElement(membersResponse.bodyAsText())
-            .jsonObject["members"]!!.jsonArray[0].jsonObject["userId"]!!.jsonPrimitive.content
-
-        // Reassign VIRSININKAS to same user (simulating transfer)
-        client.post("/api/events/$eventId/roles") {
+        val assignResponse = client.post("/api/events/$eventId/roles") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
             setBody("""{ "userId": "$userId", "role": "VIRSININKAS" }""")
         }
+        assertEquals(HttpStatusCode.Created, assignResponse.status)
 
         val eventResponse = client.get("/api/events/$eventId") {
             header("Authorization", "Bearer $token")
@@ -393,6 +519,19 @@ class EventRoutesTest {
 
         // Only one VIRSININKAS should exist
         assertEquals(1, virsininkasList.size)
+        assertEquals(userId, virsininkasList.first().jsonObject["userId"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `raw document upload URLs are not publicly served`() = testApplication {
+        configureFullApp()
+        val (token, _) = client.registerAndActivateTuntininkas()
+
+        val response = client.get("/uploads/documents/test-invoice.pdf") {
+            header("Authorization", "Bearer $token")
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
     }
 
     @Test

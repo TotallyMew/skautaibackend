@@ -1,11 +1,16 @@
 package lt.skautai
 
+import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.netty.*
+import io.ktor.server.plugins.defaultheaders.*
+import io.ktor.server.plugins.statuspages.*
+import io.ktor.server.response.*
 import lt.skautai.plugins.configureRouting
 import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
 import lt.skautai.database.tables.Tuntai
+import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.services.PermissionSeeder
 import lt.skautai.services.VadovasRankSupport
 import org.jetbrains.exposed.sql.Database
@@ -20,6 +25,16 @@ fun Application.module() {
     configureDatabases()
     configureSerialization()
     configureSecurity()
+    install(DefaultHeaders) {
+        header("X-Content-Type-Options", "nosniff")
+        header("X-Frame-Options", "DENY")
+        header("Referrer-Policy", "strict-origin-when-cross-origin")
+    }
+    install(StatusPages) {
+        exception<Throwable> { call, _ ->
+            call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Internal server error"))
+        }
+    }
     configureRouting()
     PermissionSeeder.seedPermissions()
     transaction {
@@ -47,6 +62,6 @@ fun Application.configureDatabases() {
     val logger = log
     transaction {
         exec("SELECT 1")
-        logger.info("Database connection asd")
+        logger.info("Database connected successfully")
     }
 }

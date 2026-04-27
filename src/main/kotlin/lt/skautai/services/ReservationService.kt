@@ -1104,9 +1104,6 @@ class ReservationService {
             .toList()
         val location = locationRows.firstOrNull { it[Locations.id] == locationId }
             ?: return Exception("Location not found")
-        if (locationRows.any { it[Locations.parentLocationId] == locationId }) {
-            return Exception("Reservations can only use a final sublocation")
-        }
         val custodianIds = itemRows.values.mapNotNull { it[Items.custodianId] }.toSet()
         return when (location[Locations.visibility]) {
             "PUBLIC" -> null

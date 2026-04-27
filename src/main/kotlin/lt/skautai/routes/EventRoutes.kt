@@ -66,11 +66,16 @@ fun Route.eventRoutes(eventService: EventService) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!eventService.isTuntasMember(userId, tuntasUUID)) {
-                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
+                val request = call.receive<CreateEventRequest>()
+                val targetOrgUnitId = request.organizationalUnitId?.let {
+                    try { UUID.fromString(it) } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid organizational unit ID"))
+                    }
                 }
 
-                val request = call.receive<CreateEventRequest>()
+                if (!eventService.canCreateEvent(userId, tuntasUUID, targetOrgUnitId)) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 eventService.createEvent(tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }

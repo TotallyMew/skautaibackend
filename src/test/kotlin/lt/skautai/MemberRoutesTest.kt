@@ -108,6 +108,49 @@ class MemberRoutesTest {
     }
 
     @Test
+    fun `regular member can view own unit members only`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Skautai 1")
+        val otherUnitId = createUnit(token, tuntasId, "Skautai 2")
+        val (memberToken, memberUserId) = registerUserWithRole(
+            token,
+            tuntasId,
+            "Skautas",
+            "own-unit-member@test.com",
+            ownUnitId
+        )
+        registerUserWithRole(
+            token,
+            tuntasId,
+            "Skautas",
+            "other-unit-member@test.com",
+            otherUnitId
+        )
+
+        val ownUnitMembers = client.get("/api/organizational-units/$ownUnitId/members") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, ownUnitMembers.status)
+
+        val memberList = client.get("/api/members") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, memberList.status)
+        val members = Json.parseToJsonElement(memberList.bodyAsText()).jsonObject["members"]!!.jsonArray
+        assertEquals(1, members.size)
+        assertEquals(memberUserId, members[0].jsonObject["userId"]!!.jsonPrimitive.content)
+
+        val otherUnitMembers = client.get("/api/organizational-units/$otherUnitId/members") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.Forbidden, otherUnitMembers.status)
+    }
+
+    @Test
     fun `get single member returns 200`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()

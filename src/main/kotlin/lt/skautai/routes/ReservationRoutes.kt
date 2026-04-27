@@ -11,7 +11,6 @@ import lt.skautai.models.requests.ReservationMovementRequest
 import lt.skautai.models.requests.ReviewReservationRequest
 import lt.skautai.models.requests.UpdateReservationPickupRequest
 import lt.skautai.models.requests.UpdateReservationReturnTimeRequest
-import lt.skautai.models.requests.UpdateReservationStatusRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
@@ -403,38 +402,10 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
             }
 
             put("{id}/status") {
-                val principal = call.principal<JWTPrincipal>()!!
-                val userId = UUID.fromString(principal.getClaim("userId", String::class))
-
-                val tuntasId = call.request.headers["X-Tuntas-Id"]
-                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
-                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
-                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
-                }
-
-                if (!checkPermission("reservations.approve", tuntasUUID)) return@put
-
-                val reservationId = call.parameters["id"]
-                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
-                val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
-                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
-                }
-
-                // Tuntininkas/pavaduotojas (ALL-scope approvers) cannot approve their own reservation
-                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
-                val hasAllScopeApprove = resolvedPerms.any { it.permissionName == "reservations.approve" && it.scope == "ALL" }
-                if (hasAllScopeApprove) {
-                    val reservedByUserId = reservationService.getReservationOwner(reservationUUID, tuntasUUID)
-                    if (reservedByUserId == userId) {
-                        return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Cannot approve your own reservation"))
-                    }
-                }
-
-                val request = call.receive<UpdateReservationStatusRequest>()
-
-                reservationService.updateReservationStatus(reservationUUID, tuntasUUID, userId, request)
-                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
-                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to update reservation status")) }
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    ErrorResponse("Use unit-review or top-level-review for reservation approvals")
+                )
             }
 
             delete("{id}") {

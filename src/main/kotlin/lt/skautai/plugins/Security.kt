@@ -34,7 +34,7 @@ fun Application.configureSecurity() {
                 val userId = credential.payload.getClaim("userId").asString()
                 val tokenType = credential.payload.getClaim("type").asString()
                 val tokenUse = credential.payload.getClaim("tokenUse").asString()
-                if (userId == null || (tokenType != null && tokenType != "user") || (tokenUse != null && tokenUse != "access")) {
+                if (userId == null || tokenType != "user" || tokenUse != "access") {
                     return@validate null
                 }
                 val userUuid = runCatching { UUID.fromString(userId) }.getOrNull() ?: return@validate null
@@ -58,7 +58,7 @@ fun Application.configureSecurity() {
             )
             validate { credential ->
                 val tokenUse = credential.payload.getClaim("tokenUse").asString()
-                if (credential.payload.getClaim("type").asString() != "super_admin" || (tokenUse != null && tokenUse != "access")) {
+                if (credential.payload.getClaim("type").asString() != "super_admin" || tokenUse != "access") {
                     return@validate null
                 }
                 val adminId = credential.payload.getClaim("userId").asString()
@@ -116,7 +116,7 @@ fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermissio
         val allRoleIds = leadershipRoleIds + rankRoleIds
         if (allRoleIds.isEmpty()) return@transaction emptyList()
 
-// Collect all unit IDs from leadership roles
+        // Collect all unit IDs from leadership roles and active unit memberships.
         val leadershipUnitIds = UserLeadershipRoles
             .selectAll()
             .where {
@@ -129,8 +129,7 @@ fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermissio
             .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
             .toSet()
 
-        // Collect all unit IDs from unit assignments
-        val assignmentUnitIds = UnitAssignments
+        val membershipUnitIds = UnitAssignments
             .selectAll()
             .where {
                 (UnitAssignments.userId eq userId) and
@@ -140,7 +139,7 @@ fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermissio
             .map { it[UnitAssignments.organizationalUnitId] }
             .toSet()
 
-        val allUnitIds = leadershipUnitIds + assignmentUnitIds
+        val allUnitIds = leadershipUnitIds + membershipUnitIds
 
         RolePermissions
             .innerJoin(Permissions, { RolePermissions.permissionId }, { Permissions.id })

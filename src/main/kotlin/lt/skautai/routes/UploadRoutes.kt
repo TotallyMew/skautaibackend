@@ -43,21 +43,6 @@ fun Route.uploadRoutes() {
             }
         }
 
-        route("/uploads/documents") {
-            get("{fileName}") {
-                val fileName = call.parameters["fileName"]
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("File name required"))
-                val file = resolveUploadFile(File("uploads/documents"), fileName)
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid file name"))
-
-                if (!file.exists()) {
-                    return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("File not found"))
-                }
-
-                call.respondFile(file)
-            }
-        }
-
         post("/api/uploads/images") {
             call.handleUpload(
                 uploadDir = File("uploads/images"),

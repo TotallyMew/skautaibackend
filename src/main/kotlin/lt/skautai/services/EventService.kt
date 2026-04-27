@@ -92,6 +92,69 @@ class EventService {
             .firstOrNull() != null
     }
 
+    fun canCreateEvent(userId: UUID, tuntasId: UUID, targetOrgUnitId: UUID?): Boolean = transaction {
+        val isMember = UserTuntasMemberships.selectAll()
+            .where {
+                (UserTuntasMemberships.userId eq userId) and
+                    (UserTuntasMemberships.tuntasId eq tuntasId) and
+                    (UserTuntasMemberships.leftAt.isNull())
+            }
+            .firstOrNull() != null
+        if (!isMember) return@transaction false
+
+        val roleIds = (
+            UserLeadershipRoles.selectAll()
+                .where {
+                    (UserLeadershipRoles.userId eq userId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        (UserLeadershipRoles.leftAt.isNull())
+                }
+                .map { it[UserLeadershipRoles.roleId] } +
+                UserRanks.selectAll()
+                    .where {
+                        (UserRanks.userId eq userId) and
+                            (UserRanks.tuntasId eq tuntasId)
+                    }
+                    .map { it[UserRanks.roleId] }
+            )
+
+        if (roleIds.isEmpty()) return@transaction false
+
+        val hasVadovasRank = Roles.selectAll()
+            .where {
+                (Roles.id inList roleIds) and
+                    (Roles.tuntasId eq tuntasId) and
+                    (Roles.name eq "Vadovas")
+            }
+            .firstOrNull() != null
+        if (hasVadovasRank) return@transaction true
+
+        val createPermissions = RolePermissions
+            .innerJoin(Permissions, { RolePermissions.permissionId }, { Permissions.id })
+            .selectAll()
+            .where {
+                (RolePermissions.roleId inList roleIds) and
+                    (Permissions.name eq "events.create")
+            }
+            .toList()
+        if (createPermissions.any { it[RolePermissions.scope] == "ALL" }) return@transaction true
+        if (targetOrgUnitId == null) return@transaction false
+
+        val leaderUnitIds = UserLeadershipRoles.selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull()) and
+                    (UserLeadershipRoles.organizationalUnitId.isNotNull())
+            }
+            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
+            .toSet()
+
+        createPermissions.any { it[RolePermissions.scope] == "OWN_UNIT" } && targetOrgUnitId in leaderUnitIds
+    }
+
     fun canManageEvent(eventId: UUID, tuntasId: UUID, userId: UUID): Boolean = transaction {
         Events.selectAll()
             .where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }
@@ -209,12 +272,14 @@ class EventService {
                     return@transaction Result.failure(Exception("Invalid location ID"))
                 }
             }
+            validateEventLocation(locationUUID, tuntasId)?.let { return@transaction Result.failure(it) }
 
             val orgUnitUUID = request.organizationalUnitId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid organizational unit ID"))
                 }
             }
+            validateEventOrgUnit(orgUnitUUID, tuntasId)?.let { return@transaction Result.failure(it) }
 
             val eventId = Events.insert {
                 it[this.tuntasId] = tuntasId
@@ -284,12 +349,14 @@ class EventService {
                     return@transaction Result.failure(Exception("Invalid location ID"))
                 }
             }
+            validateEventLocation(locationUUID, tuntasId)?.let { return@transaction Result.failure(it) }
 
             val orgUnitUUID = request.organizationalUnitId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid organizational unit ID"))
                 }
             }
+            validateEventOrgUnit(orgUnitUUID, tuntasId)?.let { return@transaction Result.failure(it) }
 
             Events.update({
                 (Events.id eq eventId) and
@@ -2279,6 +2346,22 @@ class EventService {
             }
             Result.success(toPurchaseResponse(EventPurchases.selectAll().where { EventPurchases.id eq purchaseId }.first()))
         }
+    }
+
+    private fun validateEventLocation(locationId: UUID?, tuntasId: UUID): Exception? {
+        if (locationId == null) return null
+        val existsInTuntas = Locations.selectAll()
+            .where { (Locations.id eq locationId) and (Locations.tuntasId eq tuntasId) }
+            .firstOrNull() != null
+        return if (existsInTuntas) null else Exception("Location not found in this tuntas")
+    }
+
+    private fun validateEventOrgUnit(orgUnitId: UUID?, tuntasId: UUID): Exception? {
+        if (orgUnitId == null) return null
+        val existsInTuntas = OrganizationalUnits.selectAll()
+            .where { (OrganizationalUnits.id eq orgUnitId) and (OrganizationalUnits.tuntasId eq tuntasId) }
+            .firstOrNull() != null
+        return if (existsInTuntas) null else Exception("Organizational unit not found in this tuntas")
     }
 
     private fun toEventResponse(row: ResultRow): EventResponse {

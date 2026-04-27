@@ -1,5 +1,6 @@
 ﻿package lt.skautai
 
+import io.ktor.client.HttpClient
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -29,6 +30,37 @@ class LocationRoutesTest {
     @BeforeEach
     fun cleanTables() {
         TestHelper.cleanTables()
+    }
+
+    private suspend fun HttpClient.registerSecondUser(
+        token: String,
+        tuntasId: String,
+        email: String = "location-member@test.com"
+    ): Pair<String, String> {
+        val roleId = TestHelper.getRoleId(tuntasId, "Skautas")
+        val inviteResponse = post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId", "expiresInHours": 48 }""")
+        }
+        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        val registerResponse = post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Location",
+                    "surname": "User",
+                    "email": "$email",
+                    "password": "testas123",
+                    "inviteCode": "$inviteCode"
+                }
+            """.trimIndent())
+        }
+        val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
+        return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
     }
 
     @Test
@@ -135,6 +167,37 @@ class LocationRoutesTest {
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals("Garazas", body["name"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `private location is visible only to owner`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val (otherToken, _) = client.registerSecondUser(token, tuntasId)
+
+        val createResponse = client.post("/api/locations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Private shelf", "visibility": "PRIVATE" }""")
+        }
+        assertEquals(HttpStatusCode.Created, createResponse.status)
+        val locationId = Json.parseToJsonElement(createResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val listResponse = client.get("/api/locations") {
+            header("Authorization", "Bearer $otherToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, listResponse.status)
+        val locations = Json.parseToJsonElement(listResponse.bodyAsText()).jsonObject["locations"]!!.jsonArray
+        assertTrue(locations.none { it.jsonObject["id"]?.jsonPrimitive?.content == locationId })
+
+        val detailResponse = client.get("/api/locations/$locationId") {
+            header("Authorization", "Bearer $otherToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.NotFound, detailResponse.status)
     }
 
     @Test

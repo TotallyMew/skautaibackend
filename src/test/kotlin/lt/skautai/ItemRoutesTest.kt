@@ -5,6 +5,7 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import lt.skautai.TestHelper.configureFullApp
@@ -28,6 +29,56 @@ class ItemRoutesTest {
     @BeforeEach
     fun cleanTables() {
         TestHelper.cleanTables()
+    }
+
+    private suspend fun ApplicationTestBuilder.createUnit(
+        token: String,
+        tuntasId: String,
+        name: String,
+        type: String = "SKAUTU_DRAUGOVE"
+    ): String {
+        val response = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name", "type": "$type" }""")
+        }
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    private suspend fun ApplicationTestBuilder.registerUserWithRole(
+        token: String,
+        tuntasId: String,
+        roleName: String,
+        email: String,
+        organizationalUnitId: String? = null
+    ): Pair<String, String> {
+        val roleId = TestHelper.getRoleId(tuntasId, roleName)
+        val unitField = organizationalUnitId?.let { ", \"organizationalUnitId\": \"$it\"" }.orEmpty()
+        val inviteResponse = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId"$unitField, "expiresInHours": 48 }""")
+        }
+        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        val registerResponse = client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Scoped",
+                    "surname": "User",
+                    "email": "$email",
+                    "password": "testas123",
+                    "inviteCode": "$inviteCode"
+                }
+            """.trimIndent())
+        }
+        val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
+        return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
     }
 
     @Test
@@ -296,5 +347,77 @@ class ItemRoutesTest {
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(1, body["total"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun `regular member sees only shared and own unit inventory`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Skautai 1")
+        val otherUnitId = createUnit(token, tuntasId, "Skautai 2")
+
+        client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Bendra palapine", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 1 }""")
+        }
+        client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Sava palapine", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 1, "custodianId": "$ownUnitId" }""")
+        }
+        val otherItemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Svetima palapine", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 1, "custodianId": "$otherUnitId" }""")
+        }
+        val otherItemId = Json.parseToJsonElement(otherItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        val (memberToken, _) = registerUserWithRole(token, tuntasId, "Skautas", "scoped-items@test.com", ownUnitId)
+
+        val listResponse = client.get("/api/items") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, listResponse.status)
+        val names = Json.parseToJsonElement(listResponse.bodyAsText())
+            .jsonObject["items"]!!.jsonArray
+            .map { it.jsonObject["name"]!!.jsonPrimitive.content }
+            .toSet()
+        assertEquals(setOf("Bendra palapine", "Sava palapine"), names)
+
+        val detailResponse = client.get("/api/items/$otherItemId") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.NotFound, detailResponse.status)
+    }
+
+    @Test
+    fun `unit leader cannot move item custody to another unit`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Skautai 1")
+        val otherUnitId = createUnit(token, tuntasId, "Skautai 2")
+        val (leaderToken, _) = registerUserWithRole(token, tuntasId, "Draugininkas", "custody-leader@test.com", ownUnitId)
+
+        val itemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Sava palapine", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 1, "custodianId": "$ownUnitId" }""")
+        }
+        val itemId = Json.parseToJsonElement(itemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.put("/api/items/$itemId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "custodianId": "$otherUnitId" }""")
+        }
+
+        assertEquals(HttpStatusCode.Forbidden, response.status)
     }
 }

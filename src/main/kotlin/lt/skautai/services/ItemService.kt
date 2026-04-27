@@ -5,6 +5,7 @@ import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.Reservations
 import lt.skautai.database.tables.Roles
+import lt.skautai.database.tables.UnitAssignments
 import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.UpdateItemRequest
@@ -27,9 +28,21 @@ class ItemService {
     ): Result<ItemListResponse> {
         return transaction {
             val canSeeAll = userCanSeeAllStatuses(requestingUserId, tuntasId)
+            val canSeeAllInventory = userCanManageAllInventory(requestingUserId, tuntasId)
+            val visibleUnitIds = if (canSeeAllInventory) emptySet() else userVisibleUnitIds(requestingUserId, tuntasId)
 
             var query = Items.selectAll()
                 .where { Items.tuntasId eq tuntasId }
+
+            if (!canSeeAllInventory) {
+                query = if (visibleUnitIds.isEmpty()) {
+                    query.andWhere { Items.custodianId.isNull() }
+                } else {
+                    query.andWhere {
+                        Items.custodianId.isNull() or (Items.custodianId inList visibleUnitIds.toList())
+                    }
+                }
+            }
 
             if (!canSeeAll) {
                 query = query.andWhere { Items.status eq "ACTIVE" }
@@ -37,6 +50,9 @@ class ItemService {
 
             custodianId?.let {
                 val uuid = try { UUID.fromString(it) } catch (e: Exception) { null }
+                if (!canSeeAllInventory && uuid != null && uuid !in visibleUnitIds) {
+                    return@transaction Result.success(ItemListResponse(items = emptyList(), total = 0))
+                }
                 if (uuid != null) query = query.andWhere { Items.custodianId eq uuid }
             }
             type?.let { query = query.andWhere { Items.type eq it } }
@@ -61,6 +77,7 @@ class ItemService {
     ): Result<ItemResponse> {
         return transaction {
             val canSeeAll = userCanSeeAllStatuses(requestingUserId, tuntasId)
+            val canSeeAllInventory = userCanManageAllInventory(requestingUserId, tuntasId)
 
             val item = Items.selectAll()
                 .where {
@@ -70,6 +87,10 @@ class ItemService {
                 ?: return@transaction Result.failure(Exception("Item not found"))
 
             if (!canSeeAll && item[Items.status] != "ACTIVE") {
+                return@transaction Result.failure(Exception("Item not found"))
+            }
+            val custodianId = item[Items.custodianId]
+            if (!canSeeAllInventory && custodianId != null && custodianId !in userVisibleUnitIds(requestingUserId, tuntasId)) {
                 return@transaction Result.failure(Exception("Item not found"))
             }
 
@@ -231,6 +252,16 @@ class ItemService {
                 }
             }
 
+            if (custodianUUID != null) {
+                OrganizationalUnits.selectAll()
+                    .where {
+                        (OrganizationalUnits.id eq custodianUUID) and
+                                (OrganizationalUnits.tuntasId eq tuntasId)
+                    }
+                    .firstOrNull()
+                    ?: return@transaction Result.failure(Exception("Custodian unit not found in this tuntas"))
+            }
+
             val locationUUID = request.locationId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid location ID"))
@@ -329,6 +360,10 @@ class ItemService {
 
     // Tuntininkas, Tuntininko pavaduotojas, Inventorininkas can see all statuses
     private fun userCanSeeAllStatuses(userId: UUID, tuntasId: UUID): Boolean {
+        return userCanManageAllInventory(userId, tuntasId)
+    }
+
+    private fun userCanManageAllInventory(userId: UUID, tuntasId: UUID): Boolean {
         return UserLeadershipRoles
             .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
             .selectAll()
@@ -344,6 +379,32 @@ class ItemService {
                         ))
             }
             .firstOrNull() != null
+    }
+
+    private fun userVisibleUnitIds(userId: UUID, tuntasId: UUID): Set<UUID> {
+        val leadershipUnitIds = UserLeadershipRoles
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        (UserLeadershipRoles.leftAt.isNull()) and
+                        (UserLeadershipRoles.organizationalUnitId.isNotNull())
+            }
+            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
+            .toSet()
+
+        val memberUnitIds = UnitAssignments
+            .selectAll()
+            .where {
+                (UnitAssignments.userId eq userId) and
+                        (UnitAssignments.tuntasId eq tuntasId) and
+                        (UnitAssignments.leftAt.isNull())
+            }
+            .map { it[UnitAssignments.organizationalUnitId] }
+            .toSet()
+
+        return leadershipUnitIds + memberUnitIds
     }
 
     private fun toItemResponse(row: ResultRow): ItemResponse {
@@ -432,10 +493,6 @@ class ItemService {
             .toList()
         val location = locationRows.firstOrNull { it[Locations.id] == locationId }
             ?: return Exception("Location not found")
-        val hasChildren = locationRows.any { it[Locations.parentLocationId] == locationId }
-        if (hasChildren) {
-            return Exception("Items can only be assigned to a final sublocation")
-        }
         return when {
             itemType == "INDIVIDUAL" -> {
                 if (location[Locations.visibility] != "PRIVATE" || location[Locations.ownerUserId] != ownerUserId) {

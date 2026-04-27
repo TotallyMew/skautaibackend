@@ -177,7 +177,7 @@ class ReservationRoutesTest {
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = client.createTestItem(token, tuntasId, quantity = 2)
 
-        // Create first reservation and approve it
+        // Create first reservation. Tuntas leadership reservations are auto-approved.
         val firstResponse = client.post("/api/reservations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
@@ -190,17 +190,6 @@ class ReservationRoutesTest {
                     "endDate": "2026-06-07"
                 }
             """.trimIndent())
-        }
-
-        val firstId = Json.parseToJsonElement(firstResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        // Approve it
-        client.put("/api/reservations/$firstId/status") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "status": "APPROVED" }""")
         }
 
         // Try to reserve same item overlapping dates - quantity now 0
@@ -298,7 +287,7 @@ class ReservationRoutesTest {
     }
 
     @Test
-    fun `approve reservation returns 200`() = testApplication {
+    fun `legacy reservation status endpoint returns 400`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = client.createTestItem(token, tuntasId)
@@ -328,10 +317,7 @@ class ReservationRoutesTest {
             setBody("""{ "status": "APPROVED" }""")
         }
 
-        assertEquals(HttpStatusCode.OK, response.status)
-        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("APPROVED", body["status"]?.jsonPrimitive?.content)
-        assertNotNull(body["approvedByUserId"]?.jsonPrimitive?.content)
+        assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
     @Test
@@ -422,7 +408,7 @@ class ReservationRoutesTest {
             """.trimIndent())
         }
 
-        val secondResponse = client.post("/api/reservations") {
+        client.post("/api/reservations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
@@ -434,17 +420,6 @@ class ReservationRoutesTest {
                     "endDate": "2026-07-07"
                 }
             """.trimIndent())
-        }
-
-        val secondId = Json.parseToJsonElement(secondResponse.bodyAsText())
-            .jsonObject["id"]!!.jsonPrimitive.content
-
-        // Approve the second one
-        client.put("/api/reservations/$secondId/status") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "status": "APPROVED" }""")
         }
 
         val response = client.get("/api/reservations?status=PENDING") {

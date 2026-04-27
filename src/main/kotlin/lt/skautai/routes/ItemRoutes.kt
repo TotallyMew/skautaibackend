@@ -129,13 +129,22 @@ fun Route.itemRoutes(itemService: ItemService) {
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
                 }
 
+                val request = call.receive<UpdateItemRequest>()
+
+                val newCustodianId = request.custodianId?.let {
+                    try { UUID.fromString(it) } catch (e: Exception) {
+                        return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid custodian ID"))
+                    }
+                }
+
                 // TRANSFERRED_FROM_TUNTAS items require ALL scope; pass null to block OWN_UNIT users
                 val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
                 val targetOrgUnitId = if (scopeInfo?.origin == "TRANSFERRED_FROM_TUNTAS") null else scopeInfo?.custodianId
 
                 if (!checkPermission("items.update", tuntasUUID, targetOrgUnitId)) return@put
-
-                val request = call.receive<UpdateItemRequest>()
+                if (newCustodianId != null && newCustodianId != targetOrgUnitId) {
+                    if (!checkPermission("items.update", tuntasUUID, newCustodianId)) return@put
+                }
 
                 itemService.updateItem(itemUUID, tuntasUUID, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }

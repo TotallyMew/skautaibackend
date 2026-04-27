@@ -1,12 +1,14 @@
 package lt.skautai.services
 
 import lt.skautai.database.tables.EventInventoryBuckets
+import lt.skautai.database.tables.Events
 import lt.skautai.database.tables.Items
 import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
+import lt.skautai.database.tables.Permissions
 import lt.skautai.database.tables.ReservationMovements
 import lt.skautai.database.tables.Reservations
-import lt.skautai.database.tables.Roles
+import lt.skautai.database.tables.RolePermissions
 import lt.skautai.database.tables.UnitAssignments
 import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserTuntasMemberships
@@ -14,16 +16,11 @@ import lt.skautai.models.requests.CreateLocationRequest
 import lt.skautai.models.requests.UpdateLocationRequest
 import lt.skautai.models.responses.LocationListResponse
 import lt.skautai.models.responses.LocationResponse
-import org.jetbrains.exposed.sql.ResultRow
+import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.neq
-import org.jetbrains.exposed.sql.and
-import org.jetbrains.exposed.sql.andWhere
-import org.jetbrains.exposed.sql.deleteWhere
-import org.jetbrains.exposed.sql.insert
-import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
-import org.jetbrains.exposed.sql.update
 import java.math.BigDecimal
 import java.util.UUID
 
@@ -278,6 +275,12 @@ class LocationService {
             if (eventBucketCount > 0) {
                 return@transaction Result.failure(Exception("Cannot delete location used by event inventory"))
             }
+            val eventCount = Events.selectAll()
+                .where { Events.locationId eq locationId }
+                .count()
+            if (eventCount > 0) {
+                return@transaction Result.failure(Exception("Cannot delete location assigned to an event"))
+            }
 
             Locations.deleteWhere { (Locations.id eq locationId) and (Locations.tuntasId eq tuntasId) }
             Result.success(Unit)
@@ -289,25 +292,16 @@ class LocationService {
         val isMember: Boolean,
         val unitIds: Set<UUID>,
         val leaderUnitIds: Set<UUID>,
-        val roleNames: Set<String>
+        val canManageLocationsAll: Boolean,
+        val canManageLocationsUnit: Boolean
     ) {
+        // true for any leader who has locations.manage in any scope
         val canManagePublicOrUnit: Boolean
-            get() = roleNames.any { roleName ->
-                val lowered = roleName.lowercase()
-                "inventorinink" !in lowered &&
-                    (
-                        "tuntinink" in lowered ||
-                            "drauginink" in lowered ||
-                            "pirminink" in lowered ||
-                            "pavaduotoj" in lowered
-                        )
-            }
+            get() = canManageLocationsAll || canManageLocationsUnit
 
+        // only tuntas-level roles (tuntininkas, inventorininkas) with ALL scope
         val canViewAllUnitLocations: Boolean
-            get() = roleNames.any { roleName ->
-                val lowered = roleName.lowercase()
-                "tuntinink" in lowered || "inventorinink" in lowered
-            }
+            get() = canManageLocationsAll
     }
 
     private fun userContext(userId: UUID, tuntasId: UUID): UserContext {
@@ -320,7 +314,6 @@ class LocationService {
             .firstOrNull() != null
 
         val leadershipRows = UserLeadershipRoles
-            .innerJoin(Roles)
             .selectAll()
             .where {
                 (UserLeadershipRoles.userId eq userId) and
@@ -338,20 +331,32 @@ class LocationService {
             .map { it[UnitAssignments.organizationalUnitId] }
             .toSet()
 
+        val leaderRoleIds = leadershipRows.map { it[UserLeadershipRoles.roleId] }
+        val locationManageScopes: List<String> = if (leaderRoleIds.isEmpty()) emptyList()
+        else RolePermissions
+            .innerJoin(Permissions, { RolePermissions.permissionId }, { Permissions.id })
+            .selectAll()
+            .where {
+                (RolePermissions.roleId inList leaderRoleIds) and
+                    (Permissions.name eq "locations.manage")
+            }
+            .map { it[RolePermissions.scope] }
+
         val leaderUnitIds = leadershipRows.mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }.toSet()
         return UserContext(
             userId = userId,
             isMember = isMember,
             unitIds = leaderUnitIds + unitAssignments,
             leaderUnitIds = leaderUnitIds,
-            roleNames = leadershipRows.map { it[Roles.name] }.toSet()
+            canManageLocationsAll = "ALL" in locationManageScopes,
+            canManageLocationsUnit = locationManageScopes.isNotEmpty()
         )
     }
 
     private fun canViewLocation(row: ResultRow, context: UserContext): Boolean {
         return when (row[Locations.visibility]) {
             "PUBLIC" -> true
-            "PRIVATE" -> row[Locations.ownerUserId] != null
+            "PRIVATE" -> row[Locations.ownerUserId] == context.userId
             "UNIT" -> {
                 val ownerUnitId = row[Locations.ownerUnitId]
                 ownerUnitId != null && (ownerUnitId in context.unitIds || context.canViewAllUnitLocations)
@@ -363,10 +368,13 @@ class LocationService {
     private fun canEditLocation(row: ResultRow, context: UserContext, userId: UUID): Boolean {
         return when (row[Locations.visibility]) {
             "PRIVATE" -> row[Locations.ownerUserId] == userId
-            "PUBLIC" -> context.canManagePublicOrUnit
+            "PUBLIC" -> context.canManageLocationsAll
             "UNIT" -> {
                 val ownerUnitId = row[Locations.ownerUnitId]
-                ownerUnitId != null && context.canManagePublicOrUnit && ownerUnitId in context.leaderUnitIds
+                ownerUnitId != null && (
+                    context.canManageLocationsAll ||
+                        (context.canManageLocationsUnit && ownerUnitId in context.leaderUnitIds)
+                    )
             }
             else -> false
         }
@@ -381,8 +389,8 @@ class LocationService {
         return when (visibility) {
             "PRIVATE" -> Result.success(null)
             "PUBLIC" -> {
-                if (!context.canManagePublicOrUnit) {
-                    Result.failure(Exception("Only leaders can create public locations"))
+                if (!context.canManageLocationsAll) {
+                    Result.failure(Exception("Only tuntas leaders and inventory managers can create public locations"))
                 } else {
                     Result.success(null)
                 }
@@ -392,7 +400,7 @@ class LocationService {
                     Result.failure(Exception("Only leaders can create unit locations"))
                 } else if (requestedOwnerUnitId == null) {
                     Result.failure(Exception("Unit location must have owner unit"))
-                } else if (requestedOwnerUnitId !in context.leaderUnitIds) {
+                } else if (!context.canManageLocationsAll && requestedOwnerUnitId !in context.leaderUnitIds) {
                     Result.failure(Exception("You can create unit locations only for units you lead"))
                 } else {
                     Result.success(requestedOwnerUnitId)
@@ -418,8 +426,8 @@ class LocationService {
                 }
             }
             "PUBLIC" -> {
-                if (!context.canManagePublicOrUnit) {
-                    Result.failure(Exception("Only leaders can manage public locations"))
+                if (!context.canManageLocationsAll) {
+                    Result.failure(Exception("Only tuntas leaders and inventory managers can manage public locations"))
                 } else {
                     Result.success(null)
                 }
@@ -429,7 +437,7 @@ class LocationService {
                     Result.failure(Exception("Only leaders can manage unit locations"))
                 } else if (requestedOwnerUnitId == null) {
                     Result.failure(Exception("Unit location must have owner unit"))
-                } else if (requestedOwnerUnitId !in context.leaderUnitIds) {
+                } else if (!context.canManageLocationsAll && requestedOwnerUnitId !in context.leaderUnitIds) {
                     Result.failure(Exception("You can manage unit locations only for units you lead"))
                 } else {
                     Result.success(requestedOwnerUnitId)

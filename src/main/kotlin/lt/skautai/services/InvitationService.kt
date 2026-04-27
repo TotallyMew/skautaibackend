@@ -417,9 +417,11 @@ class InvitationService {
             ?.get(Roles.id)
     }
 
+    private val secureRandom = java.security.SecureRandom()
+
     private fun generateCode(): String {
         val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        return (1..8).map { chars.random() }.joinToString("")
+        return (1..12).map { chars[secureRandom.nextInt(chars.length)] }.joinToString("")
     }
 
     private fun validatePrimaryUnitAssignment(
