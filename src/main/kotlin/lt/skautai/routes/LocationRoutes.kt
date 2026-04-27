@@ -6,11 +6,14 @@ import io.ktor.server.auth.jwt.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.models.requests.CreateLocationRequest
 import lt.skautai.models.requests.UpdateLocationRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
-import lt.skautai.plugins.checkPermission
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.transactions.transaction
 import lt.skautai.services.LocationService
 import java.util.*
 
@@ -25,12 +28,13 @@ fun Route.locationRoutes(locationService: LocationService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@get
-
                 val userId = try {
                     UUID.fromString(call.principal<JWTPrincipal>()!!.getClaim("userId", String::class))
                 } catch (e: Exception) {
                     return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+                }
+                if (!isActiveTuntasMember(userId, tuntasUUID)) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                 }
 
                 locationService.getLocations(tuntasUUID, userId)
@@ -45,8 +49,6 @@ fun Route.locationRoutes(locationService: LocationService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@get
-
                 val locationId = call.parameters["id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Location ID required"))
                 val locationUUID = try { UUID.fromString(locationId) } catch (e: Exception) {
@@ -57,6 +59,9 @@ fun Route.locationRoutes(locationService: LocationService) {
                     UUID.fromString(call.principal<JWTPrincipal>()!!.getClaim("userId", String::class))
                 } catch (e: Exception) {
                     return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+                }
+                if (!isActiveTuntasMember(userId, tuntasUUID)) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                 }
 
                 locationService.getLocation(locationUUID, tuntasUUID, userId)
@@ -71,12 +76,13 @@ fun Route.locationRoutes(locationService: LocationService) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@post
-
                 val userId = try {
                     UUID.fromString(call.principal<JWTPrincipal>()!!.getClaim("userId", String::class))
                 } catch (e: Exception) {
                     return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+                }
+                if (!isActiveTuntasMember(userId, tuntasUUID)) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                 }
 
                 val request = call.receive<CreateLocationRequest>()
@@ -93,12 +99,13 @@ fun Route.locationRoutes(locationService: LocationService) {
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@put
-
                 val userId = try {
                     UUID.fromString(call.principal<JWTPrincipal>()!!.getClaim("userId", String::class))
                 } catch (e: Exception) {
                     return@put call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+                }
+                if (!isActiveTuntasMember(userId, tuntasUUID)) {
+                    return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                 }
 
                 val locationId = call.parameters["id"]
@@ -121,12 +128,13 @@ fun Route.locationRoutes(locationService: LocationService) {
                     return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@delete
-
                 val userId = try {
                     UUID.fromString(call.principal<JWTPrincipal>()!!.getClaim("userId", String::class))
                 } catch (e: Exception) {
                     return@delete call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+                }
+                if (!isActiveTuntasMember(userId, tuntasUUID)) {
+                    return@delete call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                 }
 
                 val locationId = call.parameters["id"]
@@ -141,4 +149,14 @@ fun Route.locationRoutes(locationService: LocationService) {
             }
         }
     }
+}
+
+private fun isActiveTuntasMember(userId: UUID, tuntasId: UUID): Boolean = transaction {
+    UserTuntasMemberships.selectAll()
+        .where {
+            (UserTuntasMemberships.userId eq userId) and
+                (UserTuntasMemberships.tuntasId eq tuntasId) and
+                UserTuntasMemberships.leftAt.isNull()
+        }
+        .firstOrNull() != null
 }

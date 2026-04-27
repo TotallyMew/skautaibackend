@@ -258,8 +258,7 @@ class OrganizationalUnitRoutesTest {
         }
         assertEquals(HttpStatusCode.OK, unitsResponse.status)
         val unitsBody = Json.parseToJsonElement(unitsResponse.bodyAsText()).jsonObject
-        assertEquals(1, unitsBody["total"]?.jsonPrimitive?.content?.toInt())
-        assertEquals(unitId, unitsBody["units"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content)
+        assertEquals(2, unitsBody["total"]?.jsonPrimitive?.content?.toInt())
 
         val ownUnitMembersResponse = client.get("/api/organizational-units/$unitId/members") {
             header("Authorization", "Bearer $leaderToken")
@@ -560,7 +559,7 @@ class OrganizationalUnitRoutesTest {
             email = "leader@test.com",
             organizationalUnitId = ownUnitId
         )
-        val (_, memberId) = registerSecondUser(token, tuntasId, "Vilkas", "member@test.com")
+        val (_, memberId) = registerSecondUser(token, tuntasId, "Skautas", "member@test.com")
 
         client.post("/api/organizational-units/$otherUnitId/members") {
             contentType(ContentType.Application.Json)

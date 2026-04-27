@@ -108,7 +108,7 @@ class MemberRoutesTest {
     }
 
     @Test
-    fun `regular member can view own unit members only`() = testApplication {
+    fun `regular member sees leaders in member list and own unit members only`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val ownUnitId = createUnit(token, tuntasId, "Skautai 1")
@@ -141,7 +141,7 @@ class MemberRoutesTest {
         assertEquals(HttpStatusCode.OK, memberList.status)
         val members = Json.parseToJsonElement(memberList.bodyAsText()).jsonObject["members"]!!.jsonArray
         assertEquals(1, members.size)
-        assertEquals(memberUserId, members[0].jsonObject["userId"]!!.jsonPrimitive.content)
+        assertNotEquals(memberUserId, members[0].jsonObject["userId"]!!.jsonPrimitive.content)
 
         val otherUnitMembers = client.get("/api/organizational-units/$otherUnitId/members") {
             header("Authorization", "Bearer $memberToken")
@@ -839,8 +839,8 @@ class MemberRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            val draugininkaasRoleId = TestHelper.getRoleId(tuntasId, "Draugininkas")
-            setBody("""{ "roleId": "$draugininkaasRoleId" }""")
+            val skautasRoleId = TestHelper.getRoleId(tuntasId, "Skautas")
+            setBody("""{ "roleId": "$skautasRoleId" }""")
         }
         val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content

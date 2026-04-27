@@ -6,14 +6,17 @@ import io.ktor.server.auth.jwt.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.models.requests.AssignUnitMemberRequest
 import lt.skautai.models.requests.CreateOrganizationalUnitRequest
 import lt.skautai.models.requests.UpdateOrganizationalUnitRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
-import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.OrganizationalUnitService
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.*
 
 fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
@@ -26,28 +29,15 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
-
                 val principal = call.principal<JWTPrincipal>()!!
                 val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
-                val resolvedPermissions = resolveUserPermissions(callerUserId, tuntasUUID)
-                val canViewAll = resolvedPermissions.any {
-                    (it.permissionName == "members.view" || it.permissionName == "organizational_units.manage") && it.scope == "ALL"
-                }
-                val visibleUnitIds = if (canViewAll) {
-                    null
-                } else {
-                    resolvedPermissions
-                        .filter { it.permissionName == "members.view" }
-                        .flatMap { it.userOrgUnitIds }
-                        .toSet()
-                }
-                if (!canViewAll && visibleUnitIds.orEmpty().isEmpty()) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                if (!isActiveTuntasMember(callerUserId, tuntasUUID)) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                 }
 
                 val type = call.request.queryParameters["type"]
 
-                service.getUnits(tuntasUUID, type, visibleUnitIds)
+                service.getUnits(tuntasUUID, type)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch units")) }
             }
@@ -64,19 +54,10 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                 val unitUUID = try { UUID.fromString(unitId) } catch (e: Exception) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid unit ID"))
                 }
-
                 val principal = call.principal<JWTPrincipal>()!!
                 val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
-                val resolvedPermissions = resolveUserPermissions(callerUserId, tuntasUUID)
-                val canViewAll = resolvedPermissions.any {
-                    (it.permissionName == "members.view" || it.permissionName == "organizational_units.manage") && it.scope == "ALL"
-                }
-                val visibleUnitIds = resolvedPermissions
-                    .filter { it.permissionName == "members.view" }
-                    .flatMap { it.userOrgUnitIds }
-                    .toSet()
-                if (!canViewAll && unitUUID !in visibleUnitIds) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                if (!isActiveTuntasMember(callerUserId, tuntasUUID)) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                 }
 
                 service.getUnit(unitUUID, tuntasUUID)
@@ -154,6 +135,11 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                         ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Unit ID required"))
                     val unitUUID = try { UUID.fromString(unitId) } catch (e: Exception) {
                         return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid unit ID"))
+                    }
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+                    if (!isActiveTuntasMember(callerUserId, tuntasUUID)) {
+                        return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                     }
 
                     if (!checkPermission("members.view", tuntasUUID, unitUUID)) return@get
@@ -266,4 +252,14 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
             }
         }
     }
+}
+
+private fun isActiveTuntasMember(userId: UUID, tuntasId: UUID): Boolean = transaction {
+    UserTuntasMemberships.selectAll()
+        .where {
+            (UserTuntasMemberships.userId eq userId) and
+                (UserTuntasMemberships.tuntasId eq tuntasId) and
+                (UserTuntasMemberships.leftAt.isNull())
+        }
+        .firstOrNull() != null
 }

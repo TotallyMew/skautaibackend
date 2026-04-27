@@ -20,6 +20,11 @@ data class UpdateLeadershipRoleRequest(
 )
 
 @Serializable
+data class TransferTuntininkasRequest(
+    val successorUserId: String
+)
+
+@Serializable
 data class AssignRankRequest(
     val roleId: String
 )

@@ -12,39 +12,42 @@ import java.util.*
 
 class MemberService {
 
-    fun getMembers(tuntasId: UUID, visibleUnitIds: Set<UUID>? = null): Result<MemberListResponse> {
+    fun getMembers(tuntasId: UUID, callerUserId: UUID? = null): Result<MemberListResponse> {
         return transaction {
-            val memberships = UserTuntasMemberships
+            val callerContext = callerUserId?.let { effectiveCallerUserId ->
+                loadCallerContext(effectiveCallerUserId, tuntasId)
+                    ?: return@transaction Result.failure(Exception("You are not an active member of this tuntas"))
+            }
+
+            val members = UserTuntasMemberships
                 .innerJoin(Users, { UserTuntasMemberships.userId }, { Users.id })
                 .selectAll()
                 .where {
                     (UserTuntasMemberships.tuntasId eq tuntasId) and
-                            (UserTuntasMemberships.leftAt.isNull())
+                        (UserTuntasMemberships.leftAt.isNull())
                 }
-
-            val visibleUserIds = visibleUnitIds?.let { unitIds ->
-                UnitAssignments.selectAll()
-                    .where {
-                        (UnitAssignments.tuntasId eq tuntasId) and
-                            (UnitAssignments.organizationalUnitId inList unitIds.toList()) and
-                            (UnitAssignments.leftAt.isNull())
-                    }
-                    .map { it[UnitAssignments.userId] }
-                    .toSet()
-            }
-
-            val members = memberships.filter { row ->
-                visibleUserIds == null || row[UserTuntasMemberships.userId] in visibleUserIds
-            }.map { row ->
+                .map { row ->
                 val userId = row[UserTuntasMemberships.userId]
-                buildMemberResponse(userId, tuntasId, row)
+                buildMemberResponse(
+                    userId = userId,
+                    tuntasId = tuntasId,
+                    membershipRow = row,
+                    callerUserId = callerUserId,
+                    callerVisibleUnitIds = callerContext?.visibleUnitIds.orEmpty()
+                )
             }
+                .filter { member ->
+                    when (callerContext?.visibilityMode) {
+                        MemberVisibilityMode.LEADERS_ONLY -> member.leadershipRoles.isNotEmpty()
+                        else -> true
+                    }
+                }
 
             Result.success(MemberListResponse(members = members, total = members.size))
         }
     }
 
-    fun getMember(userId: UUID, tuntasId: UUID, visibleUnitIds: Set<UUID>? = null, callerUserId: UUID? = null): Result<MemberResponse> {
+    fun getMember(userId: UUID, tuntasId: UUID, callerUserId: UUID? = null): Result<MemberResponse> {
         return transaction {
             val membership = UserTuntasMemberships
                 .innerJoin(Users, { UserTuntasMemberships.userId }, { Users.id })
@@ -57,22 +60,28 @@ class MemberService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Member not found in this tuntas"))
 
-            if (visibleUnitIds != null && userId != callerUserId) {
-                val isVisible = UnitAssignments.selectAll()
-                    .where {
-                        (UnitAssignments.userId eq userId) and
-                            (UnitAssignments.tuntasId eq tuntasId) and
-                            (UnitAssignments.organizationalUnitId inList visibleUnitIds.toList()) and
-                            (UnitAssignments.leftAt.isNull())
-                    }
-                    .firstOrNull() != null
-
-                if (!isVisible) {
-                    return@transaction Result.failure(Exception("Member not found in this tuntas"))
-                }
+            val callerContext = callerUserId?.let { effectiveCallerUserId ->
+                loadCallerContext(effectiveCallerUserId, tuntasId)
+                    ?: return@transaction Result.failure(Exception("You are not an active member of this tuntas"))
             }
 
-            Result.success(buildMemberResponse(userId, tuntasId, membership))
+            val member = buildMemberResponse(
+                userId = userId,
+                tuntasId = tuntasId,
+                membershipRow = membership,
+                callerUserId = callerUserId,
+                callerVisibleUnitIds = callerContext?.visibleUnitIds.orEmpty()
+            )
+
+            if (
+                callerContext?.visibilityMode == MemberVisibilityMode.LEADERS_ONLY &&
+                callerUserId != userId &&
+                member.leadershipRoles.isEmpty()
+            ) {
+                return@transaction Result.failure(Exception("Member not found in this tuntas"))
+            }
+
+            Result.success(member)
         }
     }
 
@@ -106,6 +115,10 @@ class MemberService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Leadership role not found in this tuntas"))
+
+            if (LeadershipRoleRules.isTuntininkas(role[Roles.name])) {
+                return@transaction Result.failure(Exception("Tuntininkas role can only be transferred"))
+            }
 
             val orgUnitUUID = request.organizationalUnitId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
@@ -361,6 +374,73 @@ class MemberService {
         }
     }
 
+    fun transferTuntininkas(
+        callerUserId: UUID,
+        tuntasId: UUID,
+        successorUserId: UUID
+    ): Result<Unit> {
+        return transaction {
+            val activeTuntininkasAssignments = lockActiveTuntininkasAssignments(tuntasId)
+            val callerAssignments = activeTuntininkasAssignments
+                .filter { it[UserLeadershipRoles.userId] == callerUserId }
+
+            if (callerAssignments.isEmpty()) {
+                return@transaction Result.failure(Exception("Only active tuntininkas can transfer this role"))
+            }
+
+            if (successorUserId == callerUserId) {
+                return@transaction Result.failure(Exception("Choose a different member to become tuntininkas"))
+            }
+
+            UserTuntasMemberships.selectAll()
+                .where {
+                    (UserTuntasMemberships.userId eq successorUserId) and
+                        (UserTuntasMemberships.tuntasId eq tuntasId) and
+                        (UserTuntasMemberships.leftAt.isNull())
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Successor must be an active member of this tuntas"))
+
+            val now = kotlinx.datetime.Clock.System.now()
+            val tuntininkasRoleId = callerAssignments.first()[UserLeadershipRoles.roleId]
+
+            UserLeadershipRoles.update({
+                (UserLeadershipRoles.userId eq successorUserId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull())
+            }) {
+                it[termStatus] = "RESIGNED"
+                it[leftAt] = now
+            }
+
+            UserLeadershipRoles.insert {
+                it[userId] = successorUserId
+                it[roleId] = tuntininkasRoleId
+                it[this.tuntasId] = tuntasId
+                it[assignedByUserId] = callerUserId
+                it[startsAt] = now
+                it[termStatus] = "ACTIVE"
+            }
+
+            UserLeadershipRoles.update({
+                (UserLeadershipRoles.id inList callerAssignments.map { it[UserLeadershipRoles.id] }) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId)
+            }) {
+                it[termStatus] = "RESIGNED"
+                it[leftAt] = now
+            }
+
+            VadovasRankSupport.ensureVadovasRank(
+                userId = successorUserId,
+                tuntasId = tuntasId,
+                assignedByUserId = callerUserId
+            )
+
+            Result.success(Unit)
+        }
+    }
+
     fun assignRank(
         targetUserId: UUID,
         tuntasId: UUID,
@@ -389,6 +469,10 @@ class MemberService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Rank role not found in this tuntas"))
+
+            if (role[Roles.name] !in supportedRankNames) {
+                return@transaction Result.failure(Exception("Selected rank is not available"))
+            }
 
             val rankId = UserRanks.insert {
                 it[userId] = targetUserId
@@ -433,7 +517,9 @@ class MemberService {
     private fun buildMemberResponse(
         userId: UUID,
         tuntasId: UUID,
-        membershipRow: ResultRow
+        membershipRow: ResultRow,
+        callerUserId: UUID?,
+        callerVisibleUnitIds: Set<UUID>
     ): MemberResponse {
         val leadershipRoles = UserLeadershipRoles
             .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
@@ -497,18 +583,122 @@ class MemberService {
                 )
             }
 
+        val canSeeContacts = canSeeMemberContacts(
+            targetUserId = userId,
+            callerUserId = callerUserId,
+            callerVisibleUnitIds = callerVisibleUnitIds,
+            tuntasId = tuntasId
+        )
+
         return MemberResponse(
             userId = membershipRow[Users.id].toString(),
             name = membershipRow[Users.name],
             surname = membershipRow[Users.surname],
-            email = membershipRow[Users.email],
-            phone = membershipRow[Users.phone],
+            email = membershipRow[Users.email].takeIf { canSeeContacts }.orEmpty(),
+            phone = membershipRow[Users.phone]?.takeIf { canSeeContacts },
             joinedAt = membershipRow[UserTuntasMemberships.joinedAt].toString(),
             unitAssignments = unitAssignments,
             leadershipRoles = leadershipRoles,
             leadershipRoleHistory = leadershipRoleHistory,
             ranks = ranks
         )
+    }
+
+    private fun loadCallerVisibleUnitIds(userId: UUID, tuntasId: UUID): Set<UUID> {
+        val membershipUnitIds = UnitAssignments.selectAll()
+            .where {
+                (UnitAssignments.userId eq userId) and
+                    (UnitAssignments.tuntasId eq tuntasId) and
+                    (UnitAssignments.leftAt.isNull())
+            }
+            .map { it[UnitAssignments.organizationalUnitId] }
+
+        val leadershipUnitIds = UserLeadershipRoles.selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull()) and
+                    (UserLeadershipRoles.organizationalUnitId.isNotNull())
+            }
+            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
+
+        return (membershipUnitIds + leadershipUnitIds).toSet()
+    }
+
+    private fun loadCallerContext(userId: UUID, tuntasId: UUID): CallerContext? {
+        val isActiveMember = UserTuntasMemberships.selectAll()
+            .where {
+                (UserTuntasMemberships.userId eq userId) and
+                    (UserTuntasMemberships.tuntasId eq tuntasId) and
+                    (UserTuntasMemberships.leftAt.isNull())
+            }
+            .firstOrNull() != null
+
+        if (!isActiveMember) return null
+
+        val activeLeadershipRoles = UserLeadershipRoles
+            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull())
+            }
+            .map { it[Roles.name] }
+
+        val rankNames = UserRanks
+            .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserRanks.userId eq userId) and
+                    (UserRanks.tuntasId eq tuntasId)
+            }
+            .map { it[Roles.name] }
+
+        val visibilityMode = if (
+            activeLeadershipRoles.isEmpty() &&
+            rankNames.any { it in scoutReadOnlyRankNames }
+        ) {
+            MemberVisibilityMode.LEADERS_ONLY
+        } else {
+            MemberVisibilityMode.FULL
+        }
+
+        return CallerContext(
+            visibleUnitIds = loadCallerVisibleUnitIds(userId, tuntasId),
+            visibilityMode = visibilityMode
+        )
+    }
+
+    private fun canSeeMemberContacts(
+        targetUserId: UUID,
+        callerUserId: UUID?,
+        callerVisibleUnitIds: Set<UUID>,
+        tuntasId: UUID
+    ): Boolean {
+        if (callerUserId == null) {
+            return true
+        }
+
+        if (targetUserId == callerUserId) {
+            return true
+        }
+
+        if (callerVisibleUnitIds.isEmpty()) {
+            return false
+        }
+
+        return UserLeadershipRoles.selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq targetUserId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull()) and
+                    (UserLeadershipRoles.organizationalUnitId inList callerVisibleUnitIds.toList())
+            }
+            .firstOrNull() != null
     }
 
     private fun getOrgUnitName(orgUnitId: UUID): String? {
@@ -805,5 +995,26 @@ class MemberService {
             "Vyr. skauciu burelio pirmininko pavaduotojas" -> 2
             else -> 0
         }
+    }
+
+    private data class CallerContext(
+        val visibleUnitIds: Set<UUID>,
+        val visibilityMode: MemberVisibilityMode
+    )
+
+    private enum class MemberVisibilityMode {
+        FULL,
+        LEADERS_ONLY
+    }
+
+    private companion object {
+        val supportedRankNames = setOf(
+            "Skautas",
+            "Patyres skautas",
+            "Vyr. skautas kandidatas",
+            "Vyr. skautas",
+            "Vadovas"
+        )
+        val scoutReadOnlyRankNames = setOf("Skautas", "Patyres skautas")
     }
 }

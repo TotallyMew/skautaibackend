@@ -42,6 +42,9 @@ class ItemService {
                         Items.custodianId.isNull() or (Items.custodianId inList visibleUnitIds.toList())
                     }
                 }
+                query = query.andWhere {
+                    (Items.type neq "INDIVIDUAL") or (Items.createdByUserId eq requestingUserId)
+                }
             }
 
             if (!canSeeAll) {
@@ -90,6 +93,12 @@ class ItemService {
                 return@transaction Result.failure(Exception("Item not found"))
             }
             val custodianId = item[Items.custodianId]
+            if (!canSeeAllInventory &&
+                item[Items.type] == "INDIVIDUAL" &&
+                item[Items.createdByUserId] != requestingUserId
+            ) {
+                return@transaction Result.failure(Exception("Item not found"))
+            }
             if (!canSeeAllInventory && custodianId != null && custodianId !in userVisibleUnitIds(requestingUserId, tuntasId)) {
                 return@transaction Result.failure(Exception("Item not found"))
             }

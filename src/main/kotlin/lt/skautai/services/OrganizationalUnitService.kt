@@ -260,6 +260,19 @@ class OrganizationalUnitService {
                 ?: return@transaction Result.failure(Exception("User is not an active member of this tuntas"))
 
             // Rank validation — only enforce for primary MEMBER assignments
+            UnitAssignments.selectAll()
+                .where {
+                    (UnitAssignments.userId eq userUUID) and
+                        (UnitAssignments.organizationalUnitId eq unitId) and
+                        (UnitAssignments.tuntasId eq tuntasId) and
+                        (UnitAssignments.assignmentType eq request.assignmentType) and
+                        (UnitAssignments.leftAt.isNull())
+                }
+                .firstOrNull()
+                ?.let {
+                    return@transaction Result.failure(Exception("User already has this active assignment in the selected unit"))
+                }
+
             val acceptedRankId = unit[OrganizationalUnits.acceptedRankId]
             if (acceptedRankId != null && request.assignmentType == "MEMBER") {
                 val userHasRank = UserRanks.selectAll()

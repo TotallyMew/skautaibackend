@@ -18,8 +18,24 @@ object LeadershipRoleRules {
         "Vyr. skauciu draugoves draugininkas",
         "Vyr. skauciu burelio pirmininkas"
     )
+    private val unitScopedLeadershipRoleNames = setOf(
+        "Draugininkas",
+        "Draugininko pavaduotojas",
+        "Gildijos pirmininkas",
+        "Gildijos pirmininko pavaduotojas",
+        "Vyr. skautu draugoves draugininkas",
+        "Vyr. skautu draugoves draugininko pavaduotojas",
+        "Vyr. skautu burelio pirmininkas",
+        "Vyr. skautu burelio pirmininko pavaduotojas",
+        "Vyr. skauciu draugoves draugininkas",
+        "Vyr. skauciu draugoves draugininko pavaduotojas",
+        "Vyr. skauciu burelio pirmininkas",
+        "Vyr. skauciu burelio pirmininko pavaduotojas"
+    )
 
     fun isPrincipalUnitLeader(roleName: String): Boolean = roleName in principalUnitLeaderRoleNames
+    fun requiresOrganizationalUnit(roleName: String): Boolean = roleName in unitScopedLeadershipRoleNames
+    fun isTuntininkas(roleName: String): Boolean = roleName == "Tuntininkas"
 
     fun validatePrincipalUnitLeaderSlot(
         roleId: UUID,

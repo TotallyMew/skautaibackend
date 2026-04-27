@@ -15,6 +15,7 @@ data class BendrasInventoryRequestResponse(
     val id: String,
     val tuntasId: String,
     val requestedByUserId: String,
+    val requestedByUserName: String? = null,
     val itemId: String? = null,
     val itemName: String,
     val itemDescription: String? = null,

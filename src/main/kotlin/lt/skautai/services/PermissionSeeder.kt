@@ -403,18 +403,10 @@ object PermissionSeeder {
         ),
 
         // ── Ranks ────────────────────────────────────────────────────────────
-        // Vilkai and Skautai: view and create reservations only
+        // Skautai: view and create reservations only
         // Patyres skautas: same as above plus bendras request
         // Vyr. skautas kandidatas / Vyr. skautas: same as Patyres skautas
         // Vadovas: same permissions as Patyres skautas (unit-level leaders get more via their leadership role)
-
-        "Vilkas" to listOf(
-            "items.view" to "ALL",
-            "members.view" to "OWN_UNIT",
-            "items.request.bendras" to "ALL",
-            "reservations.view" to "ALL",
-            "reservations.create" to "ALL"
-        ),
 
         "Skautas" to listOf(
             "items.view" to "ALL",

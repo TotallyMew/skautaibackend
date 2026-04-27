@@ -10,6 +10,7 @@ import lt.skautai.database.tables.Roles
 import lt.skautai.database.tables.UnitAssignments
 import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserRanks
+import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateBendrasInventoryRequestItemRequest
 import lt.skautai.models.requests.CreateBendrasInventoryRequestRequest
 import lt.skautai.models.requests.DraugininkasReviewRequest
@@ -55,7 +56,13 @@ class BendrasInventoryRequestService {
                 .where { BendrasInventoryRequests.tuntasId eq tuntasId }
 
             when {
-                isAdmin -> {}
+                isAdmin -> query = query.andWhere {
+                    (BendrasInventoryRequests.requestedByUserId eq userId) or
+                        (
+                            (BendrasInventoryRequests.needsDraugininkasApproval eq false) or
+                                (BendrasInventoryRequests.draugininkasStatus eq "FORWARDED")
+                            )
+                }
                 unitIds.isNotEmpty() -> query = query.andWhere {
                     (BendrasInventoryRequests.requestingUnitId inList unitIds) or
                         (BendrasInventoryRequests.requestedByUserId eq userId)
@@ -100,7 +107,11 @@ class BendrasInventoryRequestService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Request not found"))
 
-            val canAccess = isAdmin ||
+            val canAccess = (isAdmin && (
+                request[BendrasInventoryRequests.requestedByUserId] == userId ||
+                    !request[BendrasInventoryRequests.needsDraugininkasApproval] ||
+                    request[BendrasInventoryRequests.draugininkasStatus] == "FORWARDED"
+                )) ||
                 request[BendrasInventoryRequests.requestedByUserId] == userId ||
                 request[BendrasInventoryRequests.requestingUnitId]?.let { it in unitIds } == true
 
@@ -228,7 +239,7 @@ class BendrasInventoryRequestService {
                 ?.get(Roles.name)
 
             val needsApproval = when {
-                requesterRank in listOf("Vilkas", "Skautas", "Patyres skautas") -> true
+                requesterRank in listOf("Skautas", "Patyres skautas") -> true
                 isUnitLeader -> false
                 else -> request.needsDraugininkasApproval ?: false
             }
@@ -565,6 +576,10 @@ class BendrasInventoryRequestService {
                 .firstOrNull()
                 ?.get(OrganizationalUnits.name)
         }
+        val requestedByUserName = Users.selectAll()
+            .where { Users.id eq row[BendrasInventoryRequests.requestedByUserId] }
+            .firstOrNull()
+            ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
 
         val neededByDate = row[BendrasInventoryRequests.startDate]?.toString()
 
@@ -572,6 +587,7 @@ class BendrasInventoryRequestService {
             id = row[BendrasInventoryRequests.id].toString(),
             tuntasId = row[BendrasInventoryRequests.tuntasId].toString(),
             requestedByUserId = row[BendrasInventoryRequests.requestedByUserId].toString(),
+            requestedByUserName = requestedByUserName,
             itemId = row[BendrasInventoryRequests.itemId]?.toString(),
             itemName = itemName,
             itemDescription = row[BendrasInventoryRequests.itemDescription],

@@ -8,11 +8,11 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import lt.skautai.models.requests.AssignLeadershipRoleRequest
 import lt.skautai.models.requests.AssignRankRequest
+import lt.skautai.models.requests.TransferTuntininkasRequest
 import lt.skautai.models.requests.UpdateLeadershipRoleRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
-import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.MemberService
 import java.util.*
 
@@ -29,21 +29,16 @@ fun Route.memberRoutes(memberService: MemberService) {
 
                 val principal = call.principal<JWTPrincipal>()!!
                 val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
-                val resolvedPermissions = resolveUserPermissions(callerUserId, tuntasUUID)
-                val memberViewPermissions = resolvedPermissions.filter { it.permissionName == "members.view" }
-                if (memberViewPermissions.isEmpty()) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
-                }
-
-                val visibleUnitIds = if (memberViewPermissions.any { it.scope == "ALL" }) {
-                    null
-                } else {
-                    memberViewPermissions.flatMap { it.userOrgUnitIds }.toSet()
-                }
-
-                memberService.getMembers(tuntasUUID, visibleUnitIds)
+                memberService.getMembers(tuntasUUID, callerUserId)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
-                    .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch members")) }
+                    .onFailure {
+                        val status = if (it.message?.contains("active member", ignoreCase = true) == true) {
+                            HttpStatusCode.Forbidden
+                        } else {
+                            HttpStatusCode.InternalServerError
+                        }
+                        call.respond(status, ErrorResponse(it.message ?: "Failed to fetch members"))
+                    }
             }
 
             get("{userId}") {
@@ -55,11 +50,6 @@ fun Route.memberRoutes(memberService: MemberService) {
 
                 val principal = call.principal<JWTPrincipal>()!!
                 val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
-                val resolvedPermissions = resolveUserPermissions(callerUserId, tuntasUUID)
-                val memberViewPermissions = resolvedPermissions.filter { it.permissionName == "members.view" }
-                if (memberViewPermissions.isEmpty()) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
-                }
 
                 val userId = call.parameters["userId"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("User ID required"))
@@ -67,15 +57,16 @@ fun Route.memberRoutes(memberService: MemberService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
                 }
 
-                val visibleUnitIds = if (memberViewPermissions.any { it.scope == "ALL" }) {
-                    null
-                } else {
-                    memberViewPermissions.flatMap { it.userOrgUnitIds }.toSet()
-                }
-
-                memberService.getMember(userUUID, tuntasUUID, visibleUnitIds, callerUserId)
+                memberService.getMember(userUUID, tuntasUUID, callerUserId)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
-                    .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Member not found")) }
+                    .onFailure {
+                        val status = if (it.message?.contains("active member", ignoreCase = true) == true) {
+                            HttpStatusCode.Forbidden
+                        } else {
+                            HttpStatusCode.NotFound
+                        }
+                        call.respond(status, ErrorResponse(it.message ?: "Member not found"))
+                    }
             }
 
             route("{userId}/leadership-roles") {
@@ -185,6 +176,26 @@ fun Route.memberRoutes(memberService: MemberService) {
                 memberService.stepDownLeadershipRole(callerUserId, assignmentUUID, tuntasUUID)
                     .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Leadership role resigned")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to step down")) }
+            }
+
+            post("me/tuntininkas/transfer") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val request = call.receive<TransferTuntininkasRequest>()
+                val successorUserId = try { UUID.fromString(request.successorUserId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
+                }
+
+                memberService.transferTuntininkas(callerUserId, tuntasUUID, successorUserId)
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Tuntininkas role transferred")) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to transfer tuntininkas role")) }
             }
 
             route("{userId}/ranks") {

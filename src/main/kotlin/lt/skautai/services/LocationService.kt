@@ -400,8 +400,8 @@ class LocationService {
                     Result.failure(Exception("Only leaders can create unit locations"))
                 } else if (requestedOwnerUnitId == null) {
                     Result.failure(Exception("Unit location must have owner unit"))
-                } else if (!context.canManageLocationsAll && requestedOwnerUnitId !in context.leaderUnitIds) {
-                    Result.failure(Exception("You can create unit locations only for units you lead"))
+                } else if (!context.canManageLocationsAll && requestedOwnerUnitId !in context.unitIds) {
+                    Result.failure(Exception("You can create unit locations only for your own units"))
                 } else {
                     Result.success(requestedOwnerUnitId)
                 }
@@ -437,8 +437,8 @@ class LocationService {
                     Result.failure(Exception("Only leaders can manage unit locations"))
                 } else if (requestedOwnerUnitId == null) {
                     Result.failure(Exception("Unit location must have owner unit"))
-                } else if (!context.canManageLocationsAll && requestedOwnerUnitId !in context.leaderUnitIds) {
-                    Result.failure(Exception("You can manage unit locations only for units you lead"))
+                } else if (!context.canManageLocationsAll && requestedOwnerUnitId !in context.unitIds) {
+                    Result.failure(Exception("You can manage unit locations only for your own units"))
                 } else {
                     Result.success(requestedOwnerUnitId)
                 }

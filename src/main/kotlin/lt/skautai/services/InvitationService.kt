@@ -42,6 +42,14 @@ class InvitationService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Role not found in this tuntas"))
 
+            if (role[Roles.roleType] == "RANK" && role[Roles.name] !in supportedRankRoleNames) {
+                return@transaction Result.failure(Exception("Selected rank is not available"))
+            }
+
+            if (LeadershipRoleRules.isTuntininkas(role[Roles.name])) {
+                return@transaction Result.failure(Exception("Tuntininkas role cannot be invited"))
+            }
+
             // Verify organizational unit if provided
             val orgUnitUUID = request.organizationalUnitId?.let {
                 try {
@@ -56,6 +64,10 @@ class InvitationService {
                     .where { (OrganizationalUnits.id eq orgUnitUUID) and (OrganizationalUnits.tuntasId eq tuntasId) }
                     .firstOrNull()
                     ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
+            }
+
+            if (LeadershipRoleRules.requiresOrganizationalUnit(role[Roles.name]) && orgUnitUUID == null) {
+                return@transaction Result.failure(Exception("Organizational unit is required for this role"))
             }
 
             validateOwnUnitInvitation(userId, tuntasId, roleUUID, orgUnitUUID)
@@ -477,16 +489,21 @@ class InvitationService {
             "Vyr. skautas kandidatas"
         )
         val guildRestrictedRoleNames = setOf(
-            "Vilkas",
             "Skautas",
             "Patyres skautas",
             "Tuntininkas",
             "Tuntininko pavaduotojas"
         )
         val fallbackRankRoleNamesByUnitType = mapOf(
-            "VILKU_DRAUGOVE" to "Vilkas",
             "SKAUTU_DRAUGOVE" to "Skautas",
             "PATYRUSIU_SKAUTU_DRAUGOVE" to "Patyres skautas"
+        )
+        val supportedRankRoleNames = setOf(
+            "Skautas",
+            "Patyres skautas",
+            "Vyr. skautas kandidatas",
+            "Vyr. skautas",
+            "Vadovas"
         )
 
         val ownUnitInviteLeadershipTargets = mapOf(

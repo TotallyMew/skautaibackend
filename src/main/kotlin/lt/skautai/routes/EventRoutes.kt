@@ -612,13 +612,12 @@ fun Route.eventRoutes(eventService: EventService) {
                             return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                         }
 
-                        if (!checkPermission("events.inventory.distribute", tuntasUUID)) return@post
-
                         val eventId = call.parameters["id"]
                             ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Event ID required"))
                         val eventUUID = try { UUID.fromString(eventId) } catch (e: Exception) {
                             return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid event ID"))
                         }
+                        if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
 
                         val pid = call.parameters["pid"]
                             ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Pastovyklė ID required"))
@@ -643,13 +642,12 @@ fun Route.eventRoutes(eventService: EventService) {
                             return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                         }
 
-                        if (!checkPermission("events.inventory.return", tuntasUUID)) return@put
-
                         val eventId = call.parameters["id"]
                             ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Event ID required"))
                         val eventUUID = try { UUID.fromString(eventId) } catch (e: Exception) {
                             return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid event ID"))
                         }
+                        if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
 
                         val pid = call.parameters["pid"]
                             ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Pastovyklė ID required"))
@@ -680,13 +678,12 @@ fun Route.eventRoutes(eventService: EventService) {
                             return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                         }
 
-                        if (!checkPermission("events.inventory.distribute", tuntasUUID)) return@delete
-
                         val eventId = call.parameters["id"]
                             ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Event ID required"))
                         val eventUUID = try { UUID.fromString(eventId) } catch (e: Exception) {
                             return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid event ID"))
                         }
+                        if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@delete
 
                         val pid = call.parameters["pid"]
                             ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Pastovyklė ID required"))

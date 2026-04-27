@@ -7,6 +7,7 @@ import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.Roles
 import lt.skautai.database.tables.UnitAssignments
 import lt.skautai.database.tables.UserLeadershipRoles
+import lt.skautai.database.tables.UserRanks
 import lt.skautai.models.requests.CreateRequisitionRequest
 import lt.skautai.models.requests.RequisitionTopLevelReviewRequest
 import lt.skautai.models.requests.RequisitionUnitReviewRequest
@@ -144,6 +145,10 @@ class RequisitionService {
                 if (!hasLeadershipInUnit && !hasMembershipInUnit) {
                     return@transaction Result.failure(Exception("You can only create a request for your own unit"))
                 }
+            }
+
+            if (requestingUnitId == null && !canCreateTopLevelRequest(createdByUserId, tuntasId)) {
+                return@transaction Result.failure(Exception("Only active leaders can create a tuntas-level request"))
             }
 
             val neededByDate = request.neededByDate?.let {
@@ -341,6 +346,31 @@ class RequisitionService {
                     (UserLeadershipRoles.termStatus eq "ACTIVE") and
                     UserLeadershipRoles.leftAt.isNull() and
                     (Roles.name inList unitLeaderRoles)
+            }
+            .any()
+    }
+
+    private fun canCreateTopLevelRequest(userId: UUID, tuntasId: UUID): Boolean {
+        val hasActiveLeadershipRole = UserLeadershipRoles.selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.leftAt.isNull()
+            }
+            .any()
+
+        if (hasActiveLeadershipRole) {
+            return true
+        }
+
+        return UserRanks
+            .innerJoin(Roles)
+            .selectAll()
+            .where {
+                (UserRanks.userId eq userId) and
+                    (UserRanks.tuntasId eq tuntasId) and
+                    (Roles.name eq "Vadovas")
             }
             .any()
     }

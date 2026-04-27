@@ -130,6 +130,15 @@ class EventService {
             .firstOrNull() != null
         if (hasVadovasRank) return@transaction true
 
+        val hasScoutRankAllowedToCreate = Roles.selectAll()
+            .where {
+                (Roles.id inList roleIds) and
+                    (Roles.tuntasId eq tuntasId) and
+                    (Roles.name inList listOf("Skautas", "Patyres skautas"))
+            }
+            .firstOrNull() != null
+        if (hasScoutRankAllowedToCreate) return@transaction true
+
         val createPermissions = RolePermissions
             .innerJoin(Permissions, { RolePermissions.permissionId }, { Permissions.id })
             .selectAll()

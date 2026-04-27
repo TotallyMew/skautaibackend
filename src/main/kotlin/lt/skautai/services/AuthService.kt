@@ -61,7 +61,6 @@ class AuthService(private val environment: ApplicationEnvironment) {
         "Vyr. skauciu draugoves draugininko pavaduotojas" to "LEADERSHIP",
         "Vyr. skauciu burelio pirmininkas" to "LEADERSHIP",
         "Vyr. skauciu burelio pirmininko pavaduotojas" to "LEADERSHIP",
-        "Vilkas" to "RANK",
         "Skautas" to "RANK",
         "Patyres skautas" to "RANK",
         "Vyr. skautas kandidatas" to "RANK",

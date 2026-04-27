@@ -23,6 +23,14 @@ import org.jetbrains.exposed.sql.update
 import kotlinx.datetime.Clock
 import java.util.*
 
+private val supportedRankNames = setOf(
+    "Skautas",
+    "Patyres skautas",
+    "Vyr. skautas kandidatas",
+    "Vyr. skautas",
+    "Vadovas"
+)
+
 fun Route.superAdminRoutes(
     memberService: MemberService,
     organizationalUnitService: OrganizationalUnitService
@@ -113,6 +121,9 @@ fun Route.superAdminRoutes(
                     val roles = transaction {
                         Roles.selectAll()
                             .where { Roles.tuntasId eq tuntasId }
+                            .filter {
+                                it[Roles.roleType] != "RANK" || it[Roles.name] in supportedRankNames
+                            }
                             .map {
                                 RoleResponse(
                                     id = it[Roles.id].toString(),
