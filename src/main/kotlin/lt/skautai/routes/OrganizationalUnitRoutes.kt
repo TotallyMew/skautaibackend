@@ -14,6 +14,7 @@ import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.services.OrganizationalUnitService
+import lt.skautai.services.PermissionContextService
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -31,13 +32,19 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                 }
                 val principal = call.principal<JWTPrincipal>()!!
                 val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
-                if (!isActiveTuntasMember(callerUserId, tuntasUUID)) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
+                val permissionContext = PermissionContextService.resolve(callerUserId, tuntasUUID)
+                if (!permissionContext.has("organizational_units.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
 
                 val type = call.request.queryParameters["type"]
+                val visibleUnitIds = if (permissionContext.hasAll("organizational_units.view")) {
+                    null
+                } else {
+                    permissionContext.scopedUnitIds("organizational_units.view")
+                }
 
-                service.getUnits(tuntasUUID, type)
+                service.getUnits(tuntasUUID, type, visibleUnitIds)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch units")) }
             }
@@ -56,8 +63,9 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                 }
                 val principal = call.principal<JWTPrincipal>()!!
                 val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
-                if (!isActiveTuntasMember(callerUserId, tuntasUUID)) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
+                val permissionContext = PermissionContextService.resolve(callerUserId, tuntasUUID)
+                if (!permissionContext.targetAllowed("organizational_units.view", unitUUID)) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
 
                 service.getUnit(unitUUID, tuntasUUID)

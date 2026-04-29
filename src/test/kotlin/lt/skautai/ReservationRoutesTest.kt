@@ -75,6 +75,38 @@ class ReservationRoutesTest {
         return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
     }
 
+    private suspend fun ApplicationTestBuilder.createUnit(token: String, tuntasId: String, name: String): String {
+        val response = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name", "type": "SKAUTU_DRAUGOVE" }""")
+        }
+        return Json.parseToJsonElement(response.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    private suspend fun ApplicationTestBuilder.registerScoutInUnit(
+        token: String,
+        tuntasId: String,
+        unitId: String,
+        email: String
+    ): Pair<String, String> {
+        val roleId = TestHelper.getRoleId(tuntasId, "Skautas")
+        val inviteResponse = client.post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId", "organizationalUnitId": "$unitId" }""")
+        }
+        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
+        val registerResponse = client.post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody("""{ "name": "Scout", "surname": "User", "email": "$email", "password": "testas123", "inviteCode": "$inviteCode" }""")
+        }
+        val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
+        return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
+    }
+
     @Test
     fun `create reservation returns 201`() = testApplication {
         configureFullApp()
@@ -169,6 +201,67 @@ class ReservationRoutesTest {
         }
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `regular member cannot reserve shared inventory for another unit`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Savas vienetas")
+        val otherUnitId = createUnit(token, tuntasId, "Svetimas vienetas")
+        val itemId = client.createTestItem(token, tuntasId, quantity = 3)
+        val (memberToken, _) = registerScoutInUnit(token, tuntasId, ownUnitId, "reservation-scope@test.com")
+
+        val response = client.post("/api/reservations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "itemId": "$itemId",
+                    "quantity": 1,
+                    "startDate": "2026-06-01",
+                    "endDate": "2026-06-07",
+                    "requestingUnitId": "$otherUnitId"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `availability hides foreign unit items from regular member`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Savas vienetas")
+        val otherUnitId = createUnit(token, tuntasId, "Svetimas vienetas")
+        val ownItemId = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Sava palapine", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 1, "custodianId": "$ownUnitId" }""")
+        }.bodyAsText().let { Json.parseToJsonElement(it).jsonObject["id"]!!.jsonPrimitive.content }
+        val otherItemId = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Svetima palapine", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 1, "custodianId": "$otherUnitId" }""")
+        }.bodyAsText().let { Json.parseToJsonElement(it).jsonObject["id"]!!.jsonPrimitive.content }
+        val (memberToken, _) = registerScoutInUnit(token, tuntasId, ownUnitId, "availability-scope@test.com")
+
+        val response = client.get("/api/reservations/availability?startDate=2026-06-01&endDate=2026-06-07") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val ids = Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["items"]!!.jsonArray
+            .map { it.jsonObject["itemId"]!!.jsonPrimitive.content }
+            .toSet()
+        assertEquals(true, ownItemId in ids)
+        assertEquals(false, otherItemId in ids)
     }
 
     @Test

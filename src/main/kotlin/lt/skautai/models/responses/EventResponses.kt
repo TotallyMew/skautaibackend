@@ -261,3 +261,43 @@ data class EventInventoryRequestListResponse(
     val requests: List<EventInventoryRequestResponse>,
     val total: Int
 )
+
+@Serializable
+data class EventReconciliationReturnLineResponse(
+    val custodyId: String,
+    val eventInventoryItemId: String,
+    val itemId: String? = null,
+    val itemName: String,
+    val pastovykleId: String? = null,
+    val pastovykleName: String? = null,
+    val holderUserId: String? = null,
+    val holderUserName: String? = null,
+    val quantity: Int,
+    val returnedQuantity: Int,
+    val remainingQuantity: Int,
+    val status: String,
+    val notes: String? = null
+)
+
+@Serializable
+data class EventReconciliationPurchaseLineResponse(
+    val purchaseId: String,
+    val purchaseItemId: String,
+    val eventInventoryItemId: String,
+    val itemId: String? = null,
+    val itemName: String,
+    val purchasedQuantity: Int,
+    val status: String,
+    val invoiceFileUrl: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class EventReconciliationResponse(
+    val eventId: String,
+    val status: String,
+    val openReturns: List<EventReconciliationReturnLineResponse>,
+    val returnedToEventStorage: List<EventReconciliationReturnLineResponse>,
+    val unresolvedPurchases: List<EventReconciliationPurchaseLineResponse>,
+    val canComplete: Boolean
+)

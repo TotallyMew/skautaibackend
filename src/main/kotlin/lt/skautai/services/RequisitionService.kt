@@ -123,7 +123,7 @@ class RequisitionService {
                 }
             }
 
-            requestingUnitId?.let { unitId ->
+            val creatorIsRequestingUnitLeader = requestingUnitId?.let { unitId ->
                 OrganizationalUnits.selectAll()
                     .where {
                         (OrganizationalUnits.id eq unitId) and
@@ -145,7 +145,9 @@ class RequisitionService {
                 if (!hasLeadershipInUnit && !hasMembershipInUnit) {
                     return@transaction Result.failure(Exception("You can only create a request for your own unit"))
                 }
-            }
+
+                hasLeadershipInUnit
+            } ?: false
 
             if (requestingUnitId == null && !canCreateTopLevelRequest(createdByUserId, tuntasId)) {
                 return@transaction Result.failure(Exception("Only active leaders can create a tuntas-level request"))
@@ -159,19 +161,26 @@ class RequisitionService {
                 }
             }
 
-            val unitReviewStatus = if (requestingUnitId != null) "PENDING" else "SKIPPED"
-            val topLevelReviewStatus = if (requestingUnitId != null) "NOT_REQUIRED" else "PENDING"
+            val autoApproveInUnit = requestingUnitId != null && creatorIsRequestingUnitLeader
+            val unitReviewStatus = when {
+                autoApproveInUnit -> "APPROVED"
+                requestingUnitId != null -> "PENDING"
+                else -> "SKIPPED"
+            }
+            val topLevelReviewStatus = if (requestingUnitId == null) "PENDING" else "NOT_REQUIRED"
+            val createdStatus = if (autoApproveInUnit) "APPROVED" else "SUBMITTED"
+            val now = kotlinx.datetime.Clock.System.now()
 
             val requisitionId = DraugoveRequisitions.insert {
                 it[this.tuntasId] = tuntasId
                 it[organizationalUnitId] = requestingUnitId
                 it[eventId] = null
                 it[this.createdByUserId] = createdByUserId
-                it[reviewedByUserId] = null
-                it[status] = "SUBMITTED"
+                it[reviewedByUserId] = if (autoApproveInUnit) createdByUserId else null
+                it[status] = createdStatus
                 it[this.unitReviewStatus] = unitReviewStatus
-                it[this.unitReviewedByUserId] = null
-                it[this.unitReviewedAt] = null
+                it[this.unitReviewedByUserId] = if (autoApproveInUnit) createdByUserId else null
+                it[this.unitReviewedAt] = if (autoApproveInUnit) now else null
                 it[this.topLevelReviewStatus] = topLevelReviewStatus
                 it[this.topLevelReviewedByUserId] = null
                 it[this.topLevelReviewedAt] = null
@@ -189,6 +198,10 @@ class RequisitionService {
                     it[rejectionReason] = null
                     it[notes] = item.notes
                 }
+            }
+
+            if (autoApproveInUnit) {
+                approveAllItems(requisitionId)
             }
 
             val saved = DraugoveRequisitions.selectAll()
@@ -351,26 +364,22 @@ class RequisitionService {
     }
 
     private fun canCreateTopLevelRequest(userId: UUID, tuntasId: UUID): Boolean {
-        val hasActiveLeadershipRole = UserLeadershipRoles.selectAll()
+        val topLevelLeaderRoles = listOf(
+            "Tuntininkas",
+            "Tuntininko pavaduotojas",
+            "Inventorininkas"
+        )
+
+        return UserLeadershipRoles
+            .innerJoin(Roles)
+            .selectAll()
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
                     (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                    UserLeadershipRoles.leftAt.isNull()
-            }
-            .any()
-
-        if (hasActiveLeadershipRole) {
-            return true
-        }
-
-        return UserRanks
-            .innerJoin(Roles)
-            .selectAll()
-            .where {
-                (UserRanks.userId eq userId) and
-                    (UserRanks.tuntasId eq tuntasId) and
-                    (Roles.name eq "Vadovas")
+                    UserLeadershipRoles.leftAt.isNull() and
+                    UserLeadershipRoles.organizationalUnitId.isNull() and
+                    (Roles.name inList topLevelLeaderRoles)
             }
             .any()
     }

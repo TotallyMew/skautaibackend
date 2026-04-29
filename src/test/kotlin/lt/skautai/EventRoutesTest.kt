@@ -38,8 +38,10 @@ class EventRoutesTest {
         token: String,
         tuntasId: String,
         name: String = "Vasaros stovykla",
-        type: String = "STOVYKLA"
+        type: String = "STOVYKLA",
+        organizationalUnitId: String? = null
     ): String {
+        val orgUnitField = organizationalUnitId?.let { """, "organizationalUnitId": "$it"""" }.orEmpty()
         val response = post("/api/events") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
@@ -49,7 +51,7 @@ class EventRoutesTest {
                     "name": "$name",
                     "type": "$type",
                     "startDate": "2026-07-01",
-                    "endDate": "2026-07-07"
+                    "endDate": "2026-07-07"$orgUnitField
                 }
             """.trimIndent())
         }
@@ -110,15 +112,101 @@ class EventRoutesTest {
         return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
     }
 
-    private suspend fun HttpClient.createUnit(token: String, tuntasId: String, name: String): String {
+    private suspend fun HttpClient.createUnit(
+        token: String,
+        tuntasId: String,
+        name: String,
+        type: String = "SKAUTU_DRAUGOVE",
+        subType: String? = null
+    ): String {
+        val subTypeField = subType?.let { """, "subType": "$it"""" }.orEmpty()
         val response = post("/api/organizational-units") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "$name", "type": "SKAUTU_DRAUGOVE" }""")
+            setBody("""{ "name": "$name", "type": "$type"$subTypeField }""")
         }
         return Json.parseToJsonElement(response.bodyAsText())
             .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    private suspend fun HttpClient.createEventResponse(
+        token: String,
+        tuntasId: String,
+        name: String,
+        organizationalUnitId: String? = null
+    ): HttpResponse {
+        val orgUnitField = organizationalUnitId?.let { """, "organizationalUnitId": "$it"""" }.orEmpty()
+        return post("/api/events") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "name": "$name",
+                    "type": "RENGINYS",
+                    "startDate": "2026-08-01",
+                    "endDate": "2026-08-01"$orgUnitField
+                }
+            """.trimIndent())
+        }
+    }
+
+    private suspend fun HttpClient.visibleEventIds(token: String, tuntasId: String): List<String> {
+        val response = get("/api/events") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["events"]!!.jsonArray
+            .map { it.jsonObject["id"]!!.jsonPrimitive.content }
+    }
+
+    private suspend fun HttpClient.createEventInventoryItem(
+        token: String,
+        tuntasId: String,
+        eventId: String,
+        name: String = "Puodai",
+        plannedQuantity: Int = 3
+    ): String {
+        val response = post("/api/events/$eventId/inventory-items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name", "plannedQuantity": $plannedQuantity }""")
+        }
+        assertEquals(HttpStatusCode.Created, response.status)
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    private suspend fun HttpClient.createEventPurchase(
+        token: String,
+        tuntasId: String,
+        eventId: String,
+        eventInventoryItemId: String,
+        purchasedQuantity: Int = 1,
+        unitPrice: Double = 5.0
+    ): JsonObject {
+        val response = post("/api/events/$eventId/purchases") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "items": [
+                        {
+                            "eventInventoryItemId": "$eventInventoryItemId",
+                            "purchasedQuantity": $purchasedQuantity,
+                            "unitPrice": $unitPrice
+                        }
+                    ]
+                }
+            """.trimIndent())
+        }
+        assertEquals(HttpStatusCode.Created, response.status)
+        return Json.parseToJsonElement(response.bodyAsText()).jsonObject
     }
 
     @Test
@@ -146,6 +234,85 @@ class EventRoutesTest {
         assertEquals("STOVYKLA", body["type"]?.jsonPrimitive?.content)
         assertEquals("PLANNING", body["status"]?.jsonPrimitive?.content)
         assertNull(body["stovyklaDetails"])
+    }
+
+    @Test
+    fun `event creation and visibility follows rank target audience`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val gildijaId = client.createUnit(token, tuntasId, "Vadovu gildija", type = "GILDIJA")
+        val vyrSkautuId = client.createUnit(
+            token,
+            tuntasId,
+            "Vyr skautu vienetas",
+            type = "VYR_SKAUTU_VIENETAS",
+            subType = "DRAUGOVE"
+        )
+        val vyrSkauciuId = client.createUnit(
+            token,
+            tuntasId,
+            "Vyr skauciu vienetas",
+            type = "VYR_SKAUCIU_VIENETAS",
+            subType = "DRAUGOVE"
+        )
+
+        val vadovasToken = registerUserWithRole(token, tuntasId, "Vadovas", "vadovas-events@test.com").first
+        val vyrSkautasToken = registerUserWithRole(
+            token,
+            tuntasId,
+            "Vyr. skautas",
+            "vyr-skautas-events@test.com",
+            vyrSkautuId
+        ).first
+        val vyrSkauteToken = registerUserWithRole(
+            token,
+            tuntasId,
+            "Vyr. skautas kandidatas",
+            "vyr-skaute-events@test.com",
+            vyrSkauciuId
+        ).first
+        val patyresToken = registerUserWithRole(token, tuntasId, "Patyres skautas", "patyres-events@test.com").first
+
+        val bendrasResponse = client.createEventResponse(vadovasToken, tuntasId, "Bendras renginys")
+        assertEquals(HttpStatusCode.Created, bendrasResponse.status)
+        val bendrasId = Json.parseToJsonElement(bendrasResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val gildijaResponse = client.createEventResponse(vadovasToken, tuntasId, "Gildijos renginys", gildijaId)
+        assertEquals(HttpStatusCode.Created, gildijaResponse.status)
+        val gildijaEventId = Json.parseToJsonElement(gildijaResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val vadovasVyrSkautuResponse = client.createEventResponse(vadovasToken, tuntasId, "Ne savo vyr skautu", vyrSkautuId)
+        assertEquals(HttpStatusCode.Forbidden, vadovasVyrSkautuResponse.status)
+
+        val vyrSkautuResponse = client.createEventResponse(vyrSkautasToken, tuntasId, "Vyr skautu renginys", vyrSkautuId)
+        assertEquals(HttpStatusCode.Created, vyrSkautuResponse.status)
+        val vyrSkautuEventId = Json.parseToJsonElement(vyrSkautuResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val vyrSkauteWrongTargetResponse = client.createEventResponse(
+            vyrSkauteToken,
+            tuntasId,
+            "Ne savo vyr skautu",
+            vyrSkautuId
+        )
+        assertEquals(HttpStatusCode.Forbidden, vyrSkauteWrongTargetResponse.status)
+
+        val vyrSkauciuResponse = client.createEventResponse(vyrSkauteToken, tuntasId, "Vyr skauciu renginys", vyrSkauciuId)
+        assertEquals(HttpStatusCode.Created, vyrSkauciuResponse.status)
+        val vyrSkauciuEventId = Json.parseToJsonElement(vyrSkauciuResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val patyresResponse = client.createEventResponse(patyresToken, tuntasId, "Patyres negali")
+        assertEquals(HttpStatusCode.Forbidden, patyresResponse.status)
+
+        assertEquals(setOf(bendrasId, gildijaEventId), client.visibleEventIds(vadovasToken, tuntasId).toSet())
+        assertEquals(setOf(vyrSkautuEventId), client.visibleEventIds(vyrSkautasToken, tuntasId).toSet())
+        assertEquals(setOf(vyrSkauciuEventId), client.visibleEventIds(vyrSkauteToken, tuntasId).toSet())
+        assertEquals(emptyList<String>(), client.visibleEventIds(patyresToken, tuntasId))
+
+        val hiddenDetailResponse = client.get("/api/events/$vyrSkautuEventId") {
+            header("Authorization", "Bearer $vadovasToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.Forbidden, hiddenDetailResponse.status)
     }
 
     @Test
@@ -592,13 +759,15 @@ class EventRoutesTest {
         token: String,
         tuntasId: String,
         eventId: String,
-        name: String = "Vilkai"
+        name: String = "Vilkai",
+        responsibleUserId: String? = null
     ): String {
+        val responsibleField = responsibleUserId?.let { """, "responsibleUserId": "$it"""" }.orEmpty()
         val response = post("/api/events/$eventId/pastovykles") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "$name" }""")
+            setBody("""{ "name": "$name"$responsibleField }""")
         }
         return Json.parseToJsonElement(response.bodyAsText())
             .jsonObject["id"]!!.jsonPrimitive.content
@@ -656,13 +825,13 @@ class EventRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Vilkai", "ageGroup": "VILKAI" }""")
+            setBody("""{ "name": "Vyr. skautės", "ageGroup": "VYR_SKAUTES" }""")
         }
 
         assertEquals(HttpStatusCode.Created, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Vilkai", body["name"]?.jsonPrimitive?.content)
-        assertEquals("VILKAI", body["ageGroup"]?.jsonPrimitive?.content)
+        assertEquals("Vyr. skautės", body["name"]?.jsonPrimitive?.content)
+        assertEquals("VYR_SKAUTES", body["ageGroup"]?.jsonPrimitive?.content)
         assertEquals(eventId, body["eventId"]?.jsonPrimitive?.content)
     }
 
@@ -708,7 +877,23 @@ class EventRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "GrupÄ—", "ageGroup": "INVALID_GROUP" }""")
+            setBody("""{ "name": "Grupė", "ageGroup": "INVALID_GROUP" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `create pastovykle with non member responsible user returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val response = client.post("/api/events/$eventId/pastovykles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Vilkai", "responsibleUserId": "00000000-0000-0000-0000-000000000001" }""")
         }
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
@@ -788,12 +973,12 @@ class EventRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "Atnaujinta grupÄ—" }""")
+            setBody("""{ "name": "Atnaujinta grupė" }""")
         }
 
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Atnaujinta grupÄ—", body["name"]?.jsonPrimitive?.content)
+        assertEquals("Atnaujinta grupė", body["name"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -1247,13 +1432,178 @@ class EventRoutesTest {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
         }
-        assertEquals(HttpStatusCode.OK, addResponse.status)
-        val added = Json.parseToJsonElement(addResponse.bodyAsText()).jsonObject
-        assertEquals("ADDED_TO_INVENTORY", added["status"]?.jsonPrimitive?.content)
-        assertTrue(
-            added["items"]!!.jsonArray.first().jsonObject["addedToInventory"]!!.jsonPrimitive.content.toBoolean()
-        )
-        assertNotNull(added["items"]!!.jsonArray.first().jsonObject["addedToInventoryItemId"]?.jsonPrimitive?.content)
+        assertEquals(HttpStatusCode.Gone, addResponse.status)
+        val error = Json.parseToJsonElement(addResponse.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
+        assertTrue(error.contains("suvedim"))
+    }
+
+    @Test
+    fun `event purchase rejects duplicate active inventory item`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 4)
+
+        client.createEventPurchase(token, tuntasId, eventId, eventInventoryItemId, purchasedQuantity = 1)
+
+        val duplicateResponse = client.post("/api/events/$eventId/purchases") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "items": [
+                        {
+                            "eventInventoryItemId": "$eventInventoryItemId",
+                            "purchasedQuantity": 1,
+                            "unitPrice": 5.0
+                        }
+                    ]
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, duplicateResponse.status)
+        val error = Json.parseToJsonElement(duplicateResponse.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
+        assertTrue(error.contains("aktyvu pirkima") || error.contains("aktyvų pirkimą"))
+    }
+
+    @Test
+    fun `event purchase allows same inventory item after cancelled purchase`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 4)
+        val purchase = client.createEventPurchase(token, tuntasId, eventId, eventInventoryItemId, purchasedQuantity = 1)
+        val purchaseId = purchase["id"]!!.jsonPrimitive.content
+
+        val cancelResponse = client.put("/api/events/$eventId/purchases/$purchaseId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "status": "CANCELLED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, cancelResponse.status)
+
+        val newPurchase = client.createEventPurchase(token, tuntasId, eventId, eventInventoryItemId, purchasedQuantity = 1)
+
+        assertEquals("DRAFT", newPurchase["status"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `event purchase rejects same inventory item while purchased purchase awaits reconciliation`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 4)
+        val purchase = client.createEventPurchase(token, tuntasId, eventId, eventInventoryItemId, purchasedQuantity = 1)
+        val purchaseId = purchase["id"]!!.jsonPrimitive.content
+
+        val completeResponse = client.post("/api/events/$eventId/purchases/$purchaseId/complete") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, completeResponse.status)
+
+        val duplicateResponse = client.post("/api/events/$eventId/purchases") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "items": [
+                        {
+                            "eventInventoryItemId": "$eventInventoryItemId",
+                            "purchasedQuantity": 1,
+                            "unitPrice": 5.0
+                        }
+                    ]
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, duplicateResponse.status)
+    }
+
+    @Test
+    fun `completing purchase twice does not increase available quantity twice`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 4)
+        val purchase = client.createEventPurchase(token, tuntasId, eventId, eventInventoryItemId, purchasedQuantity = 2)
+        val purchaseId = purchase["id"]!!.jsonPrimitive.content
+
+        repeat(2) {
+            val completeResponse = client.post("/api/events/$eventId/purchases/$purchaseId/complete") {
+                header("Authorization", "Bearer $token")
+                header("X-Tuntas-Id", tuntasId)
+            }
+            assertEquals(HttpStatusCode.OK, completeResponse.status)
+        }
+
+        val planResponse = client.get("/api/events/$eventId/inventory-plan") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val item = Json.parseToJsonElement(planResponse.bodyAsText())
+            .jsonObject["items"]!!.jsonArray
+            .single { it.jsonObject["id"]!!.jsonPrimitive.content == eventInventoryItemId }
+            .jsonObject
+        assertEquals(2, item["availableQuantity"]!!.jsonPrimitive.int)
+        assertEquals(2, item["shortageQuantity"]!!.jsonPrimitive.int)
+    }
+
+    @Test
+    fun `purchase cannot be marked purchased through generic update`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 4)
+        val purchase = client.createEventPurchase(token, tuntasId, eventId, eventInventoryItemId, purchasedQuantity = 2)
+        val purchaseId = purchase["id"]!!.jsonPrimitive.content
+
+        val updateResponse = client.put("/api/events/$eventId/purchases/$purchaseId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "status": "PURCHASED" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, updateResponse.status)
+    }
+
+    @Test
+    fun `failed purchase creation does not leave empty purchase`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 4)
+
+        val invalidPurchaseResponse = client.post("/api/events/$eventId/purchases") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "items": [
+                        {
+                            "eventInventoryItemId": "$eventInventoryItemId",
+                            "purchasedQuantity": 0,
+                            "unitPrice": 5.0
+                        }
+                    ]
+                }
+            """.trimIndent())
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidPurchaseResponse.status)
+
+        val purchasesResponse = client.get("/api/events/$eventId/purchases") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val purchases = Json.parseToJsonElement(purchasesResponse.bodyAsText()).jsonObject["purchases"]!!.jsonArray
+        assertEquals(0, purchases.size)
     }
 
     @Test
@@ -1591,5 +1941,139 @@ class EventRoutesTest {
         assertEquals(2, persistedRequest[EventInventoryRequests.quantity])
         assertEquals("PENDING", persistedRequest[EventInventoryRequests.status])
         assertEquals("Reikia vakarui", persistedRequest[EventInventoryRequests.notes])
+    }
+
+    @Test
+    fun `pastovykle responsible user is scoped to own pastovykle workflow`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val (responsibleToken, responsibleUserId) = registerUserWithRole(token, tuntasId, "Skautas", "pastovykle-leader@test.com")
+        val eventId = client.createTestEvent(token, tuntasId)
+        val otherEventId = client.createTestEvent(token, tuntasId, name = "Kita stovykla")
+        client.activateEventForMovement(token, tuntasId, eventId)
+        val pastovykleId = client.createTestPastovykle(token, tuntasId, eventId, "Vilkai", responsibleUserId)
+        val otherPastovykleId = client.createTestPastovykle(token, tuntasId, eventId, "Skautai")
+        client.createTestPastovykle(token, tuntasId, otherEventId, "Kiti")
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 5)
+
+        val eventsResponse = client.get("/api/events") {
+            header("Authorization", "Bearer $responsibleToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, eventsResponse.status)
+        val events = Json.parseToJsonElement(eventsResponse.bodyAsText()).jsonObject["events"]!!.jsonArray
+        assertEquals(listOf(eventId), events.map { it.jsonObject["id"]!!.jsonPrimitive.content })
+
+        val pastovyklesResponse = client.get("/api/events/$eventId/pastovykles") {
+            header("Authorization", "Bearer $responsibleToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, pastovyklesResponse.status)
+        val pastovykles = Json.parseToJsonElement(pastovyklesResponse.bodyAsText()).jsonObject["pastovykles"]!!.jsonArray
+        assertEquals(1, pastovykles.size)
+        assertEquals(pastovykleId, pastovykles.single().jsonObject["id"]!!.jsonPrimitive.content)
+
+        val ownInventoryResponse = client.get("/api/events/$eventId/pastovykles/$pastovykleId/inventory") {
+            header("Authorization", "Bearer $responsibleToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, ownInventoryResponse.status)
+
+        val otherInventoryResponse = client.get("/api/events/$eventId/pastovykles/$otherPastovykleId/inventory") {
+            header("Authorization", "Bearer $responsibleToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.Forbidden, otherInventoryResponse.status)
+
+        val requestResponse = client.post("/api/events/$eventId/pastovykles/$pastovykleId/requests") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $responsibleToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "eventInventoryItemId": "$eventInventoryItemId", "quantity": 2, "notes": "Reikia pastovyklei" }""")
+        }
+        assertEquals(HttpStatusCode.Created, requestResponse.status)
+        val requestId = Json.parseToJsonElement(requestResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val selfProvidedResponse = client.post("/api/events/$eventId/pastovykles/$pastovykleId/requests/$requestId/self-provided") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $responsibleToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "notes": "Atsivesime patys" }""")
+        }
+        assertEquals(HttpStatusCode.OK, selfProvidedResponse.status)
+
+        val approveResponse = client.post("/api/events/$eventId/pastovykles/$pastovykleId/requests/$requestId/approve") {
+            header("Authorization", "Bearer $responsibleToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.Forbidden, approveResponse.status)
+    }
+
+    @Test
+    fun `komendantas and ukvedys manage inventory but not event administration`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val (komendantasToken, komendantasUserId) = registerUserWithRole(token, tuntasId, "Vadovas", "komendantas@test.com")
+        val (ukvedysToken, ukvedysUserId) = registerUserWithRole(token, tuntasId, "Vadovas", "ukvedys@test.com")
+
+        listOf(komendantasUserId to "KOMENDANTAS", ukvedysUserId to "UKVEDYS").forEach { (userId, role) ->
+            val assignResponse = client.post("/api/events/$eventId/roles") {
+                contentType(ContentType.Application.Json)
+                header("Authorization", "Bearer $token")
+                header("X-Tuntas-Id", tuntasId)
+                setBody("""{ "userId": "$userId", "role": "$role" }""")
+            }
+            assertEquals(HttpStatusCode.Created, assignResponse.status)
+        }
+
+        listOf(komendantasToken to "Puodai", ukvedysToken to "Kirviai").forEach { (staffToken, itemName) ->
+            val inventoryResponse = client.post("/api/events/$eventId/inventory-items") {
+                contentType(ContentType.Application.Json)
+                header("Authorization", "Bearer $staffToken")
+                header("X-Tuntas-Id", tuntasId)
+                setBody("""{ "name": "$itemName", "plannedQuantity": 2 }""")
+            }
+            assertEquals(HttpStatusCode.Created, inventoryResponse.status)
+
+            val eventAdminResponse = client.put("/api/events/$eventId") {
+                contentType(ContentType.Application.Json)
+                header("Authorization", "Bearer $staffToken")
+                header("X-Tuntas-Id", tuntasId)
+                setBody("""{ "name": "$itemName eventas" }""")
+            }
+            assertEquals(HttpStatusCode.Forbidden, eventAdminResponse.status)
+        }
+    }
+
+    @Test
+    fun `cancelled event blocks pastovykle mutating workflow`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pastovykleId = client.createTestPastovykle(token, tuntasId, eventId)
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 3)
+
+        val cancelResponse = client.delete("/api/events/$eventId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, cancelResponse.status)
+
+        val requestResponse = client.post("/api/events/$eventId/pastovykles/$pastovykleId/requests") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "eventInventoryItemId": "$eventInventoryItemId", "quantity": 1 }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, requestResponse.status)
+
+        val assignFromUnitResponse = client.post("/api/events/$eventId/pastovykles/$pastovykleId/assign-from-unit") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "00000000-0000-0000-0000-000000000001", "quantity": 1 }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, assignFromUnitResponse.status)
     }
 }

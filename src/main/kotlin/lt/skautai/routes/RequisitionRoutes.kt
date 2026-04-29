@@ -17,6 +17,7 @@ import lt.skautai.models.requests.RequisitionUnitReviewRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
+import lt.skautai.services.PermissionContextService
 import lt.skautai.services.RequisitionService
 import java.util.UUID
 import lt.skautai.database.tables.Roles
@@ -42,9 +43,16 @@ fun Route.requisitionRoutes(service: RequisitionService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@get
+                val permissionContext = PermissionContextService.resolve(userId, tuntasUUID)
+                if (
+                    !permissionContext.has("requisitions.create") &&
+                    !permissionContext.has("requisitions.approve") &&
+                    !permissionContext.has("items.request.forward.bendras")
+                ) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
-                val permissions = resolveUserPermissions(userId, tuntasUUID)
+                val permissions = permissionContext.permissions
                 val isTopLevelReviewer = permissions.any {
                     it.permissionName == "requisitions.approve" && it.scope == "ALL"
                 }
@@ -67,7 +75,14 @@ fun Route.requisitionRoutes(service: RequisitionService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@get
+                val permissionContext = PermissionContextService.resolve(userId, tuntasUUID)
+                if (
+                    !permissionContext.has("requisitions.create") &&
+                    !permissionContext.has("requisitions.approve") &&
+                    !permissionContext.has("items.request.forward.bendras")
+                ) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 val requestId = call.parameters["id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Request ID required"))
@@ -77,7 +92,7 @@ fun Route.requisitionRoutes(service: RequisitionService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
                 }
 
-                val permissions = resolveUserPermissions(userId, tuntasUUID)
+                val permissions = permissionContext.permissions
                 val isTopLevelReviewer = permissions.any {
                     it.permissionName == "requisitions.approve" && it.scope == "ALL"
                 }
@@ -108,7 +123,9 @@ fun Route.requisitionRoutes(service: RequisitionService) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@post
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("requisitions.create")) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 val request = call.receive<CreateRequisitionRequest>()
                 service.createRequest(tuntasUUID, userId, request)
@@ -128,7 +145,13 @@ fun Route.requisitionRoutes(service: RequisitionService) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@post
+                val permissionContext = PermissionContextService.resolve(userId, tuntasUUID)
+                if (
+                    !permissionContext.has("items.request.approve.unit") &&
+                    !permissionContext.has("items.request.forward.bendras")
+                ) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 val requestId = call.parameters["id"]
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Request ID required"))

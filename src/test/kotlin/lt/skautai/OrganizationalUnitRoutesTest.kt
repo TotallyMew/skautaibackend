@@ -258,7 +258,7 @@ class OrganizationalUnitRoutesTest {
         }
         assertEquals(HttpStatusCode.OK, unitsResponse.status)
         val unitsBody = Json.parseToJsonElement(unitsResponse.bodyAsText()).jsonObject
-        assertEquals(2, unitsBody["total"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(1, unitsBody["total"]?.jsonPrimitive?.content?.toInt())
 
         val ownUnitMembersResponse = client.get("/api/organizational-units/$unitId/members") {
             header("Authorization", "Bearer $leaderToken")

@@ -14,7 +14,8 @@ import java.util.*
 class EventService {
 
     private val validTypes = listOf("STOVYKLA", "SUEIGA", "RENGINYS")
-    private val validStatuses = listOf("PLANNING", "ACTIVE", "COMPLETED", "CANCELLED")
+    private val validStatuses = listOf("PLANNING", "ACTIVE", "WRAP_UP", "COMPLETED", "CANCELLED")
+    private val readOnlyEventStatuses = listOf("COMPLETED", "CANCELLED")
     private val validEventRoles = listOf(
         "VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "PASTOVYKLES_GURU",
         "VADOVAS", "SAVANORIS", "PATYRE_SKAUTAS", "SKAUTAS",
@@ -24,7 +25,7 @@ class EventService {
     private val eventManagerRoles = listOf("VIRSININKAS")
     private val eventInventoryRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS")
     private val validBucketTypes = listOf("PROGRAM", "KITCHEN", "ADMIN", "MEDICAL", "PASTOVYKLE", "OTHER")
-    private val validPurchaseStatuses = listOf("DRAFT", "PURCHASED", "ADDED_TO_INVENTORY", "CANCELLED")
+    private val validPurchaseStatuses = listOf("DRAFT", "PURCHASED", "CANCELLED")
     private val validInventoryRequestStatuses = listOf(
         "PENDING",
         "APPROVED",
@@ -40,6 +41,10 @@ class EventService {
         "RETURN_TO_EVENT_STORAGE",
         "TRANSFER"
     )
+    private val vadovasRankName = "Vadovas"
+    private val seniorScoutRankNames = setOf("Vyr. skautas", "Vyr. skautas kandidatas")
+    private val globalEventRoleNames = setOf("Tuntininkas", "Tuntininko pavaduotojas")
+    private val seniorScoutUnitTypes = setOf("VYR_SKAUTU_VIENETAS", "VYR_SKAUCIU_VIENETAS")
 
     fun isTuntasMember(userId: UUID, tuntasId: UUID): Boolean = transaction {
         UserTuntasMemberships.selectAll()
@@ -52,116 +57,33 @@ class EventService {
     }
 
     fun canViewEvents(userId: UUID, tuntasId: UUID): Boolean = transaction {
-        val isMember = UserTuntasMemberships.selectAll()
-            .where {
-                (UserTuntasMemberships.userId eq userId) and
-                    (UserTuntasMemberships.tuntasId eq tuntasId) and
-                    (UserTuntasMemberships.leftAt.isNull())
-            }
-            .firstOrNull() != null
-        if (!isMember) return@transaction false
-
-        val hasLeadership = UserLeadershipRoles.selectAll()
-            .where {
-                (UserLeadershipRoles.userId eq userId) and
-                    (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                    (UserLeadershipRoles.leftAt.isNull())
-            }
-            .firstOrNull() != null
-        if (hasLeadership) return@transaction true
-
-        val isVadovas = UserRanks
-            .innerJoin(Roles, { roleId }, { id })
-            .selectAll()
-            .where {
-                (UserRanks.userId eq userId) and
-                    (UserRanks.tuntasId eq tuntasId) and
-                    (Roles.name eq "Vadovas")
-            }
-            .firstOrNull() != null
-        if (isVadovas) return@transaction true
-
-        EventRoles
-            .innerJoin(Events, { eventId }, { id })
-            .selectAll()
-            .where {
-                (EventRoles.userId eq userId) and
-                    (Events.tuntasId eq tuntasId)
-            }
-            .firstOrNull() != null
+        isActiveTuntasMember(userId, tuntasId)
     }
 
     fun canCreateEvent(userId: UUID, tuntasId: UUID, targetOrgUnitId: UUID?): Boolean = transaction {
-        val isMember = UserTuntasMemberships.selectAll()
+        if (!isActiveTuntasMember(userId, tuntasId)) return@transaction false
+        if (hasAnyLeadershipRole(userId, tuntasId, globalEventRoleNames)) return@transaction true
+
+        val rankNames = userRankNames(userId, tuntasId)
+        if (targetOrgUnitId == null) return@transaction vadovasRankName in rankNames
+
+        val targetUnit = OrganizationalUnits.selectAll()
             .where {
-                (UserTuntasMemberships.userId eq userId) and
-                    (UserTuntasMemberships.tuntasId eq tuntasId) and
-                    (UserTuntasMemberships.leftAt.isNull())
+                (OrganizationalUnits.id eq targetOrgUnitId) and
+                    (OrganizationalUnits.tuntasId eq tuntasId)
             }
-            .firstOrNull() != null
-        if (!isMember) return@transaction false
+            .firstOrNull() ?: return@transaction false
+        val targetType = targetUnit[OrganizationalUnits.type]
 
-        val roleIds = (
-            UserLeadershipRoles.selectAll()
-                .where {
-                    (UserLeadershipRoles.userId eq userId) and
-                        (UserLeadershipRoles.tuntasId eq tuntasId) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                        (UserLeadershipRoles.leftAt.isNull())
-                }
-                .map { it[UserLeadershipRoles.roleId] } +
-                UserRanks.selectAll()
-                    .where {
-                        (UserRanks.userId eq userId) and
-                            (UserRanks.tuntasId eq tuntasId)
-                    }
-                    .map { it[UserRanks.roleId] }
-            )
-
-        if (roleIds.isEmpty()) return@transaction false
-
-        val hasVadovasRank = Roles.selectAll()
-            .where {
-                (Roles.id inList roleIds) and
-                    (Roles.tuntasId eq tuntasId) and
-                    (Roles.name eq "Vadovas")
+        when (targetType) {
+            "GILDIJA" -> vadovasRankName in rankNames || userLeadsUnit(userId, tuntasId, targetOrgUnitId)
+            in seniorScoutUnitTypes -> {
+                val isTargetUnitMember = userBelongsToUnit(userId, tuntasId, targetOrgUnitId) ||
+                    userLeadsUnit(userId, tuntasId, targetOrgUnitId)
+                isTargetUnitMember && (rankNames.any { it in seniorScoutRankNames } || vadovasRankName in rankNames)
             }
-            .firstOrNull() != null
-        if (hasVadovasRank) return@transaction true
-
-        val hasScoutRankAllowedToCreate = Roles.selectAll()
-            .where {
-                (Roles.id inList roleIds) and
-                    (Roles.tuntasId eq tuntasId) and
-                    (Roles.name inList listOf("Skautas", "Patyres skautas"))
-            }
-            .firstOrNull() != null
-        if (hasScoutRankAllowedToCreate) return@transaction true
-
-        val createPermissions = RolePermissions
-            .innerJoin(Permissions, { RolePermissions.permissionId }, { Permissions.id })
-            .selectAll()
-            .where {
-                (RolePermissions.roleId inList roleIds) and
-                    (Permissions.name eq "events.create")
-            }
-            .toList()
-        if (createPermissions.any { it[RolePermissions.scope] == "ALL" }) return@transaction true
-        if (targetOrgUnitId == null) return@transaction false
-
-        val leaderUnitIds = UserLeadershipRoles.selectAll()
-            .where {
-                (UserLeadershipRoles.userId eq userId) and
-                    (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                    (UserLeadershipRoles.leftAt.isNull()) and
-                    (UserLeadershipRoles.organizationalUnitId.isNotNull())
-            }
-            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
-            .toSet()
-
-        createPermissions.any { it[RolePermissions.scope] == "OWN_UNIT" } && targetOrgUnitId in leaderUnitIds
+            else -> false
+        }
     }
 
     fun canManageEvent(eventId: UUID, tuntasId: UUID, userId: UUID): Boolean = transaction {
@@ -220,6 +142,50 @@ class EventService {
         }
     }
 
+    fun getVisibleEvents(
+        tuntasId: UUID,
+        userId: UUID,
+        type: String? = null,
+        status: String? = null
+    ): Result<EventListResponse> {
+        return transaction {
+            var query = Events.selectAll()
+                .where { Events.tuntasId eq tuntasId }
+
+            type?.let { query = query.andWhere { Events.type eq it } }
+            status?.let { query = query.andWhere { Events.status eq it } }
+
+            val access = resolveEventAccess(userId, tuntasId)
+            val events = query
+                .filter { canViewEventRow(it, access) }
+                .map { toEventResponse(it) }
+            Result.success(EventListResponse(events = events, total = events.size))
+        }
+    }
+
+    fun getResponsibleEvents(
+        tuntasId: UUID,
+        userId: UUID,
+        type: String? = null,
+        status: String? = null
+    ): Result<EventListResponse> {
+        return transaction {
+            var query = Events
+                .innerJoin(Pastovykles, { id }, { eventId })
+                .select(Events.columns)
+                .where {
+                    (Events.tuntasId eq tuntasId) and
+                        (Pastovykles.responsibleUserId eq userId)
+                }
+
+            type?.let { query = query.andWhere { Events.type eq it } }
+            status?.let { query = query.andWhere { Events.status eq it } }
+
+            val events = query.map { toEventResponse(it) }.distinctBy { it.id }
+            Result.success(EventListResponse(events = events, total = events.size))
+        }
+    }
+
     fun getEvent(eventId: UUID, tuntasId: UUID): Result<EventResponse> {
         return transaction {
             val event = Events.selectAll()
@@ -232,6 +198,17 @@ class EventService {
 
             Result.success(toEventResponse(event))
         }
+    }
+
+    fun canViewEvent(userId: UUID, tuntasId: UUID, eventId: UUID): Boolean = transaction {
+        val access = resolveEventAccess(userId, tuntasId)
+        val event = Events.selectAll()
+            .where {
+                (Events.id eq eventId) and
+                    (Events.tuntasId eq tuntasId)
+            }
+            .firstOrNull() ?: return@transaction access.isGlobalEventAdmin
+        canViewEventRow(event, access)
     }
 
     fun createEvent(
@@ -327,17 +304,24 @@ class EventService {
         request: UpdateEventRequest
     ): Result<EventResponse> {
         return transaction {
-            Events.selectAll()
+            val existing = Events.selectAll()
                 .where {
                     (Events.id eq eventId) and
                             (Events.tuntasId eq tuntasId)
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(existing)?.let { return@transaction Result.failure(it) }
 
             request.status?.let {
                 if (it !in validStatuses) {
                     return@transaction Result.failure(Exception("Invalid status"))
+                }
+                if (it == "COMPLETED") {
+                    val blocking = reconciliationBlockingCounts(eventId)
+                    if (blocking.first > 0 || blocking.second > 0) {
+                        return@transaction Result.failure(Exception("Event cannot be completed while reconciliation has unresolved returns or purchases"))
+                    }
                 }
             }
 
@@ -398,8 +382,8 @@ class EventService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Event not found"))
 
-            if (existing[Events.status] !in listOf("PLANNING", "CANCELLED")) {
-                return@transaction Result.failure(Exception("Only PLANNING or CANCELLED events can be deleted"))
+            if (existing[Events.status] != "PLANNING") {
+                return@transaction Result.failure(Exception("Only PLANNING events can be deleted"))
             }
 
             EventPurchases.selectAll()
@@ -438,13 +422,14 @@ class EventService {
         request: AssignEventRoleRequest
     ): Result<EventRoleResponse> {
         return transaction {
-            Events.selectAll()
+            val event = Events.selectAll()
                 .where {
                     (Events.id eq eventId) and
                             (Events.tuntasId eq tuntasId)
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
 
             if (request.role !in validEventRoles) {
                 return@transaction Result.failure(Exception("Invalid event role"))
@@ -514,13 +499,14 @@ class EventService {
         tuntasId: UUID
     ): Result<Unit> {
         return transaction {
-            Events.selectAll()
+            val event = Events.selectAll()
                 .where {
                     (Events.id eq eventId) and
                             (Events.tuntasId eq tuntasId)
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
 
             EventRoles.selectAll()
                 .where {
@@ -539,7 +525,7 @@ class EventService {
         }
     }
 
-    private val validAgeGroups = listOf("VILKAI", "SKAUTAI", "PATYRE_SKAUTAI", "MIXED")
+    private val validAgeGroups = listOf("VILKAI", "SKAUTAI", "PATYRE_SKAUTAI", "VYR_SKAUTAI", "VYR_SKAUTES", "MIXED")
     private val validRecipientTypes = listOf("DIRECT", "GURU_PROXY")
 
     private fun verifyStovyklaEvent(eventId: UUID, tuntasId: UUID): ResultRow? {
@@ -558,6 +544,31 @@ class EventService {
                     (Pastovykles.responsibleUserId eq userId)
             }
             .firstOrNull() != null && verifyStovyklaEvent(eventId, tuntasId) != null
+    }
+
+    fun hasResponsiblePastovykle(userId: UUID, tuntasId: UUID): Boolean = transaction {
+        Pastovykles
+            .innerJoin(Events, { eventId }, { id })
+            .selectAll()
+            .where {
+                (Pastovykles.responsibleUserId eq userId) and
+                    (Events.tuntasId eq tuntasId) and
+                    (Events.type eq "STOVYKLA")
+            }
+            .firstOrNull() != null
+    }
+
+    fun hasResponsiblePastovykleForEvent(userId: UUID, tuntasId: UUID, targetEventId: UUID): Boolean = transaction {
+        Pastovykles
+            .innerJoin(Events, { eventId }, { id })
+            .selectAll()
+            .where {
+                (Pastovykles.responsibleUserId eq userId) and
+                    (Pastovykles.eventId eq targetEventId) and
+                    (Events.tuntasId eq tuntasId) and
+                    (Events.type eq "STOVYKLA")
+            }
+            .firstOrNull() != null
     }
 
     private fun ensurePastovykle(eventId: UUID, pastovykleId: UUID): ResultRow? {
@@ -646,6 +657,22 @@ class EventService {
         }
     }
 
+    fun getResponsiblePastovykles(eventId: UUID, tuntasId: UUID, userId: UUID): Result<PastovykleListResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            val list = Pastovykles.selectAll()
+                .where {
+                    (Pastovykles.eventId eq eventId) and
+                        (Pastovykles.responsibleUserId eq userId)
+                }
+                .map { toPastovykleResponse(it) }
+
+            Result.success(PastovykleListResponse(pastovykles = list, total = list.size))
+        }
+    }
+
     fun getPastovykle(eventId: UUID, pastovykleId: UUID, tuntasId: UUID): Result<PastovykleResponse> {
         return transaction {
             verifyStovyklaEvent(eventId, tuntasId)
@@ -666,8 +693,9 @@ class EventService {
         request: CreatePastovykleRequest
     ): Result<PastovykleResponse> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
 
             if (request.name.isBlank()) {
                 return@transaction Result.failure(Exception("Name cannot be blank"))
@@ -680,6 +708,11 @@ class EventService {
             val responsibleUUID = request.responsibleUserId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid responsible user ID"))
+                }
+            }
+            responsibleUUID?.let {
+                if (!isActiveTuntasMember(it, tuntasId)) {
+                    return@transaction Result.failure(Exception("Responsible user must be a member of this tuntas"))
                 }
             }
 
@@ -703,8 +736,9 @@ class EventService {
         request: UpdatePastovykleRequest
     ): Result<PastovykleResponse> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
 
             Pastovykles.selectAll()
                 .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
@@ -718,6 +752,11 @@ class EventService {
             val responsibleUUID = request.responsibleUserId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid responsible user ID"))
+                }
+            }
+            responsibleUUID?.let {
+                if (!isActiveTuntasMember(it, tuntasId)) {
+                    return@transaction Result.failure(Exception("Responsible user must be a member of this tuntas"))
                 }
             }
 
@@ -735,8 +774,9 @@ class EventService {
 
     fun deletePastovykle(eventId: UUID, pastovykleId: UUID, tuntasId: UUID): Result<Unit> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
 
             Pastovykles.selectAll()
                 .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
@@ -786,8 +826,9 @@ class EventService {
         request: AssignPastovykleInventoryRequest
     ): Result<PastovykleInventoryResponse> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
 
             Pastovykles.selectAll()
                 .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
@@ -842,8 +883,9 @@ class EventService {
         request: UpdatePastovykleInventoryRequest
     ): Result<PastovykleInventoryResponse> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
 
             Pastovykles.selectAll()
                 .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
@@ -890,8 +932,9 @@ class EventService {
         tuntasId: UUID
     ): Result<Unit> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
 
             Pastovykles.selectAll()
                 .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
@@ -943,8 +986,9 @@ class EventService {
         request: CreatePastovykleInventoryRequestRequest
     ): Result<EventInventoryRequestResponse> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             ensurePastovykle(eventId, pastovykleId)
                 ?: return@transaction Result.failure(Exception("Pastovykle not found"))
             if (request.quantity < 1) {
@@ -991,8 +1035,9 @@ class EventService {
         reviewedByUserId: UUID
     ): Result<EventInventoryRequestResponse> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val existing = EventInventoryRequests.selectAll()
                 .where {
                     (EventInventoryRequests.id eq requestId) and
@@ -1029,8 +1074,9 @@ class EventService {
         reviewedByUserId: UUID
     ): Result<EventInventoryRequestResponse> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val existing = EventInventoryRequests.selectAll()
                 .where {
                     (EventInventoryRequests.id eq requestId) and
@@ -1070,8 +1116,9 @@ class EventService {
         request: MarkPastovykleInventoryRequestSelfProvidedRequest
     ): Result<EventInventoryRequestResponse> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val existing = EventInventoryRequests.selectAll()
                 .where {
                     (EventInventoryRequests.id eq requestId) and
@@ -1110,8 +1157,9 @@ class EventService {
         request: FulfillPastovykleInventoryRequestRequest
     ): Result<EventInventoryRequestResponse> {
         return transaction {
-            verifyStovyklaEvent(eventId, tuntasId)
+            val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val existing = EventInventoryRequests.selectAll()
                 .where {
                     (EventInventoryRequests.id eq requestId) and
@@ -1210,6 +1258,7 @@ class EventService {
         return transaction {
             val event = verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val pastovykle = ensurePastovykle(eventId, pastovykleId)
                 ?: return@transaction Result.failure(Exception("Pastovykle not found"))
             if (request.quantity < 1) {
@@ -1274,28 +1323,21 @@ class EventService {
 
             val now = kotlinx.datetime.Clock.System.now()
             val eventInventoryItemId = if (matchingEventItem == null) {
-                val reservation = ReservationService().createReservation(
-                    tuntasId = tuntasId,
+                val reservationGroupId = getOrCreateEventReservationGroup(event, userId)
+                syncEventReservationItem(
+                    groupId = reservationGroupId,
+                    event = event,
+                    itemId = sourceItemId,
                     reservedByUserId = userId,
-                    request = CreateReservationRequest(
-                        title = event[Events.name],
-                        itemId = sourceItemId.toString(),
-                        quantity = reservableQuantity,
-                        startDate = event[Events.startDate].toString(),
-                        endDate = event[Events.endDate].toString(),
-                        eventId = eventId.toString(),
-                        notes = request.notes
-                    ),
-                    canApproveTopLevel = true
-                ).getOrElse { error ->
-                    return@transaction Result.failure(Exception(error.message ?: "Failed to reserve inventory"))
-                }
+                    quantity = reservableQuantity,
+                    notes = request.notes
+                )?.let { error -> return@transaction Result.failure(error) }
 
                 EventInventoryItems.insert {
                     it[this.eventId] = eventId
                     it[itemId] = sourceItemId
                     it[bucketId] = bucket[EventInventoryBuckets.id]
-                    it[reservationGroupId] = UUID.fromString(reservation.id)
+                    it[this.reservationGroupId] = reservationGroupId
                     it[name] = sourceItem[Items.name]
                     it[plannedQuantity] = request.quantity
                     it[availableQuantity] = reservableQuantity
@@ -1400,7 +1442,8 @@ class EventService {
         request: CreateEventInventoryBucketRequest
     ): Result<EventInventoryBucketResponse> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             if (request.name.isBlank()) return@transaction Result.failure(Exception("Name cannot be blank"))
             if (request.type !in validBucketTypes) return@transaction Result.failure(Exception("Invalid bucket type"))
 
@@ -1450,7 +1493,8 @@ class EventService {
         request: UpdateEventInventoryBucketRequest
     ): Result<EventInventoryBucketResponse> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             EventInventoryBuckets.selectAll()
                 .where { (EventInventoryBuckets.id eq bucketId) and (EventInventoryBuckets.eventId eq eventId) }
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Bucket not found"))
@@ -1495,7 +1539,8 @@ class EventService {
 
     fun deleteInventoryBucket(eventId: UUID, bucketId: UUID, tuntasId: UUID): Result<Unit> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             EventInventoryBuckets.selectAll()
                 .where { (EventInventoryBuckets.id eq bucketId) and (EventInventoryBuckets.eventId eq eventId) }
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Bucket not found"))
@@ -1516,6 +1561,7 @@ class EventService {
     ): Result<EventInventoryItemResponse> {
         return transaction {
             val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             if (request.plannedQuantity < 1) return@transaction Result.failure(Exception("Planned quantity must be at least 1"))
 
             val itemUUID = request.itemId?.let {
@@ -1559,23 +1605,10 @@ class EventService {
             } ?: 0
 
             val reservationGroupId = itemUUID?.takeIf { reservableQuantity > 0 }?.let {
-                val reservation = ReservationService().createReservation(
-                    tuntasId = tuntasId,
-                    reservedByUserId = createdByUserId,
-                    request = CreateReservationRequest(
-                        title = event[Events.name],
-                        itemId = it.toString(),
-                        quantity = reservableQuantity,
-                        startDate = event[Events.startDate].toString(),
-                        endDate = event[Events.endDate].toString(),
-                        eventId = eventId.toString(),
-                        notes = request.notes
-                    ),
-                    canApproveTopLevel = true
-                ).getOrElse { error ->
-                    return@transaction Result.failure(Exception(error.message ?: "Failed to reserve inventory"))
-                }
-                UUID.fromString(reservation.id)
+                val groupId = getOrCreateEventReservationGroup(event, createdByUserId)
+                syncEventReservationItem(groupId, event, it, createdByUserId, reservableQuantity, request.notes)
+                    ?.let { error -> return@transaction Result.failure(error) }
+                groupId
             }
             val available = if (itemUUID != null) reservableQuantity else 0
             val itemName = request.name.ifBlank { item?.get(Items.name).orEmpty() }
@@ -1606,7 +1639,8 @@ class EventService {
         request: CreateEventInventoryItemsBulkRequest
     ): Result<EventInventoryItemListResponse> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             if (request.items.isEmpty()) {
                 return@transaction Result.failure(Exception("At least one inventory item is required"))
             }
@@ -1631,6 +1665,7 @@ class EventService {
     ): Result<EventInventoryItemResponse> {
         return transaction {
             val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val existing = EventInventoryItems.selectAll()
                 .where { (EventInventoryItems.id eq inventoryItemId) and (EventInventoryItems.eventId eq eventId) }
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Inventory item not found"))
@@ -1669,7 +1704,16 @@ class EventService {
                     reservationGroupId
                 ).coerceAtMost(nextPlanned).coerceAtLeast(0)
 
-                reservationGroupId?.let { syncReservationGroupQuantity(it, reservable) }
+                reservationGroupId?.let { groupId ->
+                    syncEventReservationItem(
+                        groupId = groupId,
+                        event = event,
+                        itemId = itemId,
+                        reservedByUserId = existing[EventInventoryItems.createdByUserId],
+                        quantity = reservable,
+                        notes = request.notes ?: existing[EventInventoryItems.notes]
+                    )?.let { error -> return@transaction Result.failure(error) }
+                }
                 reservable
             } else {
                 existing[EventInventoryItems.availableQuantity]
@@ -1693,11 +1737,15 @@ class EventService {
 
     fun deleteInventoryItem(eventId: UUID, inventoryItemId: UUID, tuntasId: UUID): Result<Unit> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val existing = EventInventoryItems.selectAll()
                 .where { (EventInventoryItems.id eq inventoryItemId) and (EventInventoryItems.eventId eq eventId) }
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Inventory item not found"))
-            existing[EventInventoryItems.reservationGroupId]?.let { cancelReservationGroup(it) }
+            existing[EventInventoryItems.reservationGroupId]?.let { groupId ->
+                existing[EventInventoryItems.itemId]?.let { itemId -> cancelEventReservationItem(groupId, itemId) }
+                    ?: cancelReservationGroup(groupId)
+            }
             EventInventoryAllocations.deleteWhere { EventInventoryAllocations.eventInventoryItemId eq inventoryItemId }
             EventInventoryItems.deleteWhere { (EventInventoryItems.id eq inventoryItemId) and (EventInventoryItems.eventId eq eventId) }
             Result.success(Unit)
@@ -1710,7 +1758,8 @@ class EventService {
         request: CreateEventInventoryAllocationRequest
     ): Result<EventInventoryAllocationResponse> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             if (request.quantity < 1) return@transaction Result.failure(Exception("Quantity must be at least 1"))
             val itemUUID = try { UUID.fromString(request.eventInventoryItemId) } catch (e: Exception) {
                 return@transaction Result.failure(Exception("Invalid event inventory item ID"))
@@ -1743,7 +1792,8 @@ class EventService {
         request: UpdateEventInventoryAllocationRequest
     ): Result<EventInventoryAllocationResponse> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val existing = EventInventoryAllocations
                 .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
                 .selectAll()
@@ -1764,7 +1814,8 @@ class EventService {
 
     fun deleteInventoryAllocation(eventId: UUID, allocationId: UUID, tuntasId: UUID): Result<Unit> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             EventInventoryAllocations
                 .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
                 .selectAll()
@@ -1797,6 +1848,232 @@ class EventService {
                 .orderBy(EventInventoryMovements.createdAt, SortOrder.DESC)
                 .map { toMovementResponse(it) }
             Result.success(EventInventoryMovementListResponse(movements = movements, total = movements.size))
+        }
+    }
+
+    fun getReconciliation(eventId: UUID, tuntasId: UUID): Result<EventReconciliationResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            Result.success(toReconciliationResponse(event))
+        }
+    }
+
+    fun reconcileReturns(
+        eventId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        request: ReconcileEventReturnsRequest
+    ): Result<EventReconciliationResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            if (event[Events.status] != "WRAP_UP") {
+                return@transaction Result.failure(Exception("Returns can be reconciled only during wrap-up"))
+            }
+
+            request.returns.forEach { line ->
+                val decision = line.decision.uppercase()
+                if (decision !in listOf("RETURNED", "DAMAGED", "MISSING", "CONSUMED")) {
+                    return@transaction Result.failure(Exception("Invalid return decision"))
+                }
+                if (line.quantity < 1) {
+                    return@transaction Result.failure(Exception("Quantity must be at least 1"))
+                }
+                val custodyId = try { UUID.fromString(line.custodyId) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid custody ID"))
+                }
+                val custody = EventInventoryCustody
+                    .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
+                    .selectAll()
+                    .where {
+                        (EventInventoryCustody.id eq custodyId) and
+                            (EventInventoryItems.eventId eq eventId)
+                    }
+                    .forUpdate()
+                    .firstOrNull() ?: return@transaction Result.failure(Exception("Custody record not found"))
+
+                val remaining = openQuantity(custody)
+                if (line.quantity > remaining) {
+                    return@transaction Result.failure(Exception("Return decision quantity exceeds remaining quantity"))
+                }
+
+                val now = kotlinx.datetime.Clock.System.now()
+                val nextReturned = custody[EventInventoryCustody.returnedQuantity] + line.quantity
+                EventInventoryCustody.update({ EventInventoryCustody.id eq custodyId }) {
+                    it[returnedQuantity] = nextReturned
+                    if (nextReturned == custody[EventInventoryCustody.quantity]) {
+                        it[status] = if (decision == "RETURNED") "RETURNED" else "CLOSED"
+                        it[closedAt] = now
+                    }
+                    it[notes] = listOfNotNull(custody[EventInventoryCustody.notes], "${decision}: ${line.notes.orEmpty()}".trim())
+                        .filter { note -> note.isNotBlank() }
+                        .joinToString(" | ")
+                }
+
+                val sourceItemId = custody[EventInventoryItems.itemId]
+                if (sourceItemId != null && decision in listOf("MISSING", "CONSUMED")) {
+                    val item = Items.selectAll()
+                        .where { (Items.id eq sourceItemId) and (Items.tuntasId eq tuntasId) }
+                        .forUpdate()
+                        .firstOrNull()
+                    if (item != null) {
+                        Items.update({ Items.id eq sourceItemId }) {
+                            it[quantity] = (item[Items.quantity] - line.quantity).coerceAtLeast(0)
+                            it[updatedAt] = now
+                        }
+                    }
+                }
+                if (sourceItemId != null && decision == "DAMAGED") {
+                    Items.update({ (Items.id eq sourceItemId) and (Items.tuntasId eq tuntasId) }) {
+                        it[condition] = "DAMAGED"
+                        it[updatedAt] = now
+                    }
+                }
+
+                insertInventoryMovement(
+                    eventId = eventId,
+                    eventInventoryItemId = custody[EventInventoryCustody.eventInventoryItemId],
+                    custodyId = custodyId,
+                    inventoryRequestId = null,
+                    movementType = "RECONCILE_$decision",
+                    quantity = line.quantity,
+                    fromPastovykleId = custody[EventInventoryCustody.pastovykleId],
+                    toPastovykleId = null,
+                    fromUserId = custody[EventInventoryCustody.holderUserId],
+                    toUserId = null,
+                    performedByUserId = userId,
+                    clientRequestId = null,
+                    notes = line.notes,
+                    createdAt = now
+                )
+            }
+
+            Result.success(toReconciliationResponse(event))
+        }
+    }
+
+    fun reconcilePurchases(
+        eventId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        request: ReconcileEventPurchasesRequest
+    ): Result<EventReconciliationResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            if (event[Events.status] != "WRAP_UP") {
+                return@transaction Result.failure(Exception("Purchases can be reconciled only during wrap-up"))
+            }
+
+            request.purchases.forEach { line ->
+                val decision = line.decision.uppercase()
+                if (decision !in listOf("ADD_NEW_ITEM", "INCREASE_EXISTING_ITEM", "CONSUMED", "IGNORE")) {
+                    return@transaction Result.failure(Exception("Invalid purchase decision"))
+                }
+                if (line.quantity < 1) {
+                    return@transaction Result.failure(Exception("Quantity must be at least 1"))
+                }
+                val purchaseItemId = try { UUID.fromString(line.purchaseItemId) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid purchase item ID"))
+                }
+                val row = EventPurchaseItems
+                    .innerJoin(EventPurchases, { purchaseId }, { id })
+                    .innerJoin(EventInventoryItems, { EventPurchaseItems.eventInventoryItemId }, { EventInventoryItems.id })
+                    .selectAll()
+                    .where {
+                        (EventPurchaseItems.id eq purchaseItemId) and
+                            (EventPurchases.eventId eq eventId)
+                    }
+                    .forUpdate()
+                    .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase item not found"))
+                if (row[EventPurchaseItems.addedToInventory]) {
+                    return@transaction Result.failure(Exception("Purchase item already reconciled"))
+                }
+                if (line.quantity > row[EventPurchaseItems.purchasedQuantity]) {
+                    return@transaction Result.failure(Exception("Purchase decision quantity exceeds purchased quantity"))
+                }
+
+                val now = kotlinx.datetime.Clock.System.now()
+                val addedItemId = when (decision) {
+                    "ADD_NEW_ITEM" -> {
+                        Items.insert {
+                            it[Items.tuntasId] = tuntasId
+                            it[custodianId] = null
+                            it[origin] = "UNIT_ACQUIRED"
+                            it[name] = line.name?.takeIf { value -> value.isNotBlank() } ?: row[EventInventoryItems.name]
+                            it[description] = row[EventInventoryItems.notes]
+                            it[type] = "COLLECTIVE"
+                            it[category] = "TOOLS"
+                            it[condition] = "GOOD"
+                            it[quantity] = line.quantity
+                            it[temporaryStorageLabel] = "Renginio suvedimas"
+                            it[responsibleUserId] = row[EventPurchases.purchasedByUserId]
+                            it[createdByUserId] = userId
+                            it[purchaseDate] = row[EventPurchases.purchaseDate]
+                            it[purchasePrice] = row[EventPurchaseItems.unitPrice]
+                            it[notes] = line.notes ?: "Sukurta renginio suvedimo metu"
+                            it[status] = "ACTIVE"
+                            it[createdAt] = now
+                            it[updatedAt] = now
+                        } get Items.id
+                    }
+                    "INCREASE_EXISTING_ITEM" -> {
+                        val existingItemId = try {
+                            UUID.fromString(line.existingItemId ?: return@transaction Result.failure(Exception("existingItemId is required")))
+                        } catch (e: Exception) {
+                            return@transaction Result.failure(Exception("Invalid existing item ID"))
+                        }
+                        val existing = Items.selectAll()
+                            .where { (Items.id eq existingItemId) and (Items.tuntasId eq tuntasId) and (Items.status eq "ACTIVE") }
+                            .forUpdate()
+                            .firstOrNull() ?: return@transaction Result.failure(Exception("Existing item not found"))
+                        Items.update({ Items.id eq existingItemId }) {
+                            it[quantity] = existing[Items.quantity] + line.quantity
+                            it[updatedAt] = now
+                            line.notes?.let { note -> it[notes] = note }
+                        }
+                        existingItemId
+                    }
+                    else -> null
+                }
+
+                addedItemId?.let { itemId ->
+                    row[EventPurchases.invoiceFileUrl]?.let { invoice ->
+                        ItemAttachments.insert {
+                            it[this.itemId] = itemId
+                            it[fileUrl] = invoice
+                            it[fileType] = "INVOICE"
+                            it[uploadedByUserId] = userId
+                            it[uploadedAt] = now
+                        }
+                    }
+                }
+
+                EventPurchaseItems.update({ EventPurchaseItems.id eq purchaseItemId }) {
+                    it[addedToInventory] = true
+                    it[addedToInventoryItemId] = addedItemId
+                    it[notes] = listOfNotNull(row[EventPurchaseItems.notes], "${decision}: ${line.notes.orEmpty()}".trim())
+                        .filter { note -> note.isNotBlank() }
+                        .joinToString(" | ")
+                }
+            }
+
+            Result.success(toReconciliationResponse(event))
+        }
+    }
+
+    fun completeEvent(eventId: UUID, tuntasId: UUID): Result<EventResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            if (event[Events.status] != "WRAP_UP") {
+                return@transaction Result.failure(Exception("Event can be completed only during wrap-up"))
+            }
+            val blocking = reconciliationBlockingCounts(eventId)
+            if (blocking.first > 0 || blocking.second > 0) {
+                return@transaction Result.failure(Exception("Event cannot be completed while reconciliation has unresolved returns or purchases"))
+            }
+            Events.update({ (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }) {
+                it[status] = "COMPLETED"
+            }
+            Result.success(toEventResponse(Events.selectAll().where { Events.id eq eventId }.first()))
         }
     }
 
@@ -2114,7 +2391,8 @@ class EventService {
         request: CreateEventPurchaseRequest
     ): Result<EventPurchaseResponse> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             if (request.items.isEmpty()) return@transaction Result.failure(Exception("Purchase must include at least one item"))
 
             val purchaseDate = request.purchaseDate?.let {
@@ -2122,18 +2400,15 @@ class EventService {
                     return@transaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
                 }
             }
-            val now = kotlinx.datetime.Clock.System.now()
-            val purchaseId = EventPurchases.insert {
-                it[this.eventId] = eventId
-                it[this.purchasedByUserId] = purchasedByUserId
-                it[status] = "DRAFT"
-                it[this.purchaseDate] = purchaseDate
-                it[notes] = request.notes
-                it[createdAt] = now
-                it[updatedAt] = now
-            } get EventPurchases.id
 
-            request.items.forEach { line ->
+            data class ValidatedPurchaseLine(
+                val eventInventoryItemId: UUID,
+                val purchasedQuantity: Int,
+                val unitPrice: BigDecimal?,
+                val notes: String?
+            )
+
+            val validatedItems = request.items.map { line ->
                 if (line.purchasedQuantity < 1) {
                     return@transaction Result.failure(Exception("Purchased quantity must be at least 1"))
                 }
@@ -2148,12 +2423,43 @@ class EventService {
                 if (shortage == 0) {
                     return@transaction Result.failure(Exception("Inventory item has no shortage to purchase"))
                 }
+                val alreadyInActivePurchase = EventPurchaseItems
+                    .innerJoin(EventPurchases, { EventPurchaseItems.purchaseId }, { EventPurchases.id })
+                    .selectAll()
+                    .where {
+                        (EventPurchaseItems.eventInventoryItemId eq inventoryItemId) and
+                            (EventPurchases.eventId eq eventId) and
+                            (EventPurchases.status inList listOf("DRAFT", "PURCHASED"))
+                    }
+                    .any()
+                if (alreadyInActivePurchase) {
+                    return@transaction Result.failure(Exception("Daiktas jau itrauktas i aktyvu pirkima. Uzbaikite arba atsaukite esama pirkima pries kurdami nauja."))
+                }
+                ValidatedPurchaseLine(
+                    eventInventoryItemId = inventoryItemId,
+                    purchasedQuantity = line.purchasedQuantity,
+                    unitPrice = line.unitPrice?.toBigDecimal(),
+                    notes = line.notes
+                )
+            }
 
+            val now = kotlinx.datetime.Clock.System.now()
+            val purchaseId = EventPurchases.insert {
+                it[this.eventId] = eventId
+                it[this.purchasedByUserId] = purchasedByUserId
+                it[status] = "DRAFT"
+                it[this.purchaseDate] = purchaseDate
+                it[notes] = request.notes
+                it[createdAt] = now
+                it[updatedAt] = now
+            } get EventPurchases.id
+
+            validatedItems.forEach { line ->
                 EventPurchaseItems.insert {
                     it[this.purchaseId] = purchaseId
-                    it[eventInventoryItemId] = inventoryItemId
+                    it[eventInventoryItemId] = line.eventInventoryItemId
                     it[purchasedQuantity] = line.purchasedQuantity
-                    it[unitPrice] = line.unitPrice?.toBigDecimal()
+                    it[unitPrice] = line.unitPrice
                     it[notes] = line.notes
                     it[addedToInventory] = false
                 }
@@ -2170,13 +2476,24 @@ class EventService {
         request: UpdateEventPurchaseRequest
     ): Result<EventPurchaseResponse> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
-            EventPurchases.selectAll()
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            val existing = EventPurchases.selectAll()
                 .where { (EventPurchases.id eq purchaseId) and (EventPurchases.eventId eq eventId) }
+                .forUpdate()
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase not found"))
 
             request.status?.let {
                 if (it !in validPurchaseStatuses) return@transaction Result.failure(Exception("Invalid purchase status"))
+                if (it == "PURCHASED") {
+                    return@transaction Result.failure(Exception("Use purchase completion endpoint to mark purchase as purchased"))
+                }
+                if (existing[EventPurchases.status] == "PURCHASED" && it == "CANCELLED") {
+                    return@transaction Result.failure(Exception("Completed purchase cannot be cancelled"))
+                }
+                if (existing[EventPurchases.status] == "CANCELLED" && it != "CANCELLED") {
+                    return@transaction Result.failure(Exception("Cancelled purchase cannot be reopened"))
+                }
             }
             val purchaseDate = request.purchaseDate?.let {
                 try { kotlinx.datetime.LocalDate.parse(it) } catch (e: Exception) {
@@ -2202,7 +2519,8 @@ class EventService {
         request: AttachEventPurchaseInvoiceRequest
     ): Result<EventPurchaseResponse> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val existing = EventPurchases.selectAll()
                 .where { (EventPurchases.id eq purchaseId) and (EventPurchases.eventId eq eventId) }
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase not found"))
@@ -2241,12 +2559,17 @@ class EventService {
 
     fun completePurchase(eventId: UUID, purchaseId: UUID, tuntasId: UUID): Result<EventPurchaseResponse> {
         return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
             val purchase = EventPurchases.selectAll()
                 .where { (EventPurchases.id eq purchaseId) and (EventPurchases.eventId eq eventId) }
+                .forUpdate()
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase not found"))
             if (purchase[EventPurchases.status] == "CANCELLED") {
                 return@transaction Result.failure(Exception("Cancelled purchase cannot be completed"))
+            }
+            if (purchase[EventPurchases.status] == "PURCHASED") {
+                return@transaction Result.success(toPurchaseResponse(purchase))
             }
 
             EventPurchaseItems
@@ -2285,76 +2608,7 @@ class EventService {
         tuntasId: UUID,
         userId: UUID
     ): Result<EventPurchaseResponse> {
-        return transaction {
-            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
-            val purchase = EventPurchases.selectAll()
-                .where { (EventPurchases.id eq purchaseId) and (EventPurchases.eventId eq eventId) }
-                .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase not found"))
-            if (purchase[EventPurchases.status] !in listOf("PURCHASED", "ADDED_TO_INVENTORY")) {
-                return@transaction Result.failure(Exception("Purchase must be completed before adding to inventory"))
-            }
-
-            val purchaseLines = EventPurchaseItems
-                .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
-                .selectAll()
-                .where { EventPurchaseItems.purchaseId eq purchaseId }
-                .toList()
-
-            purchaseLines.filter { !it[EventPurchaseItems.addedToInventory] }.forEach { line ->
-                val sourceItem = line[EventInventoryItems.itemId]?.let { sourceId ->
-                    Items.selectAll().where { (Items.id eq sourceId) and (Items.tuntasId eq tuntasId) }.firstOrNull()
-                }
-                val unitPrice = line[EventPurchaseItems.unitPrice]
-                val itemId = Items.insert {
-                    it[this.tuntasId] = tuntasId
-                    it[custodianId] = sourceItem?.get(Items.custodianId)
-                    it[origin] = "UNIT_ACQUIRED"
-                    it[name] = line[EventInventoryItems.name]
-                    it[description] = line[EventInventoryItems.notes]
-                    it[type] = sourceItem?.get(Items.type) ?: "COLLECTIVE"
-                    it[category] = sourceItem?.get(Items.category) ?: "TOOLS"
-                    it[condition] = "GOOD"
-                    it[quantity] = line[EventPurchaseItems.purchasedQuantity]
-                    it[locationId] = sourceItem?.get(Items.locationId)
-                    it[temporaryStorageLabel] = "Renginio pirkimas"
-                    it[responsibleUserId] = purchase[EventPurchases.purchasedByUserId]
-                    it[createdByUserId] = userId
-                    it[purchaseDate] = purchase[EventPurchases.purchaseDate]
-                    it[purchasePrice] = unitPrice
-                    it[notes] = buildString {
-                        append("Sukurta is renginio pirkimo.")
-                        purchase[EventPurchases.invoiceFileUrl]?.let { invoice -> append(" Saskaita: $invoice") }
-                        line[EventPurchaseItems.notes]?.let { note -> append(" $note") }
-                    }
-                    it[status] = "ACTIVE"
-                } get Items.id
-
-                purchase[EventPurchases.invoiceFileUrl]?.let { invoice ->
-                    ItemAttachments.insert {
-                        it[this.itemId] = itemId
-                        it[fileUrl] = invoice
-                        it[fileType] = "INVOICE"
-                        it[uploadedByUserId] = userId
-                        it[uploadedAt] = kotlinx.datetime.Clock.System.now()
-                    }
-                }
-
-                EventPurchaseItems.update({ EventPurchaseItems.id eq line[EventPurchaseItems.id] }) {
-                    it[addedToInventory] = true
-                    it[addedToInventoryItemId] = itemId
-                }
-                if (line[EventInventoryItems.itemId] == null) {
-                    EventInventoryItems.update({ EventInventoryItems.id eq line[EventInventoryItems.id] }) {
-                        it[EventInventoryItems.itemId] = itemId
-                    }
-                }
-            }
-
-            EventPurchases.update({ EventPurchases.id eq purchaseId }) {
-                it[status] = "ADDED_TO_INVENTORY"
-            }
-            Result.success(toPurchaseResponse(EventPurchases.selectAll().where { EventPurchases.id eq purchaseId }.first()))
-        }
+        return Result.failure(Exception("Purchase inventory addition moved to event reconciliation"))
     }
 
     private fun validateEventLocation(locationId: UUID?, tuntasId: UUID): Exception? {
@@ -2371,6 +2625,141 @@ class EventService {
             .where { (OrganizationalUnits.id eq orgUnitId) and (OrganizationalUnits.tuntasId eq tuntasId) }
             .firstOrNull() != null
         return if (existsInTuntas) null else Exception("Organizational unit not found in this tuntas")
+    }
+
+    private data class EventAccess(
+        val isActiveMember: Boolean,
+        val isGlobalEventAdmin: Boolean,
+        val rankNames: Set<String>,
+        val assignedUnitIds: Set<UUID>,
+        val ledUnitIds: Set<UUID>,
+        val eventRoleEventIds: Set<UUID>,
+        val responsiblePastovykleEventIds: Set<UUID>
+    )
+
+    private fun resolveEventAccess(userId: UUID, tuntasId: UUID): EventAccess {
+        val rankNames = userRankNames(userId, tuntasId)
+        val ledUnitIds = activeLeadershipRows(userId, tuntasId)
+            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
+            .toSet()
+        val assignedUnitIds = UnitAssignments.selectAll()
+            .where {
+                (UnitAssignments.userId eq userId) and
+                    (UnitAssignments.tuntasId eq tuntasId) and
+                    (UnitAssignments.leftAt.isNull())
+            }
+            .map { it[UnitAssignments.organizationalUnitId] }
+            .toSet()
+        val eventRoleEventIds = EventRoles
+            .innerJoin(Events, { eventId }, { id })
+            .select(EventRoles.eventId)
+            .where {
+                (EventRoles.userId eq userId) and
+                    (Events.tuntasId eq tuntasId)
+            }
+            .map { it[EventRoles.eventId] }
+            .toSet()
+        val responsiblePastovykleEventIds = Pastovykles
+            .innerJoin(Events, { eventId }, { id })
+            .select(Pastovykles.eventId)
+            .where {
+                (Pastovykles.responsibleUserId eq userId) and
+                    (Events.tuntasId eq tuntasId)
+            }
+            .map { it[Pastovykles.eventId] }
+            .toSet()
+
+        return EventAccess(
+            isActiveMember = isActiveTuntasMember(userId, tuntasId),
+            isGlobalEventAdmin = hasAnyLeadershipRole(userId, tuntasId, globalEventRoleNames),
+            rankNames = rankNames,
+            assignedUnitIds = assignedUnitIds,
+            ledUnitIds = ledUnitIds,
+            eventRoleEventIds = eventRoleEventIds,
+            responsiblePastovykleEventIds = responsiblePastovykleEventIds
+        )
+    }
+
+    private fun canViewEventRow(event: ResultRow, access: EventAccess): Boolean {
+        if (!access.isActiveMember) return false
+        if (access.isGlobalEventAdmin) return true
+        if (event[Events.id] in access.eventRoleEventIds) return true
+        if (event[Events.id] in access.responsiblePastovykleEventIds) return true
+
+        val targetOrgUnitId = event[Events.organizationalUnitId]
+        if (targetOrgUnitId == null) {
+            return vadovasRankName in access.rankNames
+        }
+
+        val targetUnit = OrganizationalUnits.selectAll()
+            .where { OrganizationalUnits.id eq targetOrgUnitId }
+            .firstOrNull() ?: return false
+        val targetType = targetUnit[OrganizationalUnits.type]
+
+        return when (targetType) {
+            "GILDIJA" -> vadovasRankName in access.rankNames ||
+                targetOrgUnitId in access.assignedUnitIds ||
+                targetOrgUnitId in access.ledUnitIds
+            in seniorScoutUnitTypes -> {
+                val belongsToTargetUnit = targetOrgUnitId in access.assignedUnitIds || targetOrgUnitId in access.ledUnitIds
+                belongsToTargetUnit && access.rankNames.any { it in seniorScoutRankNames }
+            }
+            else -> false
+        }
+    }
+
+    private fun userRankNames(userId: UUID, tuntasId: UUID): Set<String> {
+        return UserRanks
+            .innerJoin(Roles, { roleId }, { id })
+            .select(Roles.name)
+            .where {
+                (UserRanks.userId eq userId) and
+                    (UserRanks.tuntasId eq tuntasId) and
+                    (Roles.tuntasId eq tuntasId)
+            }
+            .map { it[Roles.name] }
+            .toSet()
+    }
+
+    private fun activeLeadershipRows(userId: UUID, tuntasId: UUID): List<ResultRow> {
+        return UserLeadershipRoles.selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull())
+            }
+            .toList()
+    }
+
+    private fun hasAnyLeadershipRole(userId: UUID, tuntasId: UUID, roleNames: Set<String>): Boolean {
+        return UserLeadershipRoles
+            .innerJoin(Roles, { roleId }, { id })
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull()) and
+                    (Roles.name inList roleNames.toList())
+            }
+            .firstOrNull() != null
+    }
+
+    private fun userLeadsUnit(userId: UUID, tuntasId: UUID, orgUnitId: UUID): Boolean {
+        return activeLeadershipRows(userId, tuntasId)
+            .any { it[UserLeadershipRoles.organizationalUnitId] == orgUnitId }
+    }
+
+    private fun userBelongsToUnit(userId: UUID, tuntasId: UUID, orgUnitId: UUID): Boolean {
+        return UnitAssignments.selectAll()
+            .where {
+                (UnitAssignments.userId eq userId) and
+                    (UnitAssignments.tuntasId eq tuntasId) and
+                    (UnitAssignments.organizationalUnitId eq orgUnitId) and
+                    (UnitAssignments.leftAt.isNull())
+            }
+            .firstOrNull() != null
     }
 
     private fun toEventResponse(row: ResultRow): EventResponse {
@@ -2418,6 +2807,14 @@ class EventService {
         return Events.selectAll()
             .where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }
             .firstOrNull()
+    }
+
+    private fun ensureEventIsNotReadOnly(event: ResultRow): Exception? {
+        return if (event[Events.status] in readOnlyEventStatuses) {
+            Exception("Completed or cancelled events are read-only")
+        } else {
+            null
+        }
     }
 
     private fun createDefaultBuckets(eventId: UUID) {
@@ -2770,6 +3167,99 @@ class EventService {
         )
     }
 
+    private fun toReconciliationResponse(event: ResultRow): EventReconciliationResponse {
+        val eventId = event[Events.id]
+        val custodyRows = EventInventoryCustody
+            .innerJoin(EventInventoryItems, { EventInventoryCustody.eventInventoryItemId }, { id })
+            .selectAll()
+            .where { EventInventoryItems.eventId eq eventId }
+            .toList()
+
+        val openReturns = custodyRows
+            .filter { it[EventInventoryCustody.status] == "OPEN" && openQuantity(it) > 0 }
+            .map { toReconciliationReturnLineResponse(it) }
+        val returnedToEventStorage = custodyRows
+            .filter {
+                it[EventInventoryCustody.status] != "OPEN" ||
+                    (it[EventInventoryCustody.pastovykleId] == null && it[EventInventoryCustody.holderUserId] == null)
+            }
+            .map { toReconciliationReturnLineResponse(it) }
+        val unresolvedPurchases = reconciliationPurchaseRows(eventId)
+            .map { toReconciliationPurchaseLineResponse(it) }
+
+        return EventReconciliationResponse(
+            eventId = eventId.toString(),
+            status = event[Events.status],
+            openReturns = openReturns,
+            returnedToEventStorage = returnedToEventStorage,
+            unresolvedPurchases = unresolvedPurchases,
+            canComplete = openReturns.isEmpty() && unresolvedPurchases.isEmpty()
+        )
+    }
+
+    private fun toReconciliationReturnLineResponse(row: ResultRow): EventReconciliationReturnLineResponse {
+        val pastovykle = row[EventInventoryCustody.pastovykleId]?.let { id ->
+            Pastovykles.selectAll().where { Pastovykles.id eq id }.firstOrNull()
+        }
+        val holder = row[EventInventoryCustody.holderUserId]?.let { userId ->
+            Users.selectAll().where { Users.id eq userId }.firstOrNull()
+        }
+        return EventReconciliationReturnLineResponse(
+            custodyId = row[EventInventoryCustody.id].toString(),
+            eventInventoryItemId = row[EventInventoryCustody.eventInventoryItemId].toString(),
+            itemId = row[EventInventoryItems.itemId]?.toString(),
+            itemName = row[EventInventoryItems.name],
+            pastovykleId = row[EventInventoryCustody.pastovykleId]?.toString(),
+            pastovykleName = pastovykle?.get(Pastovykles.name),
+            holderUserId = row[EventInventoryCustody.holderUserId]?.toString(),
+            holderUserName = holder?.let { "${it[Users.name]} ${it[Users.surname]}".trim() },
+            quantity = row[EventInventoryCustody.quantity],
+            returnedQuantity = row[EventInventoryCustody.returnedQuantity],
+            remainingQuantity = openQuantity(row),
+            status = row[EventInventoryCustody.status],
+            notes = row[EventInventoryCustody.notes]
+        )
+    }
+
+    private fun toReconciliationPurchaseLineResponse(row: ResultRow): EventReconciliationPurchaseLineResponse {
+        return EventReconciliationPurchaseLineResponse(
+            purchaseId = row[EventPurchaseItems.purchaseId].toString(),
+            purchaseItemId = row[EventPurchaseItems.id].toString(),
+            eventInventoryItemId = row[EventPurchaseItems.eventInventoryItemId].toString(),
+            itemId = row[EventInventoryItems.itemId]?.toString(),
+            itemName = row[EventInventoryItems.name],
+            purchasedQuantity = row[EventPurchaseItems.purchasedQuantity],
+            status = row[EventPurchases.status],
+            invoiceFileUrl = row[EventPurchases.invoiceFileUrl],
+            notes = row[EventPurchaseItems.notes]
+        )
+    }
+
+    private fun reconciliationPurchaseRows(eventId: UUID): List<ResultRow> {
+        return EventPurchaseItems
+            .innerJoin(EventPurchases, { purchaseId }, { id })
+            .innerJoin(EventInventoryItems, { EventPurchaseItems.eventInventoryItemId }, { EventInventoryItems.id })
+            .selectAll()
+            .where {
+                (EventPurchases.eventId eq eventId) and
+                    (EventPurchases.status eq "PURCHASED") and
+                    (EventPurchaseItems.addedToInventory eq false)
+            }
+            .toList()
+    }
+
+    private fun reconciliationBlockingCounts(eventId: UUID): Pair<Int, Int> {
+        val openReturnCount = EventInventoryCustody
+            .innerJoin(EventInventoryItems, { EventInventoryCustody.eventInventoryItemId }, { id })
+            .selectAll()
+            .where {
+                (EventInventoryItems.eventId eq eventId) and
+                    (EventInventoryCustody.status eq "OPEN")
+            }
+            .count { openQuantity(it) > 0 }
+        return openReturnCount to reconciliationPurchaseRows(eventId).size
+    }
+
     private fun recalculatePurchaseTotal(purchaseId: UUID) {
         val total = EventPurchaseItems.selectAll()
             .where { EventPurchaseItems.purchaseId eq purchaseId }
@@ -2827,6 +3317,116 @@ class EventService {
         }) {
             it[status] = "CANCELLED"
         }
+    }
+
+    private fun getOrCreateEventReservationGroup(event: ResultRow, reservedByUserId: UUID): UUID {
+        val eventId = event[Events.id]
+        val existing = EventInventoryItems.select(EventInventoryItems.reservationGroupId)
+            .where {
+                (EventInventoryItems.eventId eq eventId) and
+                    (EventInventoryItems.reservationGroupId.isNotNull())
+            }
+            .firstOrNull()
+            ?.get(EventInventoryItems.reservationGroupId)
+        if (existing != null) return existing
+
+        return Reservations.select(Reservations.groupId)
+            .where {
+                (Reservations.eventId eq eventId) and
+                    (Reservations.tuntasId eq event[Events.tuntasId]) and
+                    (Reservations.status neq "CANCELLED")
+            }
+            .orderBy(Reservations.createdAt, SortOrder.ASC)
+            .firstOrNull()
+            ?.get(Reservations.groupId)
+            ?: UUID.randomUUID()
+    }
+
+    private fun syncEventReservationItem(
+        groupId: UUID,
+        event: ResultRow,
+        itemId: UUID,
+        reservedByUserId: UUID?,
+        quantity: Int,
+        notes: String?
+    ): Exception? {
+        if (quantity <= 0) {
+            cancelEventReservationItem(groupId, itemId)
+            return null
+        }
+
+        val item = Items.selectAll()
+            .where { (Items.id eq itemId) and (Items.tuntasId eq event[Events.tuntasId]) and (Items.status eq "ACTIVE") }
+            .firstOrNull() ?: return Exception("Item not found or not active")
+        val available = availableQuantityForEventItem(itemId, event[Events.startDate], event[Events.endDate], groupId)
+        if (quantity > available) {
+            return Exception("Insufficient available quantity for ${item[Items.name]}. Available: $available, requested: $quantity")
+        }
+
+        val now = kotlinx.datetime.Clock.System.now()
+        val existing = Reservations.selectAll()
+            .where { (Reservations.groupId eq groupId) and (Reservations.itemId eq itemId) }
+            .firstOrNull()
+        if (existing != null) {
+            Reservations.update({ Reservations.id eq existing[Reservations.id] }) {
+                it[Reservations.quantity] = quantity
+                it[title] = event[Events.name]
+                it[startDate] = event[Events.startDate]
+                it[endDate] = event[Events.endDate]
+                it[status] = "APPROVED"
+                it[unitReviewStatus] = if (item[Items.custodianId] == null) "NOT_REQUIRED" else "APPROVED"
+                it[topLevelReviewStatus] = "APPROVED"
+                it[updatedAt] = now
+                it[Reservations.notes] = notes
+            }
+            return null
+        }
+
+        val actorId = reservedByUserId ?: event[Events.createdByUserId] ?: item[Items.createdByUserId]
+            ?: return Exception("Cannot create event reservation without a responsible user")
+        Reservations.insert {
+            it[this.groupId] = groupId
+            it[title] = event[Events.name]
+            it[this.itemId] = itemId
+            it[tuntasId] = event[Events.tuntasId]
+            it[this.reservedByUserId] = actorId
+            it[requestingUnitId] = item[Items.custodianId]
+            it[eventId] = event[Events.id]
+            it[this.quantity] = quantity
+            it[startDate] = event[Events.startDate]
+            it[endDate] = event[Events.endDate]
+            it[unitReviewStatus] = if (item[Items.custodianId] == null) "NOT_REQUIRED" else "APPROVED"
+            if (item[Items.custodianId] != null) {
+                it[unitReviewedByUserId] = actorId
+                it[unitReviewedAt] = now
+            }
+            it[topLevelReviewStatus] = "APPROVED"
+            it[topLevelReviewedByUserId] = actorId
+            it[topLevelReviewedAt] = now
+            it[status] = "APPROVED"
+            it[this.notes] = notes
+            it[createdAt] = now
+            it[updatedAt] = now
+        }
+        return null
+    }
+
+    private fun cancelEventReservationItem(groupId: UUID, itemId: UUID) {
+        Reservations.update({
+            (Reservations.groupId eq groupId) and
+                (Reservations.itemId eq itemId) and
+                (Reservations.status inList listOf("PENDING", "APPROVED", "ACTIVE"))
+        }) {
+            it[status] = "CANCELLED"
+            it[updatedAt] = kotlinx.datetime.Clock.System.now()
+        }
+        val hasActiveRows = Reservations.selectAll()
+            .where {
+                (Reservations.groupId eq groupId) and
+                    (Reservations.status inList listOf("PENDING", "APPROVED", "ACTIVE"))
+            }
+            .any()
+        if (!hasActiveRows) cancelReservationGroup(groupId)
     }
 
     private fun syncReservationGroupQuantity(groupId: UUID, quantity: Int) {

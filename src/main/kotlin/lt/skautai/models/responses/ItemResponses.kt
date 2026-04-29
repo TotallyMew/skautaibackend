@@ -27,6 +27,8 @@ data class ItemResponse(
     val temporaryStorageLabel: String? = null,
     val sourceSharedItemId: String? = null,
     val responsibleUserId: String? = null,
+    val createdByUserId: String? = null,
+    val createdByUserName: String? = null,
     val photoUrl: String? = null,
     val purchaseDate: String? = null,
     val purchasePrice: Double? = null,

@@ -5,6 +5,7 @@ import lt.skautai.models.requests.AssignLeadershipRoleRequest
 import lt.skautai.models.requests.AssignRankRequest
 import lt.skautai.models.requests.UpdateLeadershipRoleRequest
 import lt.skautai.models.responses.*
+import lt.skautai.plugins.resolveUserPermissions
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -37,10 +38,7 @@ class MemberService {
                 )
             }
                 .filter { member ->
-                    when (callerContext?.visibilityMode) {
-                        MemberVisibilityMode.LEADERS_ONLY -> member.leadershipRoles.isNotEmpty()
-                        else -> true
-                    }
+                    callerContext == null || callerContext.canViewAllMembers || callerCanSeeMemberSummary(member, callerContext)
                 }
 
             Result.success(MemberListResponse(members = members, total = members.size))
@@ -74,9 +72,9 @@ class MemberService {
             )
 
             if (
-                callerContext?.visibilityMode == MemberVisibilityMode.LEADERS_ONLY &&
-                callerUserId != userId &&
-                member.leadershipRoles.isEmpty()
+                callerContext != null &&
+                !callerContext.canViewAllMembers &&
+                !callerCanSeeMemberSummary(member, callerContext)
             ) {
                 return@transaction Result.failure(Exception("Member not found in this tuntas"))
             }
@@ -657,19 +655,31 @@ class MemberService {
             }
             .map { it[Roles.name] }
 
-        val visibilityMode = if (
-            activeLeadershipRoles.isEmpty() &&
-            rankNames.any { it in scoutReadOnlyRankNames }
-        ) {
-            MemberVisibilityMode.LEADERS_ONLY
-        } else {
-            MemberVisibilityMode.FULL
-        }
+        val resolvedPermissions = resolveUserPermissions(userId, tuntasId)
 
         return CallerContext(
+            userId = userId,
             visibleUnitIds = loadCallerVisibleUnitIds(userId, tuntasId),
-            visibilityMode = visibilityMode
+            canViewAllMembers = resolvedPermissions.any {
+                it.permissionName == "members.view" && it.scope == "ALL"
+            }
         )
+    }
+
+    private fun callerCanSeeMemberSummary(member: MemberResponse, callerContext: CallerContext): Boolean {
+        if (member.userId == callerContext.userId.toString()) return true
+        if (callerContext.visibleUnitIds.isEmpty()) return false
+
+        val memberUnitIds = member.unitAssignments
+            .mapNotNull { runCatching { UUID.fromString(it.organizationalUnitId) }.getOrNull() }
+            .toSet()
+        if (memberUnitIds.any { it in callerContext.visibleUnitIds }) return true
+
+        return member.leadershipRoles.any { role ->
+            role.organizationalUnitId
+                ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                ?.let { it in callerContext.visibleUnitIds } == true
+        }
     }
 
     private fun canSeeMemberContacts(
@@ -998,14 +1008,10 @@ class MemberService {
     }
 
     private data class CallerContext(
+        val userId: UUID,
         val visibleUnitIds: Set<UUID>,
-        val visibilityMode: MemberVisibilityMode
+        val canViewAllMembers: Boolean
     )
-
-    private enum class MemberVisibilityMode {
-        FULL,
-        LEADERS_ONLY
-    }
 
     private companion object {
         val supportedRankNames = setOf(
@@ -1015,6 +1021,5 @@ class MemberService {
             "Vyr. skautas",
             "Vadovas"
         )
-        val scoutReadOnlyRankNames = setOf("Skautas", "Patyres skautas")
     }
 }

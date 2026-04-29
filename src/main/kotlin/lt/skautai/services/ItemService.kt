@@ -7,6 +7,7 @@ import lt.skautai.database.tables.Reservations
 import lt.skautai.database.tables.Roles
 import lt.skautai.database.tables.UnitAssignments
 import lt.skautai.database.tables.UserLeadershipRoles
+import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.responses.ItemListResponse
@@ -24,7 +25,8 @@ class ItemService {
         custodianId: String? = null,
         type: String? = null,
         category: String? = null,
-        status: String? = null
+        status: String? = null,
+        sharedOnly: Boolean = false
     ): Result<ItemListResponse> {
         return transaction {
             val canSeeAll = userCanSeeAllStatuses(requestingUserId, tuntasId)
@@ -51,12 +53,16 @@ class ItemService {
                 query = query.andWhere { Items.status eq "ACTIVE" }
             }
 
-            custodianId?.let {
-                val uuid = try { UUID.fromString(it) } catch (e: Exception) { null }
+            if (custodianId != null) {
+                val uuid = try { UUID.fromString(custodianId) } catch (e: Exception) { null }
                 if (!canSeeAllInventory && uuid != null && uuid !in visibleUnitIds) {
                     return@transaction Result.success(ItemListResponse(items = emptyList(), total = 0))
                 }
                 if (uuid != null) query = query.andWhere { Items.custodianId eq uuid }
+            } else if (sharedOnly) {
+                query = query.andWhere {
+                    Items.custodianId.isNull() and (Items.type neq "INDIVIDUAL")
+                }
             }
             type?.let { query = query.andWhere { Items.type eq it } }
             category?.let { query = query.andWhere { Items.category eq it } }
@@ -122,10 +128,6 @@ class ItemService {
                 return@transaction Result.failure(Exception("Invalid inventory category"))
             }
 
-            if (request.origin !in listOf("UNIT_ACQUIRED", "TRANSFERRED_FROM_TUNTAS")) {
-                return@transaction Result.failure(Exception("Invalid origin"))
-            }
-
             if (request.condition !in listOf("GOOD", "DAMAGED", "WRITTEN_OFF")) {
                 return@transaction Result.failure(Exception("Invalid condition"))
             }
@@ -138,6 +140,10 @@ class ItemService {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid custodian ID"))
                 }
+            }
+
+            if (request.type == "INDIVIDUAL" && custodianUUID != null) {
+                return@transaction Result.failure(Exception("Personal inventory items cannot be assigned to a unit"))
             }
 
             // Validate custodian belongs to this tuntas if provided
@@ -164,12 +170,6 @@ class ItemService {
                 ownerUserId = createdByUserId
             )?.let { return@transaction Result.failure(it) }
 
-            val sourceSharedItemUUID = request.sourceSharedItemId?.let {
-                try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid source shared item ID"))
-                }
-            }
-
             val responsibleUUID = request.responsibleUserId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid responsible user ID"))
@@ -185,7 +185,7 @@ class ItemService {
             val itemId = Items.insert {
                 it[this.tuntasId] = tuntasId
                 it[Items.custodianId] = custodianUUID
-                it[origin] = request.origin
+                it[origin] = "UNIT_ACQUIRED"
                 it[name] = request.name
                 it[description] = request.description
                 it[type] = request.type
@@ -194,7 +194,7 @@ class ItemService {
                 it[quantity] = request.quantity
                 it[locationId] = locationUUID
                 it[temporaryStorageLabel] = request.temporaryStorageLabel
-                it[sourceSharedItemId] = sourceSharedItemUUID
+                it[sourceSharedItemId] = null
                 it[responsibleUserId] = responsibleUUID
                 it[Items.createdByUserId] = createdByUserId
                 it[photoUrl] = request.photoUrl
@@ -277,9 +277,21 @@ class ItemService {
                 }
             }
             val effectiveType = request.type ?: existing[Items.type]
-            val effectiveCustodianId = request.custodianId?.let { custodianUUID } ?: existing[Items.custodianId]
+            val effectiveCustodianId = when {
+                request.clearCustodianId -> null
+                request.custodianId != null -> custodianUUID
+                else -> existing[Items.custodianId]
+            }
+            if (effectiveType == "INDIVIDUAL" && effectiveCustodianId != null) {
+                return@transaction Result.failure(Exception("Personal inventory items cannot be assigned to a unit"))
+            }
+            val effectiveLocationId = when {
+                request.clearLocationId -> null
+                request.locationId != null -> locationUUID
+                else -> existing[Items.locationId]
+            }
             validateItemLocation(
-                locationId = locationUUID ?: existing[Items.locationId],
+                locationId = effectiveLocationId,
                 tuntasId = tuntasId,
                 itemType = effectiveType,
                 custodianId = effectiveCustodianId,
@@ -315,11 +327,23 @@ class ItemService {
                 request.purchasePrice?.let { v -> it[purchasePrice] = v.toBigDecimal() }
                 request.notes?.let { v -> it[notes] = v }
                 request.status?.let { v -> it[status] = v }
-                custodianUUID?.let { v -> it[custodianId] = v }
-                locationUUID?.let { v -> it[locationId] = v }
+                when {
+                    request.clearCustodianId -> it[custodianId] = null
+                    request.custodianId != null -> it[custodianId] = custodianUUID
+                }
+                when {
+                    request.clearLocationId -> it[locationId] = null
+                    request.locationId != null -> it[locationId] = locationUUID
+                }
                 request.temporaryStorageLabel?.let { v -> it[temporaryStorageLabel] = v }
-                sourceSharedItemUUID?.let { v -> it[sourceSharedItemId] = v }
-                responsibleUUID?.let { v -> it[responsibleUserId] = v }
+                when {
+                    request.clearSourceSharedItemId -> it[sourceSharedItemId] = null
+                    request.sourceSharedItemId != null -> it[sourceSharedItemId] = sourceSharedItemUUID
+                }
+                when {
+                    request.clearResponsibleUserId -> it[responsibleUserId] = null
+                    request.responsibleUserId != null -> it[responsibleUserId] = responsibleUUID
+                }
                 purchaseDate?.let { v -> it[this.purchaseDate] = v }
             }
 
@@ -424,6 +448,12 @@ class ItemService {
                 .firstOrNull()
                 ?.get(OrganizationalUnits.name)
         }
+        val createdByUserName = row[Items.createdByUserId]?.let { userId ->
+            Users.selectAll()
+                .where { Users.id eq userId }
+                .firstOrNull()
+                ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+        }
 
         val quantityBreakdown = if (custodianId == null) {
             Items.selectAll()
@@ -474,10 +504,12 @@ class ItemService {
             locationId = locationId?.toString(),
             locationName = locationName,
             locationPath = locationPath,
-            temporaryStorageLabel = row[Items.temporaryStorageLabel],
-            sourceSharedItemId = row[Items.sourceSharedItemId]?.toString(),
-            responsibleUserId = row[Items.responsibleUserId]?.toString(),
-            photoUrl = row[Items.photoUrl],
+              temporaryStorageLabel = row[Items.temporaryStorageLabel],
+              sourceSharedItemId = row[Items.sourceSharedItemId]?.toString(),
+              responsibleUserId = row[Items.responsibleUserId]?.toString(),
+              createdByUserId = row[Items.createdByUserId]?.toString(),
+              createdByUserName = createdByUserName,
+              photoUrl = row[Items.photoUrl],
             purchaseDate = row[Items.purchaseDate]?.toString(),
             purchasePrice = row[Items.purchasePrice]?.toDouble(),
             notes = row[Items.notes],

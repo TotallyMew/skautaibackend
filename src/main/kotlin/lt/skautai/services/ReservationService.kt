@@ -174,6 +174,18 @@ class ReservationService {
                     return@transaction Result.failure(Exception("Invalid requesting unit ID"))
                 }
             }
+            if (requestingUnitUUID != null) {
+                OrganizationalUnits.selectAll()
+                    .where {
+                        (OrganizationalUnits.id eq requestingUnitUUID) and
+                            (OrganizationalUnits.tuntasId eq tuntasId)
+                    }
+                    .firstOrNull()
+                    ?: return@transaction Result.failure(Exception("Requesting unit not found in this tuntas"))
+                if (!canApproveTopLevel && requestingUnitUUID !in userUnitIds) {
+                    return@transaction Result.failure(Exception("You can create reservations only for your own unit"))
+                }
+            }
 
             val unitItemCustodianIds = itemRows.values
                 .mapNotNull { it[Items.custodianId] }
@@ -301,8 +313,11 @@ class ReservationService {
 
     fun getAvailability(
         tuntasId: UUID,
+        userId: UUID,
         startDate: String,
-        endDate: String
+        endDate: String,
+        canApproveTopLevel: Boolean,
+        userUnitIds: Set<UUID>
     ): Result<ReservationAvailabilityResponse> {
         return transaction {
             val start = try {
@@ -321,11 +336,23 @@ class ReservationService {
                 return@transaction Result.failure(Exception("End date cannot be before start date"))
             }
 
-            val activeItems = Items.selectAll()
+            var activeItems = Items.selectAll()
                 .where {
                     (Items.tuntasId eq tuntasId) and
                         (Items.status eq "ACTIVE")
                 }
+            if (!canApproveTopLevel) {
+                activeItems = if (userUnitIds.isEmpty()) {
+                    activeItems.andWhere { Items.custodianId.isNull() }
+                } else {
+                    activeItems.andWhere {
+                        Items.custodianId.isNull() or (Items.custodianId inList userUnitIds.toList())
+                    }
+                }
+                activeItems = activeItems.andWhere {
+                    (Items.type neq "INDIVIDUAL") or (Items.createdByUserId eq userId)
+                }
+            }
 
             val items = activeItems.map { item ->
                 val reservedQuantity = overlappingReservedQuantity(item[Items.id], start, end)

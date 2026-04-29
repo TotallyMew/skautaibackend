@@ -184,3 +184,31 @@ data class AssignUnitInventoryToPastovykleRequest(
     val quantity: Int,
     val notes: String? = null
 )
+
+@Serializable
+data class ReconcileEventReturnLineRequest(
+    val custodyId: String,
+    val decision: String,
+    val quantity: Int,
+    val notes: String? = null
+)
+
+@Serializable
+data class ReconcileEventReturnsRequest(
+    val returns: List<ReconcileEventReturnLineRequest>
+)
+
+@Serializable
+data class ReconcileEventPurchaseLineRequest(
+    val purchaseItemId: String,
+    val decision: String,
+    val quantity: Int,
+    val existingItemId: String? = null,
+    val name: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class ReconcileEventPurchasesRequest(
+    val purchases: List<ReconcileEventPurchaseLineRequest>
+)

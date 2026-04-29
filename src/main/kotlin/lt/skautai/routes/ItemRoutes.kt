@@ -17,6 +17,7 @@ import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.ItemScopeHelper
 import lt.skautai.services.ItemService
+import lt.skautai.services.PermissionContextService
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.innerJoin
 import org.jetbrains.exposed.sql.selectAll
@@ -37,14 +38,17 @@ fun Route.itemRoutes(itemService: ItemService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@get
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 val custodianId = call.request.queryParameters["custodianId"]
                 val type = call.request.queryParameters["type"]
                 val category = call.request.queryParameters["category"]
                 val status = call.request.queryParameters["status"]
+                val sharedOnly = call.request.queryParameters["sharedOnly"]?.toBooleanStrictOrNull() ?: false
 
-                itemService.getItems(tuntasUUID, userId, custodianId, type, category, status)
+                itemService.getItems(tuntasUUID, userId, custodianId, type, category, status, sharedOnly)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch items")) }
             }
@@ -59,7 +63,9 @@ fun Route.itemRoutes(itemService: ItemService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@get
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 val itemId = call.parameters["id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))

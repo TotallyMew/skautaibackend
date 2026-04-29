@@ -15,6 +15,7 @@ import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
+import lt.skautai.services.PermissionContextService
 import lt.skautai.services.ReservationService
 import java.util.*
 
@@ -32,7 +33,7 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("reservations.view", tuntasUUID)) return@get
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("reservations.view")) return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
 
                 val itemId = call.request.queryParameters["itemId"]?.let {
                     try { UUID.fromString(it) } catch (e: Exception) { null }
@@ -54,6 +55,8 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
             }
 
             get("availability") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
@@ -67,7 +70,13 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                 val endDate = call.request.queryParameters["endDate"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("endDate is required"))
 
-                reservationService.getAvailability(tuntasUUID, startDate, endDate)
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canApproveTopLevel = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val userUnitIds = resolvedPerms.flatMap { it.userOrgUnitIds }.toSet()
+
+                reservationService.getAvailability(tuntasUUID, userId, startDate, endDate, canApproveTopLevel, userUnitIds)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to fetch reservation availability")) }
             }
@@ -81,7 +90,7 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("reservations.view", tuntasUUID)) return@get
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("reservations.view")) return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
 
                 val reservationId = call.parameters["id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
@@ -222,7 +231,7 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
-                if (!checkPermission("reservations.view", tuntasUUID)) return@get
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("reservations.view")) return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 val reservationId = call.parameters["id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
                 val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
@@ -325,7 +334,7 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
-                if (!checkPermission("reservations.view", tuntasUUID)) return@post
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("reservations.view")) return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 val reservationId = call.parameters["id"]
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
                 val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
@@ -353,7 +362,7 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
-                if (!checkPermission("reservations.view", tuntasUUID)) return@put
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("reservations.view")) return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 val reservationId = call.parameters["id"]
                     ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
                 val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
@@ -381,7 +390,7 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
-                if (!checkPermission("reservations.view", tuntasUUID)) return@put
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("reservations.view")) return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 val reservationId = call.parameters["id"]
                     ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Reservation ID required"))
                 val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {

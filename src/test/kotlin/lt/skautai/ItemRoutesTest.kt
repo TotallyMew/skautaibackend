@@ -311,6 +311,75 @@ class ItemRoutesTest {
     }
 
     @Test
+    fun `create item ignores client supplied transferred origin`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""
+                {
+                    "name": "Bandymas",
+                    "type": "COLLECTIVE",
+                    "category": "CAMPING",
+                    "quantity": 1,
+                    "origin": "TRANSFERRED_FROM_TUNTAS",
+                    "sourceSharedItemId": "00000000-0000-0000-0000-000000000000"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("UNIT_ACQUIRED", body["origin"]?.jsonPrimitive?.content)
+        assertEquals(null, body["sourceSharedItemId"])
+    }
+
+    @Test
+    fun `individual item cannot be assigned to unit custodian`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Asmeniniai")
+
+        val response = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Kuprine", "type": "INDIVIDUAL", "category": "CAMPING", "quantity": 1, "custodianId": "$unitId" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `update item can clear custodian with explicit flag`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai")
+
+        val createResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Palapine", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 1, "custodianId": "$unitId" }""")
+        }
+        val itemId = Json.parseToJsonElement(createResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.put("/api/items/$itemId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "clearCustodianId": true }""")
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(null, body["custodianId"])
+    }
+
+    @Test
     fun `get items filtered by custodianId returns only that unit items`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()

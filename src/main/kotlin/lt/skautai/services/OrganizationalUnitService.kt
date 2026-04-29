@@ -37,6 +37,10 @@ class OrganizationalUnitService {
 
     fun getUnits(tuntasId: UUID, type: String? = null, visibleUnitIds: Set<UUID>? = null): Result<OrganizationalUnitListResponse> {
         return transaction {
+            if (visibleUnitIds != null && visibleUnitIds.isEmpty()) {
+                return@transaction Result.success(OrganizationalUnitListResponse(units = emptyList(), total = 0))
+            }
+
             var query = OrganizationalUnits.selectAll()
                 .where { OrganizationalUnits.tuntasId eq tuntasId }
 

@@ -39,5 +39,9 @@ data class UpdateItemRequest(
     val purchaseDate: String? = null,
     val purchasePrice: Double? = null,
     val notes: String? = null,
-    val status: String? = null
+    val status: String? = null,
+    val clearCustodianId: Boolean = false,
+    val clearLocationId: Boolean = false,
+    val clearSourceSharedItemId: Boolean = false,
+    val clearResponsibleUserId: Boolean = false
 )

@@ -251,7 +251,7 @@ CREATE TABLE events (
                         location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                         organizational_unit_id UUID REFERENCES organizational_units(id),
                         created_by_user_id UUID REFERENCES users(id),
-                        status VARCHAR(20) DEFAULT 'PLANNING' CHECK (status IN ('PLANNING', 'ACTIVE', 'COMPLETED', 'CANCELLED')),
+                        status VARCHAR(20) DEFAULT 'PLANNING' CHECK (status IN ('PLANNING', 'ACTIVE', 'WRAP_UP', 'COMPLETED', 'CANCELLED')),
                         notes TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         CHECK (end_date >= start_date)
@@ -264,7 +264,7 @@ CREATE TABLE pastovykles (
                              event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
                              name VARCHAR(100) NOT NULL,
                              responsible_user_id UUID REFERENCES users(id),
-                             age_group VARCHAR(30) CHECK (age_group IN ('VILKAI', 'SKAUTAI', 'PATYRE_SKAUTAI', 'MIXED')),
+                             age_group VARCHAR(30) CHECK (age_group IN ('VILKAI', 'SKAUTAI', 'PATYRE_SKAUTAI', 'VYR_SKAUTAI', 'VYR_SKAUTES', 'MIXED')),
                              notes TEXT
 );
 
@@ -424,7 +424,7 @@ CREATE TABLE event_purchase_items (
 CREATE TABLE draugove_requisitions (
                                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                        tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
-                                       organizational_unit_id UUID NOT NULL REFERENCES organizational_units(id),
+                                       organizational_unit_id UUID REFERENCES organizational_units(id),
                                        event_id UUID REFERENCES events(id),
                                        created_by_user_id UUID NOT NULL REFERENCES users(id),
                                        reviewed_by_user_id UUID REFERENCES users(id),

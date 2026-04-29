@@ -20,18 +20,26 @@ fun Route.eventRoutes(eventService: EventService) {
         route("/api/events") {
 
             get {
+                val userId = currentUserId() ?: return@get
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!canViewEvents(eventService, tuntasUUID)) return@get
-
                 val type = call.request.queryParameters["type"]
                 val status = call.request.queryParameters["status"]
 
-                eventService.getEvents(tuntasUUID, type, status)
+                val result = when {
+                    eventService.canViewEvents(userId, tuntasUUID) -> eventService.getVisibleEvents(tuntasUUID, userId, type, status)
+                    eventService.hasResponsiblePastovykle(userId, tuntasUUID) -> eventService.getResponsibleEvents(tuntasUUID, userId, type, status)
+                    else -> {
+                        call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                        return@get
+                    }
+                }
+
+                result
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch events")) }
             }
@@ -43,13 +51,12 @@ fun Route.eventRoutes(eventService: EventService) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!canViewEvents(eventService, tuntasUUID)) return@get
-
                 val eventId = call.parameters["id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Event ID required"))
                 val eventUUID = try { UUID.fromString(eventId) } catch (e: Exception) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid event ID"))
                 }
+                if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
 
                 eventService.getEvent(eventUUID, tuntasUUID)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -179,14 +186,9 @@ fun Route.eventRoutes(eventService: EventService) {
 
             route("{id}/inventory-plan") {
                 get {
-                    val tuntasId = call.request.headers["X-Tuntas-Id"]
-                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
-                    val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
-                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
-                    }
-                    if (!canViewEvents(eventService, tuntasUUID)) return@get
-
+                    val tuntasUUID = parseTuntasId() ?: return@get
                     val eventUUID = parseEventId() ?: return@get
+                    if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
                     eventService.getEventInventoryPlan(eventUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch inventory plan")) }
@@ -310,7 +312,7 @@ fun Route.eventRoutes(eventService: EventService) {
                 get {
                     val tuntasUUID = parseTuntasId() ?: return@get
                     val eventUUID = parseEventId() ?: return@get
-                    if (!canViewEvents(eventService, tuntasUUID)) return@get
+                    if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
                     eventService.getInventoryCustody(eventUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch inventory custody")) }
@@ -321,7 +323,7 @@ fun Route.eventRoutes(eventService: EventService) {
                 get {
                     val tuntasUUID = parseTuntasId() ?: return@get
                     val eventUUID = parseEventId() ?: return@get
-                    if (!canViewEvents(eventService, tuntasUUID)) return@get
+                    if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
                     eventService.getInventoryMovements(eventUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch inventory movements")) }
@@ -354,7 +356,7 @@ fun Route.eventRoutes(eventService: EventService) {
                 get {
                     val tuntasUUID = parseTuntasId() ?: return@get
                     val eventUUID = parseEventId() ?: return@get
-                    if (!canViewEvents(eventService, tuntasUUID)) return@get
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@get
                     eventService.getPurchases(eventUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch purchases")) }
@@ -429,36 +431,78 @@ fun Route.eventRoutes(eventService: EventService) {
                 }
 
                 post("{purchaseId}/add-to-inventory") {
+                    call.respond(
+                        HttpStatusCode.Gone,
+                        ErrorResponse("Pirkinių pridėjimas į inventorių perkeltas į renginio inventoriaus suvedimą")
+                    )
+                }
+            }
+
+            route("{id}/reconciliation") {
+                get {
+                    val tuntasUUID = parseTuntasId() ?: return@get
+                    val eventUUID = parseEventId() ?: return@get
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@get
+                    eventService.getReconciliation(eventUUID, tuntasUUID)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch reconciliation")) }
+                }
+
+                post("returns") {
                     val principal = call.principal<JWTPrincipal>()!!
                     val userId = UUID.fromString(principal.getClaim("userId", String::class))
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
-                    val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@post
-                    eventService.addPurchaseToInventory(eventUUID, purchaseUUID, tuntasUUID, userId)
+                    val request = call.receive<ReconcileEventReturnsRequest>()
+                    eventService.reconcileReturns(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
-                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to add purchase to inventory")) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to reconcile returns")) }
                 }
+
+                post("purchases") {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+                    val request = call.receive<ReconcileEventPurchasesRequest>()
+                    eventService.reconcilePurchases(eventUUID, tuntasUUID, userId, request)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to reconcile purchases")) }
+                }
+            }
+
+            post("{id}/complete") {
+                val tuntasUUID = parseTuntasId() ?: return@post
+                val eventUUID = parseEventId() ?: return@post
+                if (!canManageEvent(eventService, tuntasUUID, eventUUID)) return@post
+                eventService.completeEvent(eventUUID, tuntasUUID)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to complete event")) }
             }
 
             route("{id}/pastovykles") {
 
                 get {
-                    val tuntasId = call.request.headers["X-Tuntas-Id"]
-                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
-                    val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
-                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                    val userId = currentUserId() ?: return@get
+                    val tuntasUUID = parseTuntasId() ?: return@get
+
+                    val eventUUID = parseEventId() ?: return@get
+                    if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
+
+                    val canSeeAllPastovykles =
+                        hasGlobalEventManagement(userId, tuntasUUID) ||
+                            hasGlobalEventInventoryManagement(userId, tuntasUUID) ||
+                            eventService.canManageEvent(eventUUID, tuntasUUID, userId) ||
+                            eventService.canManageEventInventory(eventUUID, tuntasUUID, userId)
+                    val result = if (canSeeAllPastovykles) {
+                        eventService.getPastovykles(eventUUID, tuntasUUID)
+                    } else {
+                        eventService.getResponsiblePastovykles(eventUUID, tuntasUUID, userId)
                     }
 
-                    if (!canViewEvents(eventService, tuntasUUID)) return@get
-
-                    val eventId = call.parameters["id"]
-                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Event ID required"))
-                    val eventUUID = try { UUID.fromString(eventId) } catch (e: Exception) {
-                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid event ID"))
-                    }
-
-                    eventService.getPastovykles(eventUUID, tuntasUUID)
+                    result
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to fetch pastovyklės")) }
                 }
@@ -491,19 +535,20 @@ fun Route.eventRoutes(eventService: EventService) {
                         return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                     }
 
-                    if (!canViewEvents(eventService, tuntasUUID)) return@get
-
                     val eventId = call.parameters["id"]
                         ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Event ID required"))
                     val eventUUID = try { UUID.fromString(eventId) } catch (e: Exception) {
                         return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid event ID"))
                     }
+                    if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
 
                     val pid = call.parameters["pid"]
                         ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Pastovyklė ID required"))
                     val pidUUID = try { UUID.fromString(pid) } catch (e: Exception) {
                         return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid pastovyklė ID"))
                     }
+
+                    if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pidUUID)) return@get
 
                     eventService.getPastovykle(eventUUID, pidUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -580,19 +625,20 @@ fun Route.eventRoutes(eventService: EventService) {
                             return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                         }
 
-                        if (!canViewEvents(eventService, tuntasUUID)) return@get
-
                         val eventId = call.parameters["id"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Event ID required"))
                         val eventUUID = try { UUID.fromString(eventId) } catch (e: Exception) {
                             return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid event ID"))
                         }
+                        if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
 
                         val pid = call.parameters["pid"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Pastovyklė ID required"))
                         val pidUUID = try { UUID.fromString(pid) } catch (e: Exception) {
                             return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid pastovyklė ID"))
                         }
+
+                        if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pidUUID)) return@get
 
                         eventService.getPastovykleInventory(eventUUID, pidUUID, tuntasUUID)
                             .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -864,6 +910,24 @@ private suspend fun RoutingContext.canViewEvents(
     return false
 }
 
+private suspend fun RoutingContext.canViewEvent(
+    eventService: EventService,
+    tuntasId: UUID,
+    eventId: UUID
+): Boolean {
+    val principal = call.principal<JWTPrincipal>()
+        ?: return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Not authenticated")).let { false }
+    val userId = try {
+        UUID.fromString(principal.getClaim("userId", String::class))
+    } catch (e: Exception) {
+        return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
+    }
+    if (eventService.canViewEvent(userId, tuntasId, eventId)) return true
+    if (eventService.hasResponsiblePastovykleForEvent(userId, tuntasId, eventId)) return true
+    call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+    return false
+}
+
 private suspend fun RoutingContext.canStartEvent(
     eventService: EventService,
     tuntasId: UUID,
@@ -894,7 +958,8 @@ private suspend fun RoutingContext.canManageEventInventory(
     } catch (e: Exception) {
         return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
     }
-    if (resolveUserPermissions(userId, tuntasId).any { it.permissionName == "events.inventory.distribute" && it.scope == "ALL" }) return true
+    if (hasGlobalEventManagement(userId, tuntasId)) return true
+    if (hasGlobalEventInventoryManagement(userId, tuntasId)) return true
     if (eventService.canManageEventInventory(eventId, tuntasId, userId)) return true
     call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
     return false
@@ -943,6 +1008,25 @@ private suspend fun RoutingContext.canDownloadPurchaseInvoice(
     call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
     return false
 }
+
+private suspend fun RoutingContext.currentUserId(): UUID? {
+    val principal = call.principal<JWTPrincipal>()
+        ?: return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Not authenticated")).let { null }
+    return try {
+        UUID.fromString(principal.getClaim("userId", String::class))
+    } catch (e: Exception) {
+        call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+        null
+    }
+}
+
+private fun hasGlobalEventManagement(userId: UUID, tuntasId: UUID): Boolean =
+    resolveUserPermissions(userId, tuntasId)
+        .any { it.permissionName == "events.manage" && it.scope == "ALL" }
+
+private fun hasGlobalEventInventoryManagement(userId: UUID, tuntasId: UUID): Boolean =
+    resolveUserPermissions(userId, tuntasId)
+        .any { it.permissionName == "events.inventory.distribute" && it.scope == "ALL" }
 
 private suspend fun RoutingContext.parseTuntasId(): UUID? {
     val tuntasId = call.request.headers["X-Tuntas-Id"]

@@ -2,6 +2,8 @@ package lt.skautai.services
 
 import lt.skautai.database.tables.*
 import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.notInList
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.*
 
@@ -23,6 +25,7 @@ object PermissionSeeder {
         "roles.assign",
         "invitations.create",
         "locations.manage",
+        "organizational_units.view",
         "organizational_units.manage",
         "reservations.view",
         "reservations.create",
@@ -64,6 +67,7 @@ object PermissionSeeder {
             "roles.assign" to "ALL",
             "invitations.create" to "ALL",
             "locations.manage" to "ALL",
+            "organizational_units.view" to "ALL",
             "organizational_units.manage" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
@@ -93,6 +97,7 @@ object PermissionSeeder {
             "roles.assign" to "ALL",
             "invitations.create" to "ALL",
             "locations.manage" to "ALL",
+            "organizational_units.view" to "ALL",
             "organizational_units.manage" to "ALL",
             "reservations.view" to "ALL",
             "reservations.create" to "ALL",
@@ -139,7 +144,7 @@ object PermissionSeeder {
         // The roles differ by name only (to enforce one-per-unit and unit-type awareness).
 
         "Draugininkas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -148,7 +153,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -161,7 +167,7 @@ object PermissionSeeder {
         ),
 
         "Draugininko pavaduotojas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -170,7 +176,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -183,7 +190,7 @@ object PermissionSeeder {
         ),
 
         "Gildijos pirmininkas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -192,7 +199,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -205,7 +213,7 @@ object PermissionSeeder {
         ),
 
         "Gildijos pirmininko pavaduotojas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -214,7 +222,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -227,7 +236,7 @@ object PermissionSeeder {
         ),
 
         "Vyr. skautu draugoves draugininkas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -236,7 +245,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -249,7 +259,7 @@ object PermissionSeeder {
         ),
 
         "Vyr. skautu draugoves draugininko pavaduotojas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -258,7 +268,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -271,7 +282,7 @@ object PermissionSeeder {
         ),
 
         "Vyr. skautu burelio pirmininkas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -280,7 +291,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -293,7 +305,7 @@ object PermissionSeeder {
         ),
 
         "Vyr. skautu burelio pirmininko pavaduotojas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -302,7 +314,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -315,7 +328,7 @@ object PermissionSeeder {
         ),
 
         "Vyr. skauciu draugoves draugininkas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -324,7 +337,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -337,7 +351,7 @@ object PermissionSeeder {
         ),
 
         "Vyr. skauciu draugoves draugininko pavaduotojas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -346,7 +360,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -359,7 +374,7 @@ object PermissionSeeder {
         ),
 
         "Vyr. skauciu burelio pirmininkas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -368,7 +383,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -381,7 +397,7 @@ object PermissionSeeder {
         ),
 
         "Vyr. skauciu burelio pirmininko pavaduotojas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "items.create" to "OWN_UNIT",
             "items.update" to "OWN_UNIT",
             "items.request.approve.unit" to "OWN_UNIT",
@@ -390,7 +406,8 @@ object PermissionSeeder {
             "members.view" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
             "locations.manage" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "organizational_units.view" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "reservations.approve" to "OWN_UNIT",
             "requisitions.create" to "OWN_UNIT",
@@ -409,43 +426,53 @@ object PermissionSeeder {
         // Vadovas: same permissions as Patyres skautas (unit-level leaders get more via their leadership role)
 
         "Skautas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "members.view" to "OWN_UNIT",
+            "organizational_units.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
-            "reservations.view" to "ALL",
+            "requisitions.create" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL"
         ),
 
         "Patyres skautas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "members.view" to "OWN_UNIT",
+            "organizational_units.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
-            "reservations.view" to "ALL",
+            "requisitions.create" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL"
         ),
 
         "Vyr. skautas kandidatas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "members.view" to "OWN_UNIT",
+            "organizational_units.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
-            "reservations.view" to "ALL",
+            "requisitions.create" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL"
         ),
 
         "Vyr. skautas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "members.view" to "OWN_UNIT",
+            "organizational_units.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
-            "reservations.view" to "ALL",
+            "requisitions.create" to "OWN_UNIT",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL"
         ),
 
         "Vadovas" to listOf(
-            "items.view" to "ALL",
+            "items.view" to "OWN_UNIT",
             "members.view" to "OWN_UNIT",
+            "organizational_units.view" to "OWN_UNIT",
             "items.request.bendras" to "ALL",
+            "requisitions.create" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",
-            "reservations.view" to "ALL",
+            "reservations.view" to "OWN_UNIT",
             "reservations.create" to "ALL",
             "events.view" to "ALL",
             "events.create" to "ALL"
@@ -478,6 +505,12 @@ object PermissionSeeder {
 
             for ((roleName, permissions) in rolePermissionMap) {
                 val roleId = roleIds[roleName] ?: continue
+                val desiredPermissionIds = permissions.mapNotNull { (permName, _) -> permissionIds[permName] }
+
+                RolePermissions.deleteWhere {
+                    (RolePermissions.roleId eq roleId) and
+                        (RolePermissions.permissionId notInList desiredPermissionIds)
+                }
 
                 for ((permName, scope) in permissions) {
                     val permId = permissionIds[permName] ?: continue
