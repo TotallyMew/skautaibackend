@@ -12,10 +12,11 @@ import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.EventService
+import lt.skautai.services.MemberService
 import java.io.File
 import java.util.*
 
-fun Route.eventRoutes(eventService: EventService) {
+fun Route.eventRoutes(eventService: EventService, memberService: MemberService) {
     authenticate("auth-jwt") {
         route("/api/events") {
 
@@ -61,6 +62,21 @@ fun Route.eventRoutes(eventService: EventService) {
                 eventService.getEvent(eventUUID, tuntasUUID)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Event not found")) }
+            }
+
+            get("{id}/candidate-members") {
+                val tuntasUUID = parseTuntasId() ?: return@get
+                val eventUUID = parseEventId() ?: return@get
+                if (!canManageEvent(eventService, tuntasUUID, eventUUID)) return@get
+
+                memberService.getEventCandidateMembers(tuntasUUID)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { e ->
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ErrorResponse(e.message ?: "Failed to fetch candidate members")
+                        )
+                    }
             }
 
             post {
@@ -179,7 +195,7 @@ fun Route.eventRoutes(eventService: EventService) {
                     }
 
                     eventService.removeEventRole(eventUUID, roleUUID, tuntasUUID)
-                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Event role removed")) }
+                        .onSuccess { call.respond(HttpStatusCode.NoContent) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove event role")) }
                 }
             }
@@ -337,10 +353,7 @@ fun Route.eventRoutes(eventService: EventService) {
                     if (!eventService.isTuntasMember(userId, tuntasUUID)) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                     }
-                    val permissions = resolveUserPermissions(userId, tuntasUUID)
-                    val canManageInventory = permissions.any {
-                        (it.permissionName == "events.inventory.distribute" || it.permissionName == "events.manage") && it.scope == "ALL"
-                    } || eventService.canManageEventInventory(eventUUID, tuntasUUID, userId)
+                    val canManageInventory = eventService.canManageEventInventory(eventUUID, tuntasUUID, userId)
                     val request = call.receive<CreateEventInventoryMovementRequest>()
                     eventService.createInventoryMovement(eventUUID, tuntasUUID, userId, request, canManageInventory)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -492,9 +505,7 @@ fun Route.eventRoutes(eventService: EventService) {
                     if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
 
                     val canSeeAllPastovykles =
-                        hasGlobalEventManagement(userId, tuntasUUID) ||
-                            hasGlobalEventInventoryManagement(userId, tuntasUUID) ||
-                            eventService.canManageEvent(eventUUID, tuntasUUID, userId) ||
+                        eventService.canManageEvent(eventUUID, tuntasUUID, userId) ||
                             eventService.canManageEventInventory(eventUUID, tuntasUUID, userId)
                     val result = if (canSeeAllPastovykles) {
                         eventService.getPastovykles(eventUUID, tuntasUUID)
@@ -888,7 +899,6 @@ private suspend fun RoutingContext.canManageEvent(
     } catch (e: Exception) {
         return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
     }
-    if (resolveUserPermissions(userId, tuntasId).any { it.permissionName == "events.manage" && it.scope == "ALL" }) return true
     if (eventService.canManageEvent(eventId, tuntasId, userId)) return true
     call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
     return false
@@ -940,7 +950,6 @@ private suspend fun RoutingContext.canStartEvent(
     } catch (e: Exception) {
         return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
     }
-    if (resolveUserPermissions(userId, tuntasId).any { it.permissionName == "events.manage" && it.scope == "ALL" }) return true
     if (eventService.canStartEvent(eventId, tuntasId, userId)) return true
     call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
     return false
@@ -958,8 +967,6 @@ private suspend fun RoutingContext.canManageEventInventory(
     } catch (e: Exception) {
         return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
     }
-    if (hasGlobalEventManagement(userId, tuntasId)) return true
-    if (hasGlobalEventInventoryManagement(userId, tuntasId)) return true
     if (eventService.canManageEventInventory(eventId, tuntasId, userId)) return true
     call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
     return false
@@ -978,9 +985,6 @@ private suspend fun RoutingContext.canAccessPastovykle(
     } catch (e: Exception) {
         return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
     }
-    val permissions = resolveUserPermissions(userId, tuntasId)
-    if (permissions.any { it.permissionName == "events.inventory.distribute" && it.scope == "ALL" }) return true
-    if (permissions.any { it.permissionName == "events.manage" && it.scope == "ALL" }) return true
     if (eventService.canManageEvent(eventId, tuntasId, userId)) return true
     if (eventService.canManageEventInventory(eventId, tuntasId, userId)) return true
     if (eventService.isPastovykleResponsible(eventId, pastovykleId, tuntasId, userId)) return true
@@ -1000,10 +1004,6 @@ private suspend fun RoutingContext.canDownloadPurchaseInvoice(
     } catch (e: Exception) {
         return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
     }
-    val permissions = resolveUserPermissions(userId, tuntasId)
-    if (permissions.any { it.permissionName == "event_purchases.invoice.download" && it.scope == "ALL" }) return true
-    if (permissions.any { it.permissionName == "events.manage" && it.scope == "ALL" }) return true
-    if (permissions.any { it.permissionName == "events.inventory.distribute" && it.scope == "ALL" }) return true
     if (eventService.canManageEventInventory(eventId, tuntasId, userId)) return true
     call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
     return false
@@ -1019,14 +1019,6 @@ private suspend fun RoutingContext.currentUserId(): UUID? {
         null
     }
 }
-
-private fun hasGlobalEventManagement(userId: UUID, tuntasId: UUID): Boolean =
-    resolveUserPermissions(userId, tuntasId)
-        .any { it.permissionName == "events.manage" && it.scope == "ALL" }
-
-private fun hasGlobalEventInventoryManagement(userId: UUID, tuntasId: UUID): Boolean =
-    resolveUserPermissions(userId, tuntasId)
-        .any { it.permissionName == "events.inventory.distribute" && it.scope == "ALL" }
 
 private suspend fun RoutingContext.parseTuntasId(): UUID? {
     val tuntasId = call.request.headers["X-Tuntas-Id"]

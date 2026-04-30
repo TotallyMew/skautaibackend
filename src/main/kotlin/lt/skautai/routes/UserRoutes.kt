@@ -249,7 +249,7 @@ fun Route.userRoutes() {
                             UserLeadershipRoles.leftAt.isNull()
                     }) {
                         it[leftAt] = now
-                        it[termStatus] = "LEFT"
+                        it[termStatus] = "RESIGNED"
                     }
                     UnitAssignments.update({
                         (UnitAssignments.userId eq userId) and

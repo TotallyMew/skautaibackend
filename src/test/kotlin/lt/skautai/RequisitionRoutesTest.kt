@@ -17,6 +17,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class RequisitionRoutesTest {
@@ -195,5 +196,221 @@ class RequisitionRoutesTest {
         val response = createRequisition(vadovasToken, tuntasId, requestingUnitId = null)
 
         assertEquals(HttpStatusCode.Forbidden, response.status)
+    }
+
+    @Test
+    fun `requisition listing is scoped to creator reviewable unit and top level reviewer`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitA = createUnit(token, tuntasId, "Unit A")
+        val unitB = createUnit(token, tuntasId, "Unit B")
+        val (memberAToken, memberAId) = registerUserWithRole(token, tuntasId, "Skautas", "member-a@test.com")
+        val (memberBToken, memberBId) = registerUserWithRole(token, tuntasId, "Skautas", "member-b@test.com")
+        val (leaderAToken, _) = registerUserWithRole(token, tuntasId, "Draugininkas", "leader-a@test.com", unitA)
+        val (inventorToken, _) = registerUserWithRole(token, tuntasId, "Tuntininko pavaduotojas", "top-reviewer@test.com")
+        assignMember(token, tuntasId, unitA, memberAId)
+        assignMember(token, tuntasId, unitB, memberBId)
+
+        val requestAId = Json.parseToJsonElement(createRequisition(memberAToken, tuntasId, unitA).bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+        createRequisition(memberBToken, tuntasId, unitB)
+
+        val memberList = client.get("/api/requisitions") {
+            header("Authorization", "Bearer $memberAToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, memberList.status)
+        assertEquals(
+            1,
+            Json.parseToJsonElement(memberList.bodyAsText()).jsonObject["total"]!!.jsonPrimitive.content.toInt()
+        )
+
+        val leaderList = client.get("/api/requisitions") {
+            header("Authorization", "Bearer $leaderAToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, leaderList.status)
+        val leaderItems = Json.parseToJsonElement(leaderList.bodyAsText()).jsonObject["requests"]!!.jsonArray
+        assertEquals(1, leaderItems.size)
+        assertEquals(requestAId, leaderItems.first().jsonObject["id"]!!.jsonPrimitive.content)
+
+        val topLevelList = client.get("/api/requisitions") {
+            header("Authorization", "Bearer $inventorToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, topLevelList.status)
+        assertEquals(
+            2,
+            Json.parseToJsonElement(topLevelList.bodyAsText()).jsonObject["total"]!!.jsonPrimitive.content.toInt()
+        )
+    }
+
+    @Test
+    fun `get requisition denies inaccessible request`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitA = createUnit(token, tuntasId, "Scopers A")
+        val unitB = createUnit(token, tuntasId, "Scopers B")
+        val (memberAToken, memberAId) = registerUserWithRole(token, tuntasId, "Skautas", "scoped-a@test.com")
+        val (memberBToken, memberBId) = registerUserWithRole(token, tuntasId, "Skautas", "scoped-b@test.com")
+        assignMember(token, tuntasId, unitA, memberAId)
+        assignMember(token, tuntasId, unitB, memberBId)
+
+        val requestId = Json.parseToJsonElement(createRequisition(memberAToken, tuntasId, unitA).bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.get("/api/requisitions/$requestId") {
+            header("Authorization", "Bearer $memberBToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+        assertTrue(response.bodyAsText().contains("accessible"))
+    }
+
+    @Test
+    fun `create requisition validates payload and unit ownership`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitA = createUnit(token, tuntasId, "Owned Unit")
+        val unitB = createUnit(token, tuntasId, "Foreign Unit")
+        val (memberToken, memberId) = registerUserWithRole(token, tuntasId, "Skautas", "validator@test.com")
+        assignMember(token, tuntasId, unitA, memberId)
+
+        suspend fun postRaw(body: String) = client.post("/api/requisitions") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(body)
+        }
+
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            postRaw("""{ "requestingUnitId": "$unitA", "items": [] }""").status
+        )
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            postRaw("""{ "requestingUnitId": "$unitA", "items": [{ "itemName": " ", "quantity": 1 }] }""").status
+        )
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            postRaw("""{ "requestingUnitId": "$unitA", "items": [{ "itemName": "Kirvis", "quantity": 0 }] }""").status
+        )
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            postRaw("""{ "requestingUnitId": "not-a-uuid", "items": [{ "itemName": "Kirvis", "quantity": 1 }] }""").status
+        )
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            postRaw("""{ "requestingUnitId": "$unitA", "neededByDate": "2026/08/10", "items": [{ "itemName": "Kirvis", "quantity": 1 }] }""").status
+        )
+
+        val foreignUnit = postRaw("""{ "requestingUnitId": "$unitB", "items": [{ "itemName": "Kirvis", "quantity": 1 }] }""")
+        assertEquals(HttpStatusCode.BadRequest, foreignUnit.status)
+        assertTrue(foreignUnit.bodyAsText().contains("own unit"))
+    }
+
+    @Test
+    fun `unit review approve reject and forward update requisition state`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Review Unit")
+        val (memberToken, memberId) = registerUserWithRole(token, tuntasId, "Skautas", "review-member@test.com")
+        val (leaderToken, _) = registerUserWithRole(token, tuntasId, "Draugininkas", "review-leader@test.com", unitId)
+        assignMember(token, tuntasId, unitId, memberId)
+
+        val approveRequestId = Json.parseToJsonElement(createRequisition(memberToken, tuntasId, unitId).bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+        val approveResponse = client.post("/api/requisitions/$approveRequestId/unit-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, approveResponse.status)
+        val approveBody = Json.parseToJsonElement(approveResponse.bodyAsText()).jsonObject
+        assertEquals("APPROVED", approveBody["status"]!!.jsonPrimitive.content)
+        assertEquals("APPROVED", approveBody["unitReviewStatus"]!!.jsonPrimitive.content)
+        assertEquals("2", approveBody["items"]!!.jsonArray.first().jsonObject["quantityApproved"]!!.jsonPrimitive.content)
+
+        val rejectRequestId = Json.parseToJsonElement(createRequisition(memberToken, tuntasId, unitId).bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+        val rejectResponse = client.post("/api/requisitions/$rejectRequestId/unit-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "REJECTED", "rejectionReason": "Neaktualu" }""")
+        }
+        assertEquals(HttpStatusCode.OK, rejectResponse.status)
+        val rejectBody = Json.parseToJsonElement(rejectResponse.bodyAsText()).jsonObject
+        assertEquals("REJECTED", rejectBody["status"]!!.jsonPrimitive.content)
+        assertEquals("UNIT_REJECTED", rejectBody["lastAction"]!!.jsonPrimitive.content)
+        assertEquals("Neaktualu", rejectBody["items"]!!.jsonArray.first().jsonObject["rejectionReason"]!!.jsonPrimitive.content)
+
+        val forwardRequestId = Json.parseToJsonElement(createRequisition(memberToken, tuntasId, unitId).bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+        val forwardResponse = client.post("/api/requisitions/$forwardRequestId/unit-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "FORWARDED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, forwardResponse.status)
+        val forwardBody = Json.parseToJsonElement(forwardResponse.bodyAsText()).jsonObject
+        assertEquals("PARTIALLY_APPROVED", forwardBody["status"]!!.jsonPrimitive.content)
+        assertEquals("FORWARDED", forwardBody["unitReviewStatus"]!!.jsonPrimitive.content)
+        assertEquals("PENDING", forwardBody["topLevelReviewStatus"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `top level review validates state and can approve or reject`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Top Level Review Unit")
+        val (memberToken, memberId) = registerUserWithRole(token, tuntasId, "Skautas", "top-member@test.com")
+        val (leaderToken, _) = registerUserWithRole(token, tuntasId, "Draugininkas", "top-leader@test.com", unitId)
+        val (reviewerToken, _) = registerUserWithRole(token, tuntasId, "Tuntininko pavaduotojas", "top-reviewer-2@test.com")
+        assignMember(token, tuntasId, unitId, memberId)
+
+        val pendingTopLevelId = Json.parseToJsonElement(createRequisition(token, tuntasId, null).bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+        val approveResponse = client.post("/api/requisitions/$pendingTopLevelId/top-level-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $reviewerToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, approveResponse.status)
+        val approvedBody = Json.parseToJsonElement(approveResponse.bodyAsText()).jsonObject
+        assertEquals("APPROVED", approvedBody["topLevelReviewStatus"]!!.jsonPrimitive.content)
+        assertEquals("TOP_LEVEL_APPROVED", approvedBody["lastAction"]!!.jsonPrimitive.content)
+
+        val forwardedId = Json.parseToJsonElement(createRequisition(memberToken, tuntasId, unitId).bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+        client.post("/api/requisitions/$forwardedId/unit-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "FORWARDED" }""")
+        }
+
+        val rejectResponse = client.post("/api/requisitions/$forwardedId/top-level-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $reviewerToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "REJECTED", "rejectionReason": "Per brangu" }""")
+        }
+        assertEquals(HttpStatusCode.OK, rejectResponse.status)
+        val rejectedBody = Json.parseToJsonElement(rejectResponse.bodyAsText()).jsonObject
+        assertEquals("REJECTED", rejectedBody["topLevelReviewStatus"]!!.jsonPrimitive.content)
+        assertEquals("FORWARDED", rejectedBody["lastAction"]!!.jsonPrimitive.content)
+
+        val invalidAction = client.post("/api/requisitions/$forwardedId/top-level-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $reviewerToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "MAYBE" }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidAction.status)
     }
 }

@@ -13,6 +13,14 @@ import java.util.*
 
 class MemberService {
 
+    fun canAccessMemberDirectory(userId: UUID, tuntasId: UUID): Boolean = transaction {
+        val callerContext = loadCallerContext(userId, tuntasId) ?: return@transaction false
+        val hasMembersViewPermission = resolveUserPermissions(userId, tuntasId).any {
+            it.permissionName == "members.view"
+        }
+        hasMembersViewPermission || callerContext.canViewAllMembers
+    }
+
     fun getMembers(tuntasId: UUID, callerUserId: UUID? = null): Result<MemberListResponse> {
         return transaction {
             val callerContext = callerUserId?.let { effectiveCallerUserId ->
@@ -80,6 +88,31 @@ class MemberService {
             }
 
             Result.success(member)
+        }
+    }
+
+    fun getEventCandidateMembers(tuntasId: UUID): Result<MemberListResponse> {
+        return transaction {
+            val members = UserTuntasMemberships
+                .innerJoin(Users, { UserTuntasMemberships.userId }, { Users.id })
+                .selectAll()
+                .where {
+                    (UserTuntasMemberships.tuntasId eq tuntasId) and
+                        (UserTuntasMemberships.leftAt.isNull())
+                }
+                .mapNotNull { row ->
+                    val userId = row[UserTuntasMemberships.userId]
+                    val member = buildMemberResponse(
+                        userId = userId,
+                        tuntasId = tuntasId,
+                        membershipRow = row,
+                        callerUserId = null,
+                        callerVisibleUnitIds = emptySet()
+                    )
+                    member.takeIf(::isEligibleEventCandidate)
+                }
+
+            Result.success(MemberListResponse(members = members, total = members.size))
         }
     }
 
@@ -656,13 +689,15 @@ class MemberService {
             .map { it[Roles.name] }
 
         val resolvedPermissions = resolveUserPermissions(userId, tuntasId)
+        val hasVadovasRank = rankNames.any { it == "Vadovas" }
+        val hasActiveLeadershipRole = activeLeadershipRoles.any { leadershipRoleRank(it) > 0 }
 
         return CallerContext(
             userId = userId,
             visibleUnitIds = loadCallerVisibleUnitIds(userId, tuntasId),
             canViewAllMembers = resolvedPermissions.any {
                 it.permissionName == "members.view" && it.scope == "ALL"
-            }
+            } || hasVadovasRank || hasActiveLeadershipRole
         )
     }
 
@@ -1005,6 +1040,14 @@ class MemberService {
             "Vyr. skauciu burelio pirmininko pavaduotojas" -> 2
             else -> 0
         }
+    }
+
+    private fun isEligibleEventCandidate(member: MemberResponse): Boolean {
+        val hasVadovasRank = member.ranks.any { it.roleName == "Vadovas" }
+        val hasLeadershipRole = member.leadershipRoles.any {
+            it.termStatus == "ACTIVE" && leadershipRoleRank(it.roleName) > 0
+        }
+        return hasVadovasRank || hasLeadershipRole
     }
 
     private data class CallerContext(

@@ -60,15 +60,18 @@ class BendrasInventoryRequestRoutesTest {
         token: String,
         tuntasId: String,
         roleName: String,
-        email: String = "second@test.com"
+        email: String = "second@test.com",
+        organizationalUnitId: String? = null
     ): Pair<String, String> {
         val roleId = getRoleId(tuntasId, roleName)
         val inviteResponse = client.post("/api/invitations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "roleId": "$roleId", "expiresAt": "2099-01-01T00:00:00Z" }""")
+            val unitField = organizationalUnitId?.let { """, "organizationalUnitId": "$it"""" } ?: ""
+            setBody("""{ "roleId": "$roleId"$unitField, "expiresAt": "2099-01-01T00:00:00Z" }""")
         }
+        assertEquals(HttpStatusCode.Created, inviteResponse.status)
         val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content
 
@@ -84,6 +87,7 @@ class BendrasInventoryRequestRoutesTest {
                 }
             """.trimIndent())
         }
+        assertEquals(HttpStatusCode.Created, registerResponse.status)
         val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
         return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
     }
@@ -172,7 +176,7 @@ class BendrasInventoryRequestRoutesTest {
         val itemId = createItem(token, tuntasId)
         val draugoveId = createDraugove(token, tuntasId)
 
-        val (draugininkasToken, _) = registerSecondUser(token, tuntasId, "Draugininkas")
+        val (draugininkasToken, _) = registerSecondUser(token, tuntasId, "Draugininkas", organizationalUnitId = draugoveId)
         val draugininkasId = transaction {
             var id = ""
             exec("SELECT id FROM users WHERE email = 'second@test.com' LIMIT 1") { rs -> if (rs.next()) id = rs.getString("id") }

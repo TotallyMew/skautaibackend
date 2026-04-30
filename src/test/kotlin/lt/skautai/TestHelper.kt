@@ -1,7 +1,9 @@
 ﻿package lt.skautai
 
 import io.ktor.client.*
+import io.ktor.client.plugins.*
 import io.ktor.client.request.*
+import io.ktor.client.request.forms.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.config.MapApplicationConfig
@@ -25,12 +27,17 @@ import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.services.LocationService
 import lt.skautai.services.MemberService
 import lt.skautai.routes.memberRoutes
+import lt.skautai.routes.rolesRoutes
 import lt.skautai.routes.requisitionRoutes
 import lt.skautai.routes.reservationRoutes
+import lt.skautai.routes.uploadRoutes
 import lt.skautai.services.ReservationService
 import lt.skautai.routes.eventRoutes
 import lt.skautai.routes.userRoutes
 import lt.skautai.services.EventService
+import java.io.File
+import java.nio.file.Files
+import java.util.UUID
 
 object TestHelper {
 
@@ -40,7 +47,8 @@ object TestHelper {
             "jwt.secret" to config.getString("test.jwt.secret"),
             "jwt.issuer" to config.getString("test.jwt.issuer"),
             "jwt.audience" to config.getString("test.jwt.audience"),
-            "jwt.realm" to config.getString("test.jwt.realm")
+            "jwt.realm" to config.getString("test.jwt.realm"),
+            "setup.bootstrapToken" to config.getString("test.setup.bootstrapToken")
         )
     }
 
@@ -93,6 +101,15 @@ object TestHelper {
                 CASCADE
             """.trimIndent())
         }
+        cleanUploadDirectories()
+    }
+
+    fun cleanUploadDirectories() {
+        listOf(File("uploads/images"), File("uploads/documents")).forEach { dir ->
+            if (dir.exists()) {
+                dir.deleteRecursively()
+            }
+        }
     }
 
     fun ApplicationTestBuilder.configureFullApp() {
@@ -122,11 +139,12 @@ object TestHelper {
                 organizationalUnitRoutes(organizationalUnitService)
                 memberRoutes(memberService)
                 reservationRoutes(reservationService)
-                eventRoutes(eventService)
+                eventRoutes(eventService, memberService)
                 bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
                 requisitionRoutes(requisitionService)
                 userRoutes()
-
+                rolesRoutes()
+                uploadRoutes()
             }
         }
     }
@@ -173,4 +191,95 @@ object TestHelper {
         }
         return id
     }
+
+    suspend fun HttpClient.registerInvitedUser(
+        inviterToken: String,
+        tuntasId: String,
+        roleName: String,
+        email: String,
+        organizationalUnitId: String? = null,
+        name: String = "Test",
+        surname: String = "User",
+        password: String = "testas123"
+    ): Pair<String, String> {
+        val roleId = getRoleId(tuntasId, roleName)
+        val unitField = organizationalUnitId?.let { ", \"organizationalUnitId\": \"$it\"" }.orEmpty()
+        val inviteResponse = post("/api/invitations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $inviterToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "roleId": "$roleId"$unitField, "expiresInHours": 48 }""")
+        }
+        check(inviteResponse.status == HttpStatusCode.Created) {
+            "Failed to create invitation: ${inviteResponse.status} ${inviteResponse.bodyAsText()}"
+        }
+        val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText())
+            .jsonObject["code"]!!.jsonPrimitive.content
+
+        val registerResponse = post("/api/auth/register/invite") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """
+                {
+                    "name": "$name",
+                    "surname": "$surname",
+                    "email": "$email",
+                    "password": "$password",
+                    "inviteCode": "$inviteCode"
+                }
+                """.trimIndent()
+            )
+        }
+        check(registerResponse.status == HttpStatusCode.Created) {
+            "Failed to register invited user: ${registerResponse.status} ${registerResponse.bodyAsText()}"
+        }
+        val body = Json.parseToJsonElement(registerResponse.bodyAsText()).jsonObject
+        return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
+    }
+
+    suspend fun ApplicationTestBuilder.createUnit(
+        token: String,
+        tuntasId: String,
+        name: String,
+        type: String = "SKAUTU_DRAUGOVE"
+    ): String {
+        val response = client.post("/api/organizational-units") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name", "type": "$type" }""")
+        }
+        check(response.status == HttpStatusCode.Created) {
+            "Failed to create unit: ${response.status} ${response.bodyAsText()}"
+        }
+        return Json.parseToJsonElement(response.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    fun randomEmail(prefix: String): String = "$prefix-${UUID.randomUUID()}@test.com"
+
+    fun createTempUploadFile(name: String, bytes: ByteArray): File {
+        val tempFile = Files.createTempFile("upload-", "-$name").toFile()
+        tempFile.writeBytes(bytes)
+        tempFile.deleteOnExit()
+        return tempFile
+    }
+
+    fun multiPartForFile(
+        fieldName: String = "file",
+        fileName: String,
+        contentType: ContentType?,
+        bytes: ByteArray
+    ): MultiPartFormDataContent {
+        val headers = Headers.build {
+            append(HttpHeaders.ContentDisposition, "form-data; name=\"$fieldName\"; filename=\"$fileName\"")
+            contentType?.let { append(HttpHeaders.ContentType, it.toString()) }
+        }
+        return MultiPartFormDataContent(
+            formData {
+                append(fieldName, bytes, headers)
+            }
+        )
+    }
+
 }

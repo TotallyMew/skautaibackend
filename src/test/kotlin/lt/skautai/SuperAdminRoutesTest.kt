@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Assertions.*
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class SuperAdminRoutesTest {
+    private val bootstrapToken = "test-bootstrap-token"
 
     @BeforeAll
     fun setup() {
@@ -34,6 +35,7 @@ class SuperAdminRoutesTest {
     private suspend fun ApplicationTestBuilder.seedAndLoginSuperAdmin(): String {
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
 
@@ -41,6 +43,7 @@ class SuperAdminRoutesTest {
             contentType(ContentType.Application.Json)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
+        assertEquals(HttpStatusCode.OK, loginResponse.status)
 
         return Json.parseToJsonElement(loginResponse.bodyAsText())
             .jsonObject["token"]!!

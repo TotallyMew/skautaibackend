@@ -13,7 +13,6 @@ import lt.skautai.models.requests.UpdateLeadershipRoleRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
-import lt.skautai.services.PermissionContextService
 import lt.skautai.services.MemberService
 import java.util.*
 
@@ -30,7 +29,7 @@ fun Route.memberRoutes(memberService: MemberService) {
 
                 val principal = call.principal<JWTPrincipal>()!!
                 val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
-                if (!PermissionContextService.resolve(callerUserId, tuntasUUID).has("members.view")) {
+                if (!memberService.canAccessMemberDirectory(callerUserId, tuntasUUID)) {
                     return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
                 memberService.getMembers(tuntasUUID, callerUserId)
@@ -54,7 +53,7 @@ fun Route.memberRoutes(memberService: MemberService) {
 
                 val principal = call.principal<JWTPrincipal>()!!
                 val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
-                if (!PermissionContextService.resolve(callerUserId, tuntasUUID).has("members.view")) {
+                if (!memberService.canAccessMemberDirectory(callerUserId, tuntasUUID)) {
                     return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
 

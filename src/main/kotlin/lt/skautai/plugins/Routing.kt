@@ -48,7 +48,7 @@ fun Application.configureRouting() {
         organizationalUnitRoutes(organizationalUnitService)
         memberRoutes(memberService)
         reservationRoutes(reservationService)
-        eventRoutes(eventService)
+        eventRoutes(eventService, memberService)
         bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
         requisitionRoutes(requisitionService)
         userRoutes()

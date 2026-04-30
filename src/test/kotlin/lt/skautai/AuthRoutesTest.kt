@@ -13,6 +13,8 @@ import org.junit.jupiter.api.Assertions.*
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class AuthRoutesTest {
+    private val bootstrapToken = "test-bootstrap-token"
+
 
     @BeforeAll
     fun setup() {
@@ -347,6 +349,7 @@ class AuthRoutesTest {
 
         val response = client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""
                 {
                     "email": "admin@test.com",
@@ -364,6 +367,7 @@ class AuthRoutesTest {
 
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""
                 {
                     "email": "admin@test.com",
@@ -374,6 +378,7 @@ class AuthRoutesTest {
 
         val response = client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""
                 {
                     "email": "admin2@test.com",
@@ -389,6 +394,7 @@ class AuthRoutesTest {
     fun `create invitation returns 201 with code`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
         val roleId = getRoleId(tuntasId, "Draugininkas")
 
         val response = client.post("/api/invitations") {
@@ -398,6 +404,7 @@ class AuthRoutesTest {
             setBody("""
                 {
                     "roleId": "$roleId",
+                    "organizationalUnitId": "$unitId",
                     "expiresInHours": 48
                 }
             """.trimIndent())
@@ -523,6 +530,7 @@ class AuthRoutesTest {
 
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
         val loginResponse = client.post("/api/super-admin/login") {
@@ -548,14 +556,16 @@ class AuthRoutesTest {
     fun `register with valid invite code returns 201`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-        val roleId = getRoleId(tuntasId, "Draugininkas")
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val roleId = getRoleId(tuntasId, "Skautas")
 
         val inviteResponse = client.post("/api/invitations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "roleId": "$roleId", "expiresInHours": 48 }""")
+            setBody("""{ "roleId": "$roleId", "organizationalUnitId": "$unitId", "expiresInHours": 48 }""")
         }
+        assertEquals(HttpStatusCode.Created, inviteResponse.status)
         val code = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content
 
@@ -602,14 +612,16 @@ class AuthRoutesTest {
     fun `register with already used invite code returns 400`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-        val roleId = getRoleId(tuntasId, "Draugininkas")
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val roleId = getRoleId(tuntasId, "Skautas")
 
         val inviteResponse = client.post("/api/invitations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "roleId": "$roleId", "expiresInHours": 48 }""")
+            setBody("""{ "roleId": "$roleId", "organizationalUnitId": "$unitId", "expiresInHours": 48 }""")
         }
+        assertEquals(HttpStatusCode.Created, inviteResponse.status)
         val code = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content
 
@@ -646,14 +658,16 @@ class AuthRoutesTest {
     fun `register with duplicate email via invite returns 400`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
         val roleId = getRoleId(tuntasId, "Draugininkas")
 
         val inviteResponse = client.post("/api/invitations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "roleId": "$roleId", "expiresInHours": 48 }""")
+            setBody("""{ "roleId": "$roleId", "organizationalUnitId": "$unitId", "expiresInHours": 48 }""")
         }
+        assertEquals(HttpStatusCode.Created, inviteResponse.status)
         val code = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content
 
@@ -677,14 +691,16 @@ class AuthRoutesTest {
     fun `registered user via invite gets correct role assigned`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
         val roleId = getRoleId(tuntasId, "Draugininkas")
 
         val inviteResponse = client.post("/api/invitations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "roleId": "$roleId", "expiresInHours": 48 }""")
+            setBody("""{ "roleId": "$roleId", "organizationalUnitId": "$unitId", "expiresInHours": 48 }""")
         }
+        assertEquals(HttpStatusCode.Created, inviteResponse.status)
         val code = Json.parseToJsonElement(inviteResponse.bodyAsText())
             .jsonObject["code"]!!.jsonPrimitive.content
 
@@ -711,7 +727,7 @@ class AuthRoutesTest {
 
         assertEquals(HttpStatusCode.OK, membersResponse.status)
         val body = Json.parseToJsonElement(membersResponse.bodyAsText()).jsonObject
-        assertEquals(2, body["total"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(1, body["total"]?.jsonPrimitive?.content?.toInt())
     }
 
     @Test
@@ -951,6 +967,7 @@ class AuthRoutesTest {
         // Seed super admin first
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
 
@@ -971,6 +988,7 @@ class AuthRoutesTest {
 
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
 
@@ -1004,6 +1022,7 @@ class AuthRoutesTest {
         // Seed and login super admin
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
 
@@ -1054,6 +1073,7 @@ class AuthRoutesTest {
         // Seed and login super admin
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
 
@@ -1086,6 +1106,7 @@ class AuthRoutesTest {
 
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
 
@@ -1142,6 +1163,7 @@ class AuthRoutesTest {
         // Seed and login super admin
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
 
@@ -1200,6 +1222,7 @@ class AuthRoutesTest {
         // Seed and login super admin
         client.post("/api/setup/super-admin") {
             contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", bootstrapToken)
             setBody("""{ "email": "admin@test.com", "password": "admin123" }""")
         }
 

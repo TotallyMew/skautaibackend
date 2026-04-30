@@ -690,6 +690,58 @@ class EventRoutesTest {
     }
 
     @Test
+    fun `tuntininkas without explicit event role can read but cannot update another persons event`() = testApplication {
+        configureFullApp()
+        val (tuntToken, tuntasId) = client.registerAndActivateTuntininkas()
+        val (vadovasToken, _) = registerUserWithRole(tuntToken, tuntasId, "Vadovas", "event-owner@test.com")
+        val eventId = client.createTestEvent(vadovasToken, tuntasId, name = "Delegated event")
+
+        val readResponse = client.get("/api/events/$eventId") {
+            header("Authorization", "Bearer $tuntToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, readResponse.status)
+
+        val updateResponse = client.put("/api/events/$eventId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $tuntToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "name": "Changed by tuntininkas"
+                }
+                """.trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.Forbidden, updateResponse.status)
+    }
+
+    @Test
+    fun `candidate members include vadovas across units and exclude scouts`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val firstUnitId = client.createUnit(token, tuntasId, "Skautai A")
+        val secondUnitId = client.createUnit(token, tuntasId, "Skautai B")
+        val (_, vadovasUserId) = registerUserWithRole(token, tuntasId, "Vadovas", "vadovas-a@test.com", firstUnitId)
+        val (_, inventorininkasUserId) = registerUserWithRole(token, tuntasId, "Inventorininkas", "inventorininkas@test.com")
+        val (_, skautasUserId) = registerUserWithRole(token, tuntasId, "Skautas", "skautas-b@test.com", secondUnitId)
+
+        val response = client.get("/api/events/$eventId/candidate-members") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val members = Json.parseToJsonElement(response.bodyAsText()).jsonObject["members"]!!.jsonArray
+        val candidateIds = members.map { it.jsonObject["userId"]!!.jsonPrimitive.content }.toSet()
+        assertTrue(vadovasUserId in candidateIds)
+        assertTrue(inventorininkasUserId in candidateIds)
+        assertFalse(skautasUserId in candidateIds)
+    }
+
+    @Test
     fun `raw document upload URLs are not publicly served`() = testApplication {
         configureFullApp()
         val (token, _) = client.registerAndActivateTuntininkas()
@@ -702,7 +754,7 @@ class EventRoutesTest {
     }
 
     @Test
-    fun `remove event role returns 200`() = testApplication {
+    fun `remove event role returns 204`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val eventId = client.createTestEvent(token, tuntasId)
@@ -729,7 +781,7 @@ class EventRoutesTest {
             header("X-Tuntas-Id", tuntasId)
         }
 
-        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(HttpStatusCode.NoContent, response.status)
     }
 
     @Test
@@ -2075,5 +2127,368 @@ class EventRoutesTest {
             setBody("""{ "itemId": "00000000-0000-0000-0000-000000000001", "quantity": 1 }""")
         }
         assertEquals(HttpStatusCode.BadRequest, assignFromUnitResponse.status)
+    }
+
+    @Test
+    fun `inventory buckets items and allocations support mutation workflow`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val pastovykleId = client.createTestPastovykle(token, tuntasId, eventId)
+        val (_, responsibleUserId) = registerUserWithRole(token, tuntasId, "Skautas", "inventory-owner@test.com")
+
+        val createBucketResponse = client.post("/api/events/$eventId/inventory-buckets") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "name": "  Vilku sandelis  ",
+                    "type": "PASTOVYKLE",
+                    "pastovykleId": "$pastovykleId",
+                    "notes": "Pradine zona"
+                }
+                """.trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.Created, createBucketResponse.status)
+        val bucketBody = Json.parseToJsonElement(createBucketResponse.bodyAsText()).jsonObject
+        val bucketId = bucketBody["id"]!!.jsonPrimitive.content
+        assertEquals("Vilku sandelis", bucketBody["name"]!!.jsonPrimitive.content)
+        assertEquals("PASTOVYKLE", bucketBody["type"]!!.jsonPrimitive.content)
+
+        val updateBucketResponse = client.put("/api/events/$eventId/inventory-buckets/$bucketId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "  Centrinis sandelis  ", "notes": "Atnaujinta" }""")
+        }
+        assertEquals(HttpStatusCode.OK, updateBucketResponse.status)
+        val updatedBucket = Json.parseToJsonElement(updateBucketResponse.bodyAsText()).jsonObject
+        assertEquals("Centrinis sandelis", updatedBucket["name"]!!.jsonPrimitive.content)
+        assertEquals("Atnaujinta", updatedBucket["notes"]!!.jsonPrimitive.content)
+
+        val createItemsResponse = client.post("/api/events/$eventId/inventory-items/bulk") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "items": [
+                        {
+                            "name": "  Puodai  ",
+                            "plannedQuantity": 4,
+                            "bucketId": "$bucketId",
+                            "responsibleUserId": "$responsibleUserId",
+                            "notes": "Virtuvei"
+                        },
+                        {
+                            "name": "Kirviai",
+                            "plannedQuantity": 2
+                        }
+                    ]
+                }
+                """.trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.Created, createItemsResponse.status)
+        val createdItems = Json.parseToJsonElement(createItemsResponse.bodyAsText()).jsonObject["items"]!!.jsonArray
+        assertEquals(2, createdItems.size)
+        val firstItem = createdItems.first().jsonObject
+        val eventInventoryItemId = firstItem["id"]!!.jsonPrimitive.content
+        assertEquals("Puodai", firstItem["name"]!!.jsonPrimitive.content)
+        assertEquals(bucketId, firstItem["bucketId"]!!.jsonPrimitive.content)
+        assertEquals(responsibleUserId, firstItem["responsibleUserId"]!!.jsonPrimitive.content)
+
+        val updateItemResponse = client.put("/api/events/$eventId/inventory-items/$eventInventoryItemId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "  Dideli puodai  ", "plannedQuantity": 5, "notes": "Atnaujinti" }""")
+        }
+        assertEquals(HttpStatusCode.OK, updateItemResponse.status)
+        val updatedItem = Json.parseToJsonElement(updateItemResponse.bodyAsText()).jsonObject
+        assertEquals("Dideli puodai", updatedItem["name"]!!.jsonPrimitive.content)
+        assertEquals(5, updatedItem["plannedQuantity"]!!.jsonPrimitive.int)
+        assertEquals("Atnaujinti", updatedItem["notes"]!!.jsonPrimitive.content)
+
+        val createAllocationResponse = client.post("/api/events/$eventId/inventory-allocations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "eventInventoryItemId": "$eventInventoryItemId", "bucketId": "$bucketId", "quantity": 3, "notes": "Paskirstyta" }""")
+        }
+        assertEquals(HttpStatusCode.Created, createAllocationResponse.status)
+        val allocationBody = Json.parseToJsonElement(createAllocationResponse.bodyAsText()).jsonObject
+        val allocationId = allocationBody["id"]!!.jsonPrimitive.content
+        assertEquals(3, allocationBody["quantity"]!!.jsonPrimitive.int)
+
+        val deleteBucketWhileAllocatedResponse = client.delete("/api/events/$eventId/inventory-buckets/$bucketId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, deleteBucketWhileAllocatedResponse.status)
+
+        val updateAllocationResponse = client.put("/api/events/$eventId/inventory-allocations/$allocationId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantity": 1, "notes": "Sumazinta" }""")
+        }
+        assertEquals(HttpStatusCode.OK, updateAllocationResponse.status)
+        val updatedAllocation = Json.parseToJsonElement(updateAllocationResponse.bodyAsText()).jsonObject
+        assertEquals(1, updatedAllocation["quantity"]!!.jsonPrimitive.int)
+        assertEquals("Sumazinta", updatedAllocation["notes"]!!.jsonPrimitive.content)
+
+        val deleteAllocationResponse = client.delete("/api/events/$eventId/inventory-allocations/$allocationId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, deleteAllocationResponse.status)
+
+        val deleteItemResponse = client.delete("/api/events/$eventId/inventory-items/$eventInventoryItemId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, deleteItemResponse.status)
+
+        val deleteBucketResponse = client.delete("/api/events/$eventId/inventory-buckets/$bucketId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, deleteBucketResponse.status)
+
+        val planResponse = client.get("/api/events/$eventId/inventory-plan") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, planResponse.status)
+        val plan = Json.parseToJsonElement(planResponse.bodyAsText()).jsonObject
+        assertEquals(0, plan["allocations"]!!.jsonArray.size)
+        assertFalse(plan["buckets"]!!.jsonArray.any { it.jsonObject["id"]!!.jsonPrimitive.content == bucketId })
+        assertFalse(plan["items"]!!.jsonArray.any { it.jsonObject["id"]!!.jsonPrimitive.content == eventInventoryItemId })
+    }
+
+    @Test
+    fun `bulk inventory item creation validates size and nested payloads`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+
+        val emptyBulkResponse = client.post("/api/events/$eventId/inventory-items/bulk") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, emptyBulkResponse.status)
+        assertTrue(emptyBulkResponse.bodyAsText().contains("At least one inventory item"))
+
+        val invalidNestedResponse = client.post("/api/events/$eventId/inventory-items/bulk") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [{ "name": "", "plannedQuantity": 0 }] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidNestedResponse.status)
+        assertTrue(invalidNestedResponse.bodyAsText().contains("Planned quantity must be at least 1"))
+    }
+
+    @Test
+    fun `purchase invoice download returns not found when file is missing`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 2)
+        val purchase = client.createEventPurchase(token, tuntasId, eventId, eventInventoryItemId, purchasedQuantity = 1)
+        val purchaseId = purchase["id"]!!.jsonPrimitive.content
+
+        val invoiceResponse = client.post("/api/events/$eventId/purchases/$purchaseId/invoice") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "invoiceFileUrl": "/uploads/documents/missing-invoice.pdf" }""")
+        }
+        assertEquals(HttpStatusCode.OK, invoiceResponse.status)
+
+        val downloadResponse = client.get("/api/events/$eventId/purchases/$purchaseId/invoice/download") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.NotFound, downloadResponse.status)
+        assertTrue(downloadResponse.bodyAsText().contains("Invoice file not found"))
+    }
+
+    @Test
+    fun `event wrap up reconciliation resolves returns purchases and completion`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        client.activateEventForMovement(token, tuntasId, eventId)
+        val sourceItemId = client.createTestItem(token, tuntasId, quantity = 2)
+
+        val eventItemResponse = client.post("/api/events/$eventId/inventory-items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$sourceItemId", "name": "Puodas", "plannedQuantity": 4 }""")
+        }
+        assertEquals(HttpStatusCode.Created, eventItemResponse.status)
+        val eventInventoryItemId = Json.parseToJsonElement(eventItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val purchase = client.createEventPurchase(token, tuntasId, eventId, eventInventoryItemId, purchasedQuantity = 1, unitPrice = 6.5)
+        val purchaseId = purchase["id"]!!.jsonPrimitive.content
+        val purchaseItemId = purchase["items"]!!.jsonArray.first().jsonObject["id"]!!.jsonPrimitive.content
+
+        val completePurchaseResponse = client.post("/api/events/$eventId/purchases/$purchaseId/complete") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, completePurchaseResponse.status)
+
+        val wrapUpResponse = client.put("/api/events/$eventId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "status": "WRAP_UP" }""")
+        }
+        assertEquals(HttpStatusCode.OK, wrapUpResponse.status)
+
+        val reconciliationResponse = client.get("/api/events/$eventId/reconciliation") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, reconciliationResponse.status)
+        val reconciliation = Json.parseToJsonElement(reconciliationResponse.bodyAsText()).jsonObject
+        assertEquals(0, reconciliation["openReturns"]!!.jsonArray.size)
+        assertEquals(1, reconciliation["unresolvedPurchases"]!!.jsonArray.size)
+        assertFalse(reconciliation["canComplete"]!!.jsonPrimitive.boolean)
+
+        val earlyCompleteResponse = client.post("/api/events/$eventId/complete") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, earlyCompleteResponse.status)
+
+        val reconcilePurchasesResponse = client.post("/api/events/$eventId/reconciliation/purchases") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "purchases": [
+                        {
+                            "purchaseItemId": "$purchaseItemId",
+                            "decision": "CONSUMED",
+                            "quantity": 1,
+                            "notes": "Prideta i sandeli"
+                        }
+                    ]
+                }
+                """.trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.OK, reconcilePurchasesResponse.status)
+        val reconciled = Json.parseToJsonElement(reconcilePurchasesResponse.bodyAsText()).jsonObject
+        assertEquals(0, reconciled["openReturns"]!!.jsonArray.size)
+        assertEquals(0, reconciled["unresolvedPurchases"]!!.jsonArray.size)
+        assertTrue(reconciled["canComplete"]!!.jsonPrimitive.boolean)
+
+        val completeEventResponse = client.post("/api/events/$eventId/complete") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, completeEventResponse.status)
+        assertEquals("COMPLETED", Json.parseToJsonElement(completeEventResponse.bodyAsText()).jsonObject["status"]!!.jsonPrimitive.content)
+
+        val completedMutationResponse = client.post("/api/events/$eventId/inventory-buckets") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Nebegalima", "type": "OTHER" }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, completedMutationResponse.status)
+    }
+
+    @Test
+    fun `reconciliation endpoints validate wrap up state and bad payloads`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        client.activateEventForMovement(token, tuntasId, eventId)
+        val itemId = client.createTestItem(token, tuntasId, quantity = 2)
+        val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 2, name = "Kirvis")
+
+        val checkoutResponse = client.post("/api/events/$eventId/inventory-movements") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "eventInventoryItemId": "$eventInventoryItemId", "movementType": "CHECKOUT_TO_PERSON", "quantity": 1 }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, checkoutResponse.status)
+
+        val linkedEventItemResponse = client.post("/api/events/$eventId/inventory-items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "itemId": "$itemId", "name": "Kirvis", "plannedQuantity": 2 }""")
+        }
+        val linkedEventItemId = Json.parseToJsonElement(linkedEventItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        val linkedCheckoutResponse = client.post("/api/events/$eventId/inventory-movements") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "eventInventoryItemId": "$linkedEventItemId", "movementType": "CHECKOUT_TO_PERSON", "quantity": 1 }""")
+        }
+        assertEquals(HttpStatusCode.Created, linkedCheckoutResponse.status)
+        val custodyId = Json.parseToJsonElement(linkedCheckoutResponse.bodyAsText()).jsonObject["custodyId"]!!.jsonPrimitive.content
+
+        val notWrapUpResponse = client.post("/api/events/$eventId/reconciliation/returns") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "returns": [{ "custodyId": "$custodyId", "decision": "RETURNED", "quantity": 1 }] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, notWrapUpResponse.status)
+        assertTrue(notWrapUpResponse.bodyAsText().contains("wrap-up", ignoreCase = true))
+
+        val wrapUpResponse = client.put("/api/events/$eventId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "status": "WRAP_UP" }""")
+        }
+        assertEquals(HttpStatusCode.OK, wrapUpResponse.status)
+
+        val invalidDecisionResponse = client.post("/api/events/$eventId/reconciliation/returns") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "returns": [{ "custodyId": "$custodyId", "decision": "BROKEN", "quantity": 1 }] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidDecisionResponse.status)
+        assertTrue(invalidDecisionResponse.bodyAsText().contains("Invalid return decision"))
+
+        val validReturnResponse = client.post("/api/events/$eventId/reconciliation/returns") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "returns": [{ "custodyId": "$custodyId", "decision": "RETURNED", "quantity": 1, "notes": "Uzdaryta" }] }""")
+        }
+        assertEquals(HttpStatusCode.OK, validReturnResponse.status)
+        val reconciliation = Json.parseToJsonElement(validReturnResponse.bodyAsText()).jsonObject
+        assertEquals(0, reconciliation["openReturns"]!!.jsonArray.size)
+        assertTrue(reconciliation["returnedToEventStorage"]!!.jsonArray.isNotEmpty())
+
+        val movementsResponse = client.get("/api/events/$eventId/inventory-movements") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, movementsResponse.status)
+        val movements = Json.parseToJsonElement(movementsResponse.bodyAsText()).jsonObject["movements"]!!.jsonArray
+        assertTrue(movements.any { it.jsonObject["movementType"]!!.jsonPrimitive.content == "RECONCILE_RETURNED" })
     }
 }

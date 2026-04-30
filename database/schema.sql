@@ -384,7 +384,7 @@ CREATE TABLE event_inventory_movements (
                                             event_inventory_item_id UUID NOT NULL REFERENCES event_inventory_items(id) ON DELETE CASCADE,
                                             custody_id UUID REFERENCES event_inventory_custody(id) ON DELETE SET NULL,
                                             inventory_request_id UUID REFERENCES event_inventory_requests(id) ON DELETE SET NULL,
-                                            movement_type VARCHAR(30) NOT NULL CHECK (movement_type IN ('PASTOVYKLE_REQUEST', 'ASSIGN_TO_PASTOVYKLE', 'CHECKOUT_TO_PERSON', 'RETURN_TO_PASTOVYKLE', 'RETURN_TO_EVENT_STORAGE', 'TRANSFER')),
+                                            movement_type VARCHAR(30) NOT NULL CHECK (movement_type IN ('PASTOVYKLE_REQUEST', 'ASSIGN_TO_PASTOVYKLE', 'CHECKOUT_TO_PERSON', 'RETURN_TO_PASTOVYKLE', 'RETURN_TO_EVENT_STORAGE', 'TRANSFER', 'RECONCILE_RETURNED', 'RECONCILE_DAMAGED', 'RECONCILE_MISSING', 'RECONCILE_CONSUMED')),
                                             quantity INTEGER NOT NULL CHECK (quantity > 0),
                                             from_pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE SET NULL,
                                             to_pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE SET NULL,
