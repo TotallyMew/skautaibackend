@@ -12,10 +12,14 @@ import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.responses.ItemListResponse
 import lt.skautai.models.responses.ItemResponse
+import kotlinx.datetime.Clock
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.io.File
 import java.util.*
+
+class DuplicateItemConflictException(val duplicateItem: ItemResponse) :
+    Exception("Item with the same name already exists")
 
 class ItemService {
 
@@ -113,6 +117,32 @@ class ItemService {
         }
     }
 
+    fun resolveItemIdByQrToken(
+        qrToken: String,
+        tuntasId: UUID,
+        requestingUserId: UUID
+    ): Result<UUID> {
+        val itemId = transaction {
+            val itemId = Items.select(Items.id)
+                .where {
+                    (Items.qrToken eq qrToken) and
+                        (Items.tuntasId eq tuntasId)
+                }
+                .firstOrNull()
+                ?.get(Items.id)
+                ?: return@transaction null
+
+            itemId
+        }
+
+        if (itemId == null) {
+            return Result.failure(Exception("Item not found"))
+        }
+
+        return getItem(itemId, tuntasId, requestingUserId)
+            .map { itemId }
+    }
+
     fun createItem(
         tuntasId: UUID,
         createdByUserId: UUID,
@@ -120,6 +150,11 @@ class ItemService {
         isPendingApproval: Boolean = false
     ): Result<ItemResponse> {
         return transaction {
+            val normalizedName = request.name.trim()
+            if (normalizedName.isBlank()) {
+                return@transaction Result.failure(Exception("Item name is required"))
+            }
+
             if (request.type !in listOf("COLLECTIVE", "ASSIGNED", "INDIVIDUAL")) {
                 return@transaction Result.failure(Exception("Invalid inventory type"))
             }
@@ -134,6 +169,10 @@ class ItemService {
 
             if (request.quantity < 1) {
                 return@transaction Result.failure(Exception("Quantity must be at least 1"))
+            }
+
+            if (request.duplicateHandling !in listOf("ASK", "ADD_TO_EXISTING", "CREATE_NEW")) {
+                return@transaction Result.failure(Exception("Invalid duplicate handling option"))
             }
 
             val custodianUUID = request.custodianId?.let {
@@ -182,11 +221,54 @@ class ItemService {
                 }
             }
 
+            val duplicateTargetItemId = request.duplicateTargetItemId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid duplicate target item ID"))
+                }
+            }
+
+            val duplicateItem = findDuplicateItem(
+                tuntasId = tuntasId,
+                custodianId = custodianUUID,
+                name = normalizedName,
+                type = request.type,
+                category = request.category,
+                duplicateTargetItemId = duplicateTargetItemId
+            )
+
+            if (request.duplicateHandling == "ADD_TO_EXISTING" &&
+                duplicateTargetItemId != null &&
+                duplicateItem == null
+            ) {
+                return@transaction Result.failure(Exception("Duplicate target item not found"))
+            }
+
+            if (duplicateItem != null) {
+                when (request.duplicateHandling) {
+                    "ASK" -> return@transaction Result.failure(
+                        DuplicateItemConflictException(toItemResponse(duplicateItem))
+                    )
+                    "ADD_TO_EXISTING" -> {
+                        val now = Clock.System.now()
+                        Items.update({ Items.id eq duplicateItem[Items.id] }) {
+                            it[quantity] = duplicateItem[Items.quantity] + request.quantity
+                            it[updatedAt] = now
+                        }
+                        val updatedItem = Items.selectAll()
+                            .where { Items.id eq duplicateItem[Items.id] }
+                            .first()
+                        return@transaction Result.success(toItemResponse(updatedItem))
+                    }
+                }
+            }
+
+            val now = Clock.System.now()
+
             val itemId = Items.insert {
                 it[this.tuntasId] = tuntasId
                 it[Items.custodianId] = custodianUUID
                 it[origin] = "UNIT_ACQUIRED"
-                it[name] = request.name
+                it[name] = normalizedName
                 it[description] = request.description
                 it[type] = request.type
                 it[category] = request.category
@@ -197,11 +279,14 @@ class ItemService {
                 it[sourceSharedItemId] = null
                 it[responsibleUserId] = responsibleUUID
                 it[Items.createdByUserId] = createdByUserId
+                it[qrToken] = UUID.randomUUID().toString()
                 it[photoUrl] = request.photoUrl
                 it[this.purchaseDate] = purchaseDate
                 it[purchasePrice] = request.purchasePrice?.toBigDecimal()
                 it[notes] = request.notes
                 it[status] = if (isPendingApproval) "PENDING_APPROVAL" else "ACTIVE"
+                it[createdAt] = now
+                it[updatedAt] = now
             } get Items.id
 
             val item = Items.selectAll()
@@ -211,6 +296,43 @@ class ItemService {
             Result.success(toItemResponse(item))
         }
     }
+
+    private fun findDuplicateItem(
+        tuntasId: UUID,
+        custodianId: UUID?,
+        name: String,
+        type: String,
+        category: String,
+        duplicateTargetItemId: UUID?
+    ): ResultRow? {
+        val normalizedName = normalizeItemName(name)
+        val candidates = Items.selectAll()
+            .where {
+                (Items.tuntasId eq tuntasId) and
+                    (Items.status eq "ACTIVE") and
+                    (Items.type eq type) and
+                    (Items.category eq category) and
+                    if (custodianId == null) {
+                        Items.custodianId.isNull()
+                    } else {
+                        Items.custodianId eq custodianId
+                    }
+            }
+            .toList()
+            .filter { normalizeItemName(it[Items.name]) == normalizedName }
+
+        if (candidates.isEmpty()) {
+            return null
+        }
+
+        if (duplicateTargetItemId != null) {
+            return candidates.firstOrNull { it[Items.id] == duplicateTargetItemId }
+        }
+
+        return candidates.maxByOrNull { it[Items.updatedAt].toString() }
+    }
+
+    private fun normalizeItemName(value: String): String = value.trim().lowercase()
 
     fun updateItem(
         itemId: UUID,
@@ -491,6 +613,7 @@ class ItemService {
 
         return ItemResponse(
             id = row[Items.id].toString(),
+            qrToken = row[Items.qrToken],
             tuntasId = row[Items.tuntasId].toString(),
             custodianId = custodianId?.toString(),
             custodianName = custodianName,

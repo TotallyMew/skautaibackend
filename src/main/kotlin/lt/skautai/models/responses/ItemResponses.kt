@@ -11,6 +11,7 @@ data class ItemDistributionResponse(
 @Serializable
 data class ItemResponse(
     val id: String,
+    val qrToken: String,
     val tuntasId: String,
     val custodianId: String? = null,
     val custodianName: String? = null,
@@ -44,4 +45,15 @@ data class ItemResponse(
 data class ItemListResponse(
     val items: List<ItemResponse>,
     val total: Int
+)
+
+@Serializable
+data class ItemQrResolveResponse(
+    val itemId: String
+)
+
+@Serializable
+data class DuplicateItemConflictResponse(
+    val error: String,
+    val duplicateItem: ItemResponse
 )

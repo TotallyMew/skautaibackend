@@ -11,10 +11,13 @@ import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserRanks
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.UpdateItemRequest
+import lt.skautai.models.responses.DuplicateItemConflictResponse
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.ItemQrResolveResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
+import lt.skautai.services.DuplicateItemConflictException
 import lt.skautai.services.ItemScopeHelper
 import lt.skautai.services.ItemService
 import lt.skautai.services.PermissionContextService
@@ -78,6 +81,29 @@ fun Route.itemRoutes(itemService: ItemService) {
                     .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Item not found")) }
             }
 
+            get("resolve-qr/{token}") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val token = call.parameters["token"]?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("QR token required"))
+
+                itemService.resolveItemIdByQrToken(token, tuntasUUID, userId)
+                    .onSuccess { call.respond(HttpStatusCode.OK, ItemQrResolveResponse(itemId = it.toString())) }
+                    .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Item not found")) }
+            }
+
             post {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
@@ -117,7 +143,18 @@ fun Route.itemRoutes(itemService: ItemService) {
 
                 itemService.createItem(tuntasUUID, userId, request, isPendingApproval)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
-                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create item")) }
+                    .onFailure {
+                        when (it) {
+                            is DuplicateItemConflictException -> call.respond(
+                                HttpStatusCode.Conflict,
+                                DuplicateItemConflictResponse(
+                                    error = "Rastas toks pats daiktas. Pasirinkite: prideti prie esamo arba sukurti nauja irasa.",
+                                    duplicateItem = it.duplicateItem
+                                )
+                            )
+                            else -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create item"))
+                        }
+                    }
             }
 
             put("{id}") {

@@ -105,6 +105,106 @@ class ItemRoutesTest {
         assertEquals("COLLECTIVE", body["type"]?.jsonPrimitive?.content)
         assertEquals("CAMPING", body["category"]?.jsonPrimitive?.content)
         assertEquals("ACTIVE", body["status"]?.jsonPrimitive?.content)
+        assertNotNull(body["qrToken"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `create item with duplicate name returns 409 until user chooses action`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Palapine", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 2 }""")
+        }
+
+        val response = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "  Palapine  ", "type": "COLLECTIVE", "category": "CAMPING", "quantity": 1 }""")
+        }
+
+        assertEquals(HttpStatusCode.Conflict, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Palapine", body["duplicateItem"]!!.jsonObject["name"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `create item can add quantity to existing duplicate`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val existingResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Kirvis", "type": "COLLECTIVE", "category": "TOOLS", "quantity": 2 }""")
+        }
+        val existingId = Json.parseToJsonElement(existingResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """{
+                    "name": "Kirvis",
+                    "type": "COLLECTIVE",
+                    "category": "TOOLS",
+                    "quantity": 3,
+                    "duplicateHandling": "ADD_TO_EXISTING",
+                    "duplicateTargetItemId": "$existingId"
+                }""".trimIndent()
+            )
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(existingId, body["id"]!!.jsonPrimitive.content)
+        assertEquals(5, body["quantity"]!!.jsonPrimitive.content.toInt())
+    }
+
+    @Test
+    fun `create item can force new record even when duplicate exists`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Puodas", "type": "COLLECTIVE", "category": "COOKING", "quantity": 1 }""")
+        }
+
+        val response = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """{
+                    "name": "Puodas",
+                    "type": "COLLECTIVE",
+                    "category": "COOKING",
+                    "quantity": 1,
+                    "duplicateHandling": "CREATE_NEW"
+                }""".trimIndent()
+            )
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+
+        val listResponse = client.get("/api/items?type=COLLECTIVE&category=COOKING") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val items = Json.parseToJsonElement(listResponse.bodyAsText())
+            .jsonObject["items"]!!.jsonArray
+            .filter { it.jsonObject["name"]!!.jsonPrimitive.content == "Puodas" }
+        assertEquals(2, items.size)
     }
 
     @Test
@@ -193,6 +293,56 @@ class ItemRoutesTest {
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals("Kirvukas", body["name"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `resolve qr token returns item id for accessible item`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val createResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Kirvis", "type": "COLLECTIVE", "category": "TOOLS", "quantity": 1 }""")
+        }
+        val itemBody = Json.parseToJsonElement(createResponse.bodyAsText()).jsonObject
+        val itemId = itemBody["id"]!!.jsonPrimitive.content
+        val qrToken = itemBody["qrToken"]!!.jsonPrimitive.content
+
+        val response = client.get("/api/items/resolve-qr/$qrToken") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(itemId, body["itemId"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `resolve qr token returns 404 for inaccessible item`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Skautai 1")
+        val otherUnitId = createUnit(token, tuntasId, "Skautai 2")
+
+        val createResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Svetimas kirvis", "type": "COLLECTIVE", "category": "TOOLS", "quantity": 1, "custodianId": "$otherUnitId" }""")
+        }
+        val qrToken = Json.parseToJsonElement(createResponse.bodyAsText())
+            .jsonObject["qrToken"]!!.jsonPrimitive.content
+        val (memberToken, _) = registerUserWithRole(token, tuntasId, "Skautas", "qr-scope@test.com", ownUnitId)
+
+        val response = client.get("/api/items/resolve-qr/$qrToken") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
     }
 
     @Test

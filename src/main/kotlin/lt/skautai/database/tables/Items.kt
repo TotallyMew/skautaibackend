@@ -20,6 +20,7 @@ object Items : Table("items") {
     val sourceSharedItemId = uuid("source_shared_item_id").references(id).nullable()
     val responsibleUserId = uuid("responsible_user_id").references(Users.id).nullable()
     val createdByUserId = uuid("created_by_user_id").references(Users.id).nullable()
+    val qrToken = varchar("qr_token", 36).uniqueIndex()
     val photoUrl = text("photo_url").nullable()
     val purchaseDate = date("purchase_date").nullable()
     val purchasePrice = decimal("purchase_price", 10, 2).nullable()

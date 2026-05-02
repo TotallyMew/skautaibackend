@@ -155,6 +155,7 @@ CREATE TABLE items (
                        source_shared_item_id UUID REFERENCES items(id),
                        responsible_user_id UUID REFERENCES users(id),
                        created_by_user_id UUID REFERENCES users(id),
+                       qr_token VARCHAR(36) NOT NULL DEFAULT uuid_generate_v4()::text,
                        photo_url TEXT,
                        purchase_date DATE,
                        purchase_price DECIMAL(10,2),
@@ -673,6 +674,7 @@ CREATE TABLE user_draugove_memberships (
 CREATE INDEX idx_items_tuntas ON items(tuntas_id);
 CREATE INDEX idx_items_custodian ON items(custodian_id);
 CREATE INDEX idx_items_status ON items(status);
+CREATE UNIQUE INDEX idx_items_qr_token ON items(qr_token);
 CREATE INDEX idx_reservations_item ON reservations(item_id);
 CREATE INDEX idx_reservations_group ON reservations(group_id);
 CREATE INDEX idx_reservations_dates ON reservations(start_date, end_date);

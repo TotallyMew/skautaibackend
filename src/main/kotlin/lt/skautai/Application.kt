@@ -62,6 +62,10 @@ fun Application.configureDatabases() {
     val logger = log
     transaction {
         exec("SELECT 1")
+        exec("ALTER TABLE items ADD COLUMN IF NOT EXISTS qr_token VARCHAR(36)")
+        exec("UPDATE items SET qr_token = uuid_generate_v4()::text WHERE qr_token IS NULL")
+        exec("ALTER TABLE items ALTER COLUMN qr_token SET NOT NULL")
+        exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_qr_token ON items(qr_token)")
         logger.info("Database connected successfully")
     }
 }

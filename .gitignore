@@ -46,3 +46,12 @@ bin/
 
 
 loc.py
+plantuml/
+
+### Images / exported diagrams ###
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.svg

@@ -19,7 +19,9 @@ data class CreateItemRequest(
     val photoUrl: String? = null,
     val purchaseDate: String? = null,
     val purchasePrice: Double? = null,
-    val notes: String? = null
+    val notes: String? = null,
+    val duplicateHandling: String = "ASK",
+    val duplicateTargetItemId: String? = null
 )
 
 @Serializable
