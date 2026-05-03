@@ -133,7 +133,7 @@ class MemberRoutesTest {
     }
 
     @Test
-    fun `regular member can see all units but not other unit members`() = testApplication {
+    fun `regular member sees own unit but not other unit members`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val ownUnitId = createUnit(token, tuntasId, "Skautai 1")
@@ -154,7 +154,7 @@ class MemberRoutesTest {
         val units = Json.parseToJsonElement(unitsResponse.bodyAsText()).jsonObject["units"]!!.jsonArray
         val unitIds = units.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet()
         assertTrue(ownUnitId in unitIds)
-        assertTrue(otherUnitId in unitIds)
+        assertFalse(otherUnitId in unitIds)
 
         val otherUnitMembers = client.get("/api/organizational-units/$otherUnitId/members") {
             header("Authorization", "Bearer $memberToken")

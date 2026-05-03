@@ -218,7 +218,7 @@ class OrganizationalUnitRoutesTest {
     }
 
     @Test
-    fun `former unit leader still sees own unit and members after step down`() = testApplication {
+    fun `former unit leader with vadovas rank sees all units and members after step down`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
@@ -258,7 +258,7 @@ class OrganizationalUnitRoutesTest {
         }
         assertEquals(HttpStatusCode.OK, unitsResponse.status)
         val unitsBody = Json.parseToJsonElement(unitsResponse.bodyAsText()).jsonObject
-        assertEquals(1, unitsBody["total"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(2, unitsBody["total"]?.jsonPrimitive?.content?.toInt())
 
         val ownUnitMembersResponse = client.get("/api/organizational-units/$unitId/members") {
             header("Authorization", "Bearer $leaderToken")
@@ -270,7 +270,65 @@ class OrganizationalUnitRoutesTest {
             header("Authorization", "Bearer $leaderToken")
             header("X-Tuntas-Id", tuntasId)
         }
-        assertEquals(HttpStatusCode.Forbidden, otherUnitMembersResponse.status)
+        assertEquals(HttpStatusCode.OK, otherUnitMembersResponse.status)
+    }
+
+    @Test
+    fun `vadovas can read all units and unit members but cannot edit them`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Gildija", "GILDIJA")
+        val otherUnitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
+        val (vadovasToken, _) = registerSecondUser(
+            token = token,
+            tuntasId = tuntasId,
+            roleName = "Vadovas",
+            email = "vadovas-units@test.com",
+            organizationalUnitId = ownUnitId
+        )
+        val (_, skautasUserId) = registerSecondUser(
+            token = token,
+            tuntasId = tuntasId,
+            roleName = "Skautas",
+            email = "skautas-other-unit@test.com",
+            organizationalUnitId = otherUnitId
+        )
+
+        val unitsResponse = client.get("/api/organizational-units") {
+            header("Authorization", "Bearer $vadovasToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, unitsResponse.status)
+        val unitsBody = Json.parseToJsonElement(unitsResponse.bodyAsText()).jsonObject
+        assertEquals(2, unitsBody["total"]?.jsonPrimitive?.content?.toInt())
+
+        val otherUnitResponse = client.get("/api/organizational-units/$otherUnitId") {
+            header("Authorization", "Bearer $vadovasToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, otherUnitResponse.status)
+
+        val otherUnitMembersResponse = client.get("/api/organizational-units/$otherUnitId/members") {
+            header("Authorization", "Bearer $vadovasToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, otherUnitMembersResponse.status)
+
+        val updateUnitResponse = client.put("/api/organizational-units/$otherUnitId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $vadovasToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Pakeistas pavadinimas" }""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, updateUnitResponse.status)
+
+        val addMemberResponse = client.post("/api/organizational-units/$ownUnitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $vadovasToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$skautasUserId", "assignmentType": "MEMBER" }""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, addMemberResponse.status)
     }
 
     @Test
@@ -745,7 +803,7 @@ class OrganizationalUnitRoutesTest {
     }
 
     @Test
-    fun `unit leader can remove deputy and removed user loses own unit visibility`() = testApplication {
+    fun `unit leader can remove deputy and removed vadovas keeps read visibility`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
@@ -774,7 +832,7 @@ class OrganizationalUnitRoutesTest {
             header("Authorization", "Bearer $deputyToken")
             header("X-Tuntas-Id", tuntasId)
         }
-        assertEquals(HttpStatusCode.Forbidden, removedUnitMembers.status)
+        assertEquals(HttpStatusCode.OK, removedUnitMembers.status)
 
         org.jetbrains.exposed.sql.transactions.transaction {
             exec("SELECT term_status, left_at FROM user_leadership_roles WHERE user_id = '$deputyId' AND organizational_unit_id = '$unitId'") { rs ->

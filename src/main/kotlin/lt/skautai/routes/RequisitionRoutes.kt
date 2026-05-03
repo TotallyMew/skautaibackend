@@ -15,6 +15,7 @@ import lt.skautai.models.requests.CreateRequisitionRequest
 import lt.skautai.models.requests.RequisitionTopLevelReviewRequest
 import lt.skautai.models.requests.RequisitionUnitReviewRequest
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.PermissionContextService
@@ -131,6 +132,31 @@ fun Route.requisitionRoutes(service: RequisitionService) {
                 service.createRequest(tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create requisition")) }
+            }
+
+            delete("{id}") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try {
+                    UUID.fromString(tuntasId)
+                } catch (_: Exception) {
+                    return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val requestId = call.parameters["id"]
+                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Request ID required"))
+                val requestUUID = try {
+                    UUID.fromString(requestId)
+                } catch (_: Exception) {
+                    return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
+                }
+
+                service.cancelRequest(requestUUID, tuntasUUID, userId)
+                    .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Request cancelled")) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to cancel requisition")) }
             }
 
             post("{id}/unit-review") {

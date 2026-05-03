@@ -423,7 +423,7 @@ object PermissionSeeder {
         // Skautai: view and create reservations only
         // Patyres skautas: same as above plus bendras request
         // Vyr. skautas kandidatas / Vyr. skautas: same as Patyres skautas
-        // Vadovas: same permissions as Patyres skautas (unit-level leaders get more via their leadership role)
+        // Vadovas: broader read access across the tuntas, without unit/member edit permissions.
 
         "Skautas" to listOf(
             "items.view" to "OWN_UNIT",
@@ -467,8 +467,8 @@ object PermissionSeeder {
 
         "Vadovas" to listOf(
             "items.view" to "OWN_UNIT",
-            "members.view" to "OWN_UNIT",
-            "organizational_units.view" to "OWN_UNIT",
+            "members.view" to "ALL",
+            "organizational_units.view" to "ALL",
             "items.request.bendras" to "ALL",
             "requisitions.create" to "OWN_UNIT",
             "invitations.create" to "OWN_UNIT",

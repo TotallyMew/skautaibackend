@@ -289,6 +289,59 @@ class RequisitionService {
         }
     }
 
+    fun cancelRequest(
+        requestId: UUID,
+        tuntasId: UUID,
+        requestingUserId: UUID
+    ): Result<Unit> {
+        return transaction {
+            val existing = DraugoveRequisitions.selectAll()
+                .where {
+                    (DraugoveRequisitions.id eq requestId) and
+                        (DraugoveRequisitions.tuntasId eq tuntasId)
+                }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Request not found"))
+
+            if (existing[DraugoveRequisitions.createdByUserId] != requestingUserId) {
+                return@transaction Result.failure(Exception("You can only cancel your own requests"))
+            }
+
+            if (existing[DraugoveRequisitions.status] in listOf("APPROVED", "REJECTED", "CANCELLED")) {
+                return@transaction Result.failure(Exception("Request cannot be cancelled in its current state"))
+            }
+
+            val unitStatus = existing[DraugoveRequisitions.unitReviewStatus]
+            val topLevelStatus = existing[DraugoveRequisitions.topLevelReviewStatus]
+            val now = kotlinx.datetime.Clock.System.now()
+
+            DraugoveRequisitions.update({
+                (DraugoveRequisitions.id eq requestId) and
+                    (DraugoveRequisitions.tuntasId eq tuntasId)
+            }) {
+                it[status] = "CANCELLED"
+                it[reviewedByUserId] = requestingUserId
+                if (unitStatus == "PENDING") {
+                    it[unitReviewStatus] = "CANCELLED"
+                    it[unitReviewedByUserId] = requestingUserId
+                    it[unitReviewedAt] = now
+                }
+                if (topLevelStatus == "PENDING") {
+                    it[topLevelReviewStatus] = "CANCELLED"
+                    it[topLevelReviewedByUserId] = requestingUserId
+                    it[topLevelReviewedAt] = now
+                }
+                it[updatedAt] = now
+            }
+            DraugoveRequisitionItems.update({ DraugoveRequisitionItems.requisitionId eq requestId }) {
+                it[rejectionReason] = "Cancelled by requester"
+            }
+
+            Result.success(Unit)
+        }
+    }
+
     fun topLevelReview(
         requestId: UUID,
         tuntasId: UUID,
@@ -432,6 +485,7 @@ class RequisitionService {
             else -> if (requestingUnitId != null) "UNIT" else "TOP_LEVEL"
         }
         val lastAction = when {
+            row[DraugoveRequisitions.status] == "CANCELLED" -> "CANCELLED"
             row[DraugoveRequisitions.status] == "APPROVED" && row[DraugoveRequisitions.topLevelReviewStatus] == "APPROVED" -> "TOP_LEVEL_APPROVED"
             row[DraugoveRequisitions.status] == "APPROVED" && row[DraugoveRequisitions.unitReviewStatus] == "APPROVED" -> "UNIT_APPROVED"
             row[DraugoveRequisitions.unitReviewStatus] == "FORWARDED" -> "FORWARDED"

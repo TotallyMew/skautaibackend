@@ -881,6 +881,79 @@ class ReservationRoutesTest {
     }
 
     @Test
+    fun `mixed reservation movements are limited to matching inventory responsibility`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Mixed movement unit")
+        val unitItemId = client.createTestItem(token, tuntasId, name = "Unit rope", quantity = 4, custodianId = unitId)
+        val sharedItemId = client.createTestItem(token, tuntasId, name = "Shared stove", quantity = 4)
+        val (leaderToken, _) = registerUserWithRole(token, tuntasId, "Draugininkas", "mixed-move-leader@test.com", unitId)
+        val (memberToken, memberId) = registerUserWithRole(token, tuntasId, "Skautas", "mixed-move-member@test.com")
+        assignMember(token, tuntasId, unitId, memberId)
+
+        val createResponse = client.post("/api/reservations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "title": "Mixed movement", "items": [{ "itemId": "$unitItemId", "quantity": 1 }, { "itemId": "$sharedItemId", "quantity": 1 }], "startDate": "2026-10-20", "endDate": "2026-10-21", "requestingUnitId": "$unitId" }""")
+        }
+        assertEquals(HttpStatusCode.Created, createResponse.status)
+        val reservationId = Json.parseToJsonElement(createResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val unitReview = client.post("/api/reservations/$reservationId/unit-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "status": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, unitReview.status)
+        val afterUnitReview = Json.parseToJsonElement(unitReview.bodyAsText()).jsonObject
+        assertEquals("PENDING", afterUnitReview["status"]!!.jsonPrimitive.content)
+        assertEquals("APPROVED", afterUnitReview["unitReviewStatus"]!!.jsonPrimitive.content)
+        assertEquals("PENDING", afterUnitReview["topLevelReviewStatus"]!!.jsonPrimitive.content)
+
+        val topLevelReview = client.post("/api/reservations/$reservationId/top-level-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "status": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, topLevelReview.status)
+
+        val topLevelIssuesUnitItem = client.post("/api/reservations/$reservationId/issue") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [{ "itemId": "$unitItemId", "quantity": 1 }] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, topLevelIssuesUnitItem.status)
+
+        val leaderIssuesSharedItem = client.post("/api/reservations/$reservationId/issue") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [{ "itemId": "$sharedItemId", "quantity": 1 }] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, leaderIssuesSharedItem.status)
+
+        val leaderIssuesUnitItem = client.post("/api/reservations/$reservationId/issue") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [{ "itemId": "$unitItemId", "quantity": 1 }] }""")
+        }
+        assertEquals(HttpStatusCode.OK, leaderIssuesUnitItem.status)
+
+        val topLevelIssuesSharedItem = client.post("/api/reservations/$reservationId/issue") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [{ "itemId": "$sharedItemId", "quantity": 1 }] }""")
+        }
+        assertEquals(HttpStatusCode.OK, topLevelIssuesSharedItem.status)
+    }
+
+    @Test
     fun `reservation movement and review endpoints validate permissions and states`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
