@@ -35,9 +35,18 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                 if (!isActiveTuntasMember(callerUserId, tuntasUUID)) {
                     return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                 }
+                val permissionContext = PermissionContextService.resolve(callerUserId, tuntasUUID)
+                if (!permissionContext.has("organizational_units.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 val type = call.request.queryParameters["type"]
-                service.getUnits(tuntasUUID, type, visibleUnitIds = null)
+                val visibleUnitIds = if (permissionContext.hasAll("organizational_units.view")) {
+                    null
+                } else {
+                    permissionContext.scopedUnitIds("organizational_units.view")
+                }
+                service.getUnits(tuntasUUID, type, visibleUnitIds = visibleUnitIds)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch units")) }
             }

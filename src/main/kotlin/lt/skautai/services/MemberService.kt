@@ -668,36 +668,14 @@ class MemberService {
 
         if (!isActiveMember) return null
 
-        val activeLeadershipRoles = UserLeadershipRoles
-            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
-            .selectAll()
-            .where {
-                (UserLeadershipRoles.userId eq userId) and
-                    (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                    (UserLeadershipRoles.leftAt.isNull())
-            }
-            .map { it[Roles.name] }
-
-        val rankNames = UserRanks
-            .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
-            .selectAll()
-            .where {
-                (UserRanks.userId eq userId) and
-                    (UserRanks.tuntasId eq tuntasId)
-            }
-            .map { it[Roles.name] }
-
         val resolvedPermissions = resolveUserPermissions(userId, tuntasId)
-        val hasVadovasRank = rankNames.any { it == "Vadovas" }
-        val hasActiveLeadershipRole = activeLeadershipRoles.any { leadershipRoleRank(it) > 0 }
 
         return CallerContext(
             userId = userId,
             visibleUnitIds = loadCallerVisibleUnitIds(userId, tuntasId),
             canViewAllMembers = resolvedPermissions.any {
                 it.permissionName == "members.view" && it.scope == "ALL"
-            } || hasVadovasRank || hasActiveLeadershipRole
+            }
         )
     }
 
