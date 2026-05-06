@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import lt.skautai.plugins.configureSecurity
 import lt.skautai.routes.authRoutes
 import lt.skautai.routes.invitationRoutes
+import lt.skautai.routes.inventoryTemplateRoutes
 import lt.skautai.routes.itemRoutes
 import lt.skautai.routes.superAdminRoutes
 import lt.skautai.services.*
@@ -71,10 +72,10 @@ object TestHelper {
             CREATE SCHEMA public;
         """.trimIndent())
 
-            val schema = object {}.javaClass
-                .getResource("/schema.sql")
+            val schema = File("database/schema.sql")
+                .takeIf { it.exists() }
                 ?.readText()
-                ?: error("schema.sql not found in resources")
+                ?: error("database/schema.sql not found")
             exec(schema)
         }
     }
@@ -95,7 +96,7 @@ object TestHelper {
                     users, tuntai, bendras_inventory_requests, super_admins,
                     user_leadership_roles, user_ranks, role_permissions,
                     roles, permissions, locations, organizational_units,
-                    user_tuntas_memberships, unit_assignments, user_draugove_memberships,
+                    user_tuntas_memberships, unit_assignments,
                     invitations, items, reservations, events, draugove_requisitions,
                     draugove_requisition_items
                 CASCADE
@@ -129,6 +130,7 @@ object TestHelper {
             val eventService = EventService()
             val bendrasInventoryRequestService = BendrasInventoryRequestService()
             val requisitionService = RequisitionService()
+            val inventoryTemplateService = InventoryTemplateService()
             PermissionSeeder.seedPermissions()
             routing {
                 authRoutes(authService)
@@ -142,6 +144,7 @@ object TestHelper {
                 eventRoutes(eventService, memberService)
                 bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
                 requisitionRoutes(requisitionService)
+                inventoryTemplateRoutes(inventoryTemplateService)
                 userRoutes()
                 rolesRoutes()
                 uploadRoutes()

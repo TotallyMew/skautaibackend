@@ -228,6 +228,18 @@ class BendrasInventoryRequestService {
                 }
                 .any()
 
+            val isTopLevelLeader = UserLeadershipRoles
+                .innerJoin(Roles)
+                .selectAll()
+                .where {
+                    (UserLeadershipRoles.userId eq requestedByUserId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        (UserLeadershipRoles.leftAt.isNull()) and
+                        (Roles.name inList listOf("Tuntininkas", "Tuntininko pavaduotojas", "Inventorininkas"))
+                }
+                .any()
+
             val requesterRank = UserRanks
                 .innerJoin(Roles)
                 .selectAll()
@@ -239,8 +251,9 @@ class BendrasInventoryRequestService {
                 ?.get(Roles.name)
 
             val needsApproval = when {
+                isTopLevelLeader || hasLeadershipInUnit || isUnitLeader -> false
+                hasMembershipInUnit -> true
                 requesterRank in listOf("Skautas", "Patyres skautas") -> true
-                isUnitLeader -> false
                 else -> request.needsDraugininkasApproval ?: false
             }
 

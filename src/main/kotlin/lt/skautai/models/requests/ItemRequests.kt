@@ -3,6 +3,12 @@ package lt.skautai.models.requests
 import kotlinx.serialization.Serializable
 
 @Serializable
+data class ItemCustomFieldRequest(
+    val fieldName: String,
+    val fieldValue: String? = null
+)
+
+@Serializable
 data class CreateItemRequest(
     val name: String,
     val description: String? = null,
@@ -20,6 +26,7 @@ data class CreateItemRequest(
     val purchaseDate: String? = null,
     val purchasePrice: Double? = null,
     val notes: String? = null,
+    val customFields: List<ItemCustomFieldRequest> = emptyList(),
     val duplicateHandling: String = "ASK",
     val duplicateTargetItemId: String? = null
 )
@@ -41,6 +48,7 @@ data class UpdateItemRequest(
     val purchaseDate: String? = null,
     val purchasePrice: Double? = null,
     val notes: String? = null,
+    val customFields: List<ItemCustomFieldRequest>? = null,
     val status: String? = null,
     val clearCustodianId: Boolean = false,
     val clearLocationId: Boolean = false,

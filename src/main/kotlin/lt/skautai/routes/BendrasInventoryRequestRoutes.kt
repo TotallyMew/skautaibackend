@@ -37,9 +37,10 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@get
-
                 val userPerms = resolveUserPermissions(userId, tuntasUUID)
+                if (userPerms.none { it.permissionName == "items.view" }) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
                 val isAdmin = userPerms.any {
                     it.permissionName == "items.request.approve.bendras" && it.scope == "ALL"
                 }
@@ -64,8 +65,6 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                if (!checkPermission("items.view", tuntasUUID)) return@get
-
                 val requestId = call.parameters["id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Request ID required"))
                 val requestUUID = try { UUID.fromString(requestId) } catch (e: Exception) {
@@ -73,6 +72,9 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                 }
 
                 val userPerms = resolveUserPermissions(userId, tuntasUUID)
+                if (userPerms.none { it.permissionName == "items.view" }) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
                 val isAdmin = userPerms.any {
                     it.permissionName == "items.request.approve.bendras" && it.scope == "ALL"
                 }

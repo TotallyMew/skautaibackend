@@ -1,19 +1,30 @@
 package lt.skautai.services
 
 import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.ItemAssignments
+import lt.skautai.database.tables.ItemConditionLog
+import lt.skautai.database.tables.ItemCustomFields
 import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.Reservations
 import lt.skautai.database.tables.Roles
 import lt.skautai.database.tables.UnitAssignments
 import lt.skautai.database.tables.UserLeadershipRoles
+import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateItemRequest
+import lt.skautai.models.requests.ItemCustomFieldRequest
 import lt.skautai.models.requests.UpdateItemRequest
+import lt.skautai.models.responses.ItemCustomFieldResponse
+import lt.skautai.models.responses.ItemAssignmentListResponse
+import lt.skautai.models.responses.ItemAssignmentResponse
+import lt.skautai.models.responses.ItemConditionLogListResponse
+import lt.skautai.models.responses.ItemConditionLogResponse
 import lt.skautai.models.responses.ItemListResponse
 import lt.skautai.models.responses.ItemResponse
 import kotlinx.datetime.Clock
 import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.io.File
 import java.util.*
@@ -175,6 +186,10 @@ class ItemService {
                 return@transaction Result.failure(Exception("Invalid duplicate handling option"))
             }
 
+            validateCustomFields(request.customFields)?.let {
+                return@transaction Result.failure(it)
+            }
+
             val custodianUUID = request.custodianId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid custodian ID"))
@@ -213,6 +228,9 @@ class ItemService {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid responsible user ID"))
                 }
+            }
+            validateResponsibleUser(responsibleUUID, tuntasId)?.let {
+                return@transaction Result.failure(it)
             }
 
             val purchaseDate = request.purchaseDate?.let {
@@ -289,6 +307,16 @@ class ItemService {
                 it[updatedAt] = now
             } get Items.id
 
+            replaceCustomFields(itemId, request.customFields)
+            upsertResponsibleAssignment(
+                itemId = itemId,
+                previousResponsibleUserId = null,
+                nextResponsibleUserId = responsibleUUID,
+                assignedByUserId = createdByUserId,
+                reason = "INITIAL_ASSIGNMENT",
+                notes = null
+            )
+
             val item = Items.selectAll()
                 .where { Items.id eq itemId }
                 .first()
@@ -337,7 +365,8 @@ class ItemService {
     fun updateItem(
         itemId: UUID,
         tuntasId: UUID,
-        request: UpdateItemRequest
+        request: UpdateItemRequest,
+        updatedByUserId: UUID? = null
     ): Result<ItemResponse> {
         return transaction {
             val existing = Items.selectAll()
@@ -431,12 +460,30 @@ class ItemService {
                     return@transaction Result.failure(Exception("Invalid responsible user ID"))
                 }
             }
+            val nextResponsibleUserId = when {
+                request.clearResponsibleUserId -> null
+                request.responsibleUserId != null -> responsibleUUID
+                else -> existing[Items.responsibleUserId]
+            }
+            validateResponsibleUser(nextResponsibleUserId, tuntasId)?.let {
+                return@transaction Result.failure(it)
+            }
 
             val purchaseDate = request.purchaseDate?.let {
                 try { kotlinx.datetime.LocalDate.parse(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
                 }
             }
+
+            request.customFields?.let { fields ->
+                validateCustomFields(fields)?.let {
+                    return@transaction Result.failure(it)
+                }
+            }
+
+            val previousCondition = existing[Items.condition]
+            val previousResponsibleUserId = existing[Items.responsibleUserId]
+            val now = Clock.System.now()
 
             Items.update({ (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }) {
                 request.name?.let { v -> it[name] = v }
@@ -467,13 +514,93 @@ class ItemService {
                     request.responsibleUserId != null -> it[responsibleUserId] = responsibleUUID
                 }
                 purchaseDate?.let { v -> it[this.purchaseDate] = v }
+                it[updatedAt] = now
             }
+
+            request.customFields?.let { replaceCustomFields(itemId, it) }
+            val nextCondition = request.condition ?: previousCondition
+            if (nextCondition != previousCondition) {
+                ItemConditionLog.insert {
+                    it[this.itemId] = itemId
+                    it[this.previousCondition] = previousCondition
+                    it[this.newCondition] = nextCondition
+                    it[this.reportedByUserId] = updatedByUserId
+                    it[this.reportedAt] = now
+                    it[this.notes] = request.notes
+                }
+            }
+            upsertResponsibleAssignment(
+                itemId = itemId,
+                previousResponsibleUserId = previousResponsibleUserId,
+                nextResponsibleUserId = nextResponsibleUserId,
+                assignedByUserId = updatedByUserId,
+                reason = "RESPONSIBLE_USER_CHANGED",
+                notes = request.notes
+            )
 
             val updated = Items.selectAll()
                 .where { Items.id eq itemId }
                 .first()
 
             Result.success(toItemResponse(updated))
+        }
+    }
+
+    fun getItemAssignments(
+        itemId: UUID,
+        tuntasId: UUID,
+        requestingUserId: UUID
+    ): Result<ItemAssignmentListResponse> {
+        return transaction {
+            getItem(itemId, tuntasId, requestingUserId).getOrElse {
+                return@transaction Result.failure(it)
+            }
+            val assignments = ItemAssignments.selectAll()
+                .where { ItemAssignments.itemId eq itemId }
+                .orderBy(ItemAssignments.assignedAt to SortOrder.DESC)
+                .map { row ->
+                    ItemAssignmentResponse(
+                        id = row[ItemAssignments.id].toString(),
+                        itemId = row[ItemAssignments.itemId].toString(),
+                        assignedToUserId = row[ItemAssignments.assignedToUserId].toString(),
+                        assignedToUserName = userDisplayName(row[ItemAssignments.assignedToUserId]),
+                        assignedByUserId = row[ItemAssignments.assignedByUserId]?.toString(),
+                        assignedByUserName = userDisplayName(row[ItemAssignments.assignedByUserId]),
+                        assignedAt = row[ItemAssignments.assignedAt].toString(),
+                        unassignedAt = row[ItemAssignments.unassignedAt]?.toString(),
+                        reason = row[ItemAssignments.reason],
+                        notes = row[ItemAssignments.notes]
+                    )
+                }
+            Result.success(ItemAssignmentListResponse(assignments, assignments.size))
+        }
+    }
+
+    fun getItemConditionLog(
+        itemId: UUID,
+        tuntasId: UUID,
+        requestingUserId: UUID
+    ): Result<ItemConditionLogListResponse> {
+        return transaction {
+            getItem(itemId, tuntasId, requestingUserId).getOrElse {
+                return@transaction Result.failure(it)
+            }
+            val entries = ItemConditionLog.selectAll()
+                .where { ItemConditionLog.itemId eq itemId }
+                .orderBy(ItemConditionLog.reportedAt to SortOrder.DESC)
+                .map { row ->
+                    ItemConditionLogResponse(
+                        id = row[ItemConditionLog.id].toString(),
+                        itemId = row[ItemConditionLog.itemId].toString(),
+                        previousCondition = row[ItemConditionLog.previousCondition],
+                        newCondition = row[ItemConditionLog.newCondition],
+                        reportedByUserId = row[ItemConditionLog.reportedByUserId]?.toString(),
+                        reportedByUserName = userDisplayName(row[ItemConditionLog.reportedByUserId]),
+                        reportedAt = row[ItemConditionLog.reportedAt].toString(),
+                        notes = row[ItemConditionLog.notes]
+                    )
+                }
+            Result.success(ItemConditionLogListResponse(entries, entries.size))
         }
     }
 
@@ -571,11 +698,9 @@ class ItemService {
                 ?.get(OrganizationalUnits.name)
         }
         val createdByUserName = row[Items.createdByUserId]?.let { userId ->
-            Users.selectAll()
-                .where { Users.id eq userId }
-                .firstOrNull()
-                ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+            userDisplayName(userId)
         }
+        val responsibleUserName = userDisplayName(row[Items.responsibleUserId])
 
         val quantityBreakdown = if (custodianId == null) {
             Items.selectAll()
@@ -610,6 +735,16 @@ class ItemService {
         val locationNodes = locationRows.associate { it[Locations.id] to it.toLocationNodeData() }
         val locationName = locationId?.let { id -> locationNodes[id]?.name }
         val locationPath = locationId?.let { id -> buildLocationPath(id, locationNodes) }
+        val customFields = ItemCustomFields.selectAll()
+            .where { ItemCustomFields.itemId eq row[Items.id] }
+            .orderBy(ItemCustomFields.fieldName to SortOrder.ASC)
+            .map {
+                ItemCustomFieldResponse(
+                    id = it[ItemCustomFields.id].toString(),
+                    fieldName = it[ItemCustomFields.fieldName],
+                    fieldValue = it[ItemCustomFields.fieldValue]
+                )
+            }
 
         return ItemResponse(
             id = row[Items.id].toString(),
@@ -630,18 +765,109 @@ class ItemService {
               temporaryStorageLabel = row[Items.temporaryStorageLabel],
               sourceSharedItemId = row[Items.sourceSharedItemId]?.toString(),
               responsibleUserId = row[Items.responsibleUserId]?.toString(),
+              responsibleUserName = responsibleUserName,
               createdByUserId = row[Items.createdByUserId]?.toString(),
               createdByUserName = createdByUserName,
               photoUrl = row[Items.photoUrl],
             purchaseDate = row[Items.purchaseDate]?.toString(),
             purchasePrice = row[Items.purchasePrice]?.toDouble(),
             notes = row[Items.notes],
+            customFields = customFields,
             quantityBreakdown = quantityBreakdown,
             totalQuantityAcrossCustodians = totalQuantityAcrossCustodians,
             status = row[Items.status],
             createdAt = row[Items.createdAt].toString(),
             updatedAt = row[Items.updatedAt].toString()
         )
+    }
+
+    private fun validateCustomFields(fields: List<ItemCustomFieldRequest>): Exception? {
+        val names = mutableSetOf<String>()
+        fields.forEach { field ->
+            val normalizedName = field.fieldName.trim()
+            if (normalizedName.isBlank()) {
+                return Exception("Custom field name is required")
+            }
+            if (normalizedName.length > 100) {
+                return Exception("Custom field name must be at most 100 characters")
+            }
+            if (!names.add(normalizedName.lowercase())) {
+                return Exception("Duplicate custom field name")
+            }
+        }
+        return null
+    }
+
+    private fun replaceCustomFields(itemId: UUID, fields: List<ItemCustomFieldRequest>) {
+        ItemCustomFields.deleteWhere { ItemCustomFields.itemId eq itemId }
+        fields.forEach { field ->
+            val normalizedName = field.fieldName.trim()
+            ItemCustomFields.insert {
+                it[this.itemId] = itemId
+                it[fieldName] = normalizedName
+                it[fieldValue] = field.fieldValue?.takeIf { value -> value.isNotBlank() }
+            }
+        }
+    }
+
+    private fun validateResponsibleUser(userId: UUID?, tuntasId: UUID): Exception? {
+        if (userId == null) return null
+        Users.selectAll()
+            .where {
+                Users.id eq userId
+            }
+            .firstOrNull()
+            ?: return Exception("Responsible user not found")
+
+        val belongsToTuntas = UserTuntasMemberships.selectAll()
+            .where {
+                (UserTuntasMemberships.userId eq userId) and
+                    (UserTuntasMemberships.tuntasId eq tuntasId) and
+                    UserTuntasMemberships.leftAt.isNull()
+            }
+            .firstOrNull() != null
+
+        return if (!belongsToTuntas) {
+            Exception("Responsible user must belong to this tuntas")
+        } else {
+            null
+        }
+    }
+
+    private fun upsertResponsibleAssignment(
+        itemId: UUID,
+        previousResponsibleUserId: UUID?,
+        nextResponsibleUserId: UUID?,
+        assignedByUserId: UUID?,
+        reason: String,
+        notes: String?
+    ) {
+        if (previousResponsibleUserId == nextResponsibleUserId) return
+        val now = Clock.System.now()
+        ItemAssignments.update({
+            (ItemAssignments.itemId eq itemId) and
+                ItemAssignments.unassignedAt.isNull()
+        }) {
+            it[unassignedAt] = now
+        }
+        if (nextResponsibleUserId != null) {
+            ItemAssignments.insert {
+                it[this.itemId] = itemId
+                it[assignedToUserId] = nextResponsibleUserId
+                it[this.assignedByUserId] = assignedByUserId
+                it[assignedAt] = now
+                it[this.reason] = reason
+                it[this.notes] = notes
+            }
+        }
+    }
+
+    private fun userDisplayName(userId: UUID?): String? {
+        if (userId == null) return null
+        return Users.selectAll()
+            .where { Users.id eq userId }
+            .firstOrNull()
+            ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
     }
 
     private fun validateItemLocation(

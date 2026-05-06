@@ -5,6 +5,7 @@ import io.ktor.server.routing.*
 import lt.skautai.routes.authRoutes
 import lt.skautai.routes.bendrasInventoryRequestRoutes
 import lt.skautai.routes.invitationRoutes
+import lt.skautai.routes.inventoryTemplateRoutes
 import lt.skautai.routes.itemRoutes
 import lt.skautai.routes.superAdminRoutes
 import lt.skautai.routes.locationRoutes
@@ -14,6 +15,7 @@ import lt.skautai.routes.requisitionRoutes
 import lt.skautai.services.AuthService
 import lt.skautai.services.InvitationService
 import lt.skautai.services.ItemService
+import lt.skautai.services.InventoryTemplateService
 import lt.skautai.services.LocationService
 import lt.skautai.services.OrganizationalUnitService
 import lt.skautai.services.MemberService
@@ -38,6 +40,7 @@ fun Application.configureRouting() {
     val eventService = EventService()
     val bendrasInventoryRequestService = BendrasInventoryRequestService()
     val requisitionService = RequisitionService()
+    val inventoryTemplateService = InventoryTemplateService()
 
     routing {
         authRoutes(authService)
@@ -51,6 +54,7 @@ fun Application.configureRouting() {
         eventRoutes(eventService, memberService)
         bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
         requisitionRoutes(requisitionService)
+        inventoryTemplateRoutes(inventoryTemplateService)
         userRoutes()
         rolesRoutes()
         uploadRoutes()

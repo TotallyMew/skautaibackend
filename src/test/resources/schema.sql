@@ -170,23 +170,6 @@ CREATE TRIGGER update_items_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Item addition requests
-CREATE TABLE item_addition_requests (
-                                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                                        tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
-                                        requested_by_user_id UUID NOT NULL REFERENCES users(id),
-                                        reviewed_by_user_id UUID REFERENCES users(id),
-                                        target_owner_type VARCHAR(20) NOT NULL CHECK (target_owner_type IN ('TUNTAS', 'DRAUGOVE')),
-                                        target_owner_id UUID NOT NULL,
-                                        item_name VARCHAR(200) NOT NULL,
-                                        description TEXT,
-                                        quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
-                                        category VARCHAR(20),
-                                        status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
-                                        rejection_reason TEXT,
-                                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                        reviewed_at TIMESTAMP
-);
-
 -- Item custom fields
 CREATE TABLE item_custom_fields (
                                     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -659,17 +642,6 @@ CREATE TABLE unit_assignments (
 );
 
 -- Legacy memberships table (kept for backward compatibility)
-CREATE TABLE user_draugove_memberships (
-                                           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                                           user_id UUID NOT NULL REFERENCES users(id),
-                                           organizational_unit_id UUID NOT NULL REFERENCES organizational_units(id) ON DELETE CASCADE,
-                                           tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
-                                           is_lent BOOLEAN NOT NULL DEFAULT FALSE,
-                                           assigned_by_user_id UUID REFERENCES users(id),
-                                           joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                           left_at TIMESTAMP
-);
-
 -- Indexes
 CREATE INDEX idx_items_tuntas ON items(tuntas_id);
 CREATE INDEX idx_items_custodian ON items(custodian_id);
@@ -720,6 +692,3 @@ CREATE INDEX idx_bendras_inventory_request_items_request ON bendras_inventory_re
 CREATE INDEX idx_unit_assignments_user ON unit_assignments(user_id);
 CREATE INDEX idx_unit_assignments_tuntas ON unit_assignments(tuntas_id);
 CREATE INDEX idx_unit_assignments_unit ON unit_assignments(organizational_unit_id);
-CREATE INDEX idx_user_draugove_memberships_user ON user_draugove_memberships(user_id);
-CREATE INDEX idx_user_draugove_memberships_tuntas ON user_draugove_memberships(tuntas_id);
-CREATE INDEX idx_user_draugove_memberships_unit ON user_draugove_memberships(organizational_unit_id);

@@ -66,6 +66,16 @@ fun Application.configureDatabases() {
         exec("UPDATE items SET qr_token = uuid_generate_v4()::text WHERE qr_token IS NULL")
         exec("ALTER TABLE items ALTER COLUMN qr_token SET NOT NULL")
         exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_qr_token ON items(qr_token)")
+        exec(
+            """
+            CREATE TABLE IF NOT EXISTS item_custom_fields (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                field_name VARCHAR(100) NOT NULL,
+                field_value TEXT
+            )
+            """.trimIndent()
+        )
         logger.info("Database connected successfully")
     }
 }
