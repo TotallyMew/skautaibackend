@@ -3,14 +3,17 @@ package lt.skautai.services
 import kotlinx.datetime.LocalDate
 import lt.skautai.database.tables.DraugoveRequisitionItems
 import lt.skautai.database.tables.DraugoveRequisitions
+import lt.skautai.database.tables.Items
 import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.Roles
 import lt.skautai.database.tables.UnitAssignments
 import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserRanks
 import lt.skautai.models.requests.CreateRequisitionRequest
+import lt.skautai.models.requests.AddRequisitionToInventoryRequest
 import lt.skautai.models.requests.RequisitionTopLevelReviewRequest
 import lt.skautai.models.requests.RequisitionUnitReviewRequest
+import lt.skautai.models.requests.RequisitionMarkPurchasedRequest
 import lt.skautai.models.responses.RequisitionItemResponse
 import lt.skautai.models.responses.RequisitionListResponse
 import lt.skautai.models.responses.RequisitionResponse
@@ -401,6 +404,215 @@ class RequisitionService {
         }
     }
 
+    fun markPurchased(
+        requestId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        request: RequisitionMarkPurchasedRequest
+    ): Result<RequisitionResponse> {
+        return transaction {
+            val existing = DraugoveRequisitions.selectAll()
+                .where {
+                    (DraugoveRequisitions.id eq requestId) and
+                        (DraugoveRequisitions.tuntasId eq tuntasId)
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Request not found"))
+
+            if (existing[DraugoveRequisitions.status] != "APPROVED") {
+                return@transaction Result.failure(Exception("Only approved requests can be marked as purchased"))
+            }
+
+            val now = kotlinx.datetime.Clock.System.now()
+            DraugoveRequisitions.update({ DraugoveRequisitions.id eq requestId }) {
+                it[status] = "PURCHASED"
+                it[purchasedByUserId] = userId
+                it[purchasedAt] = now
+                if (!request.notes.isNullOrBlank()) {
+                    it[notes] = mergePlainNotes(existing[DraugoveRequisitions.notes], request.notes)
+                }
+            }
+
+            val updated = DraugoveRequisitions.selectAll()
+                .where { DraugoveRequisitions.id eq requestId }
+                .first()
+            Result.success(toResponse(updated))
+        }
+    }
+
+    fun addPurchasedItemsToInventory(
+        requestId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        request: AddRequisitionToInventoryRequest
+    ): Result<RequisitionResponse> {
+        return transaction {
+            val existing = DraugoveRequisitions.selectAll()
+                .where {
+                    (DraugoveRequisitions.id eq requestId) and
+                        (DraugoveRequisitions.tuntasId eq tuntasId)
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Request not found"))
+
+            if (existing[DraugoveRequisitions.status] != "PURCHASED") {
+                return@transaction Result.failure(Exception("Only purchased requests can be added to inventory"))
+            }
+            if (request.items.isEmpty()) {
+                return@transaction Result.failure(Exception("At least one inventory action is required"))
+            }
+
+            val linesById = DraugoveRequisitionItems.selectAll()
+                .where { DraugoveRequisitionItems.requisitionId eq requestId }
+                .associateBy { it[DraugoveRequisitionItems.id] }
+
+            val now = kotlinx.datetime.Clock.System.now()
+            request.items.forEach { action ->
+                val lineId = try {
+                    UUID.fromString(action.requisitionItemId)
+                } catch (_: Exception) {
+                    return@transaction Result.failure(Exception("Invalid requisition item ID"))
+                }
+                val line = linesById[lineId]
+                    ?: return@transaction Result.failure(Exception("Requisition item not found"))
+                if (line[DraugoveRequisitionItems.itemId] != null) {
+                    return@transaction Result.failure(Exception("Requisition item is already added to inventory"))
+                }
+
+                val quantity = line[DraugoveRequisitionItems.quantityApproved]
+                    ?: line[DraugoveRequisitionItems.quantityRequested]
+                if (quantity < 1) {
+                    return@transaction Result.failure(Exception("Approved quantity must be at least 1"))
+                }
+
+                val purchaseDate = action.purchaseDate?.let {
+                    try { LocalDate.parse(it) } catch (_: Exception) {
+                        return@transaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
+                    }
+                }
+
+                when (action.action) {
+                    "NEW_ITEM" -> {
+                        val custodianUUID = action.custodianId?.let {
+                            try { UUID.fromString(it) } catch (_: Exception) {
+                                return@transaction Result.failure(Exception("Invalid custodian ID"))
+                            }
+                        } ?: existing[DraugoveRequisitions.organizationalUnitId]
+
+                        custodianUUID?.let { unitId ->
+                            OrganizationalUnits.selectAll()
+                                .where {
+                                    (OrganizationalUnits.id eq unitId) and
+                                        (OrganizationalUnits.tuntasId eq tuntasId)
+                                }
+                                .firstOrNull()
+                                ?: return@transaction Result.failure(Exception("Custodian unit not found in this tuntas"))
+                        }
+
+                        if (action.type !in listOf("COLLECTIVE", "ASSIGNED", "INDIVIDUAL")) {
+                            return@transaction Result.failure(Exception("Invalid inventory type"))
+                        }
+                        if (action.condition !in listOf("GOOD", "DAMAGED", "LOST", "REPAIR_NEEDED", "UNKNOWN")) {
+                            return@transaction Result.failure(Exception("Invalid item condition"))
+                        }
+
+                        val createdItemId = Items.insert {
+                            it[this.tuntasId] = tuntasId
+                            it[custodianId] = custodianUUID
+                            it[origin] = "UNIT_ACQUIRED"
+                            it[name] = line[DraugoveRequisitionItems.itemName] ?: "Nupirktas daiktas"
+                            it[description] = line[DraugoveRequisitionItems.itemDescription]
+                            it[type] = action.type
+                            it[category] = action.category
+                            it[condition] = action.condition
+                            it[Items.quantity] = quantity
+                            it[locationId] = null
+                            it[temporaryStorageLabel] = null
+                            it[sourceSharedItemId] = null
+                            it[responsibleUserId] = null
+                            it[createdByUserId] = userId
+                            it[qrToken] = UUID.randomUUID().toString()
+                            it[photoUrl] = null
+                            it[this.purchaseDate] = purchaseDate
+                            it[purchasePrice] = action.purchasePrice?.toBigDecimal()
+                            it[notes] = action.notes ?: line[DraugoveRequisitionItems.notes]
+                            it[status] = "ACTIVE"
+                            it[createdAt] = now
+                            it[updatedAt] = now
+                        } get Items.id
+
+                        DraugoveRequisitionItems.update({ DraugoveRequisitionItems.id eq lineId }) {
+                            it[itemId] = createdItemId
+                        }
+                        ItemService.recordItemHistory(
+                            itemId = createdItemId,
+                            eventType = "PURCHASED_NEW",
+                            quantityChange = quantity,
+                            performedByUserId = userId,
+                            requisitionId = requestId,
+                            notes = action.notes ?: "Nupirkta pagal pirkimo prašymą",
+                            createdAt = now
+                        )
+                    }
+                    "RESTOCK_EXISTING" -> {
+                        val existingItemId = try {
+                            UUID.fromString(action.existingItemId ?: return@transaction Result.failure(Exception("existingItemId is required")))
+                        } catch (_: Exception) {
+                            return@transaction Result.failure(Exception("Invalid existing item ID"))
+                        }
+                        val item = Items.selectAll()
+                            .where {
+                                (Items.id eq existingItemId) and
+                                    (Items.tuntasId eq tuntasId) and
+                                    (Items.status eq "ACTIVE")
+                            }
+                            .forUpdate()
+                            .firstOrNull()
+                            ?: return@transaction Result.failure(Exception("Existing item not found"))
+
+                        Items.update({ Items.id eq existingItemId }) {
+                            it[Items.quantity] = item[Items.quantity] + quantity
+                            action.purchaseDate?.let { _ -> it[Items.purchaseDate] = purchaseDate }
+                            action.purchasePrice?.let { value -> it[purchasePrice] = value.toBigDecimal() }
+                            if (!action.notes.isNullOrBlank()) it[notes] = action.notes
+                            it[updatedAt] = now
+                        }
+                        DraugoveRequisitionItems.update({ DraugoveRequisitionItems.id eq lineId }) {
+                            it[itemId] = existingItemId
+                        }
+                        ItemService.recordItemHistory(
+                            itemId = existingItemId,
+                            eventType = "RESTOCKED",
+                            quantityChange = quantity,
+                            performedByUserId = userId,
+                            requisitionId = requestId,
+                            notes = action.notes ?: "Papildyta pagal pirkimo prašymą",
+                            createdAt = now
+                        )
+                    }
+                    else -> return@transaction Result.failure(Exception("Invalid inventory action"))
+                }
+            }
+
+            val remaining = DraugoveRequisitionItems.selectAll()
+                .where { DraugoveRequisitionItems.requisitionId eq requestId }
+                .any { it[DraugoveRequisitionItems.itemId] == null }
+
+            DraugoveRequisitions.update({ DraugoveRequisitions.id eq requestId }) {
+                if (!remaining) {
+                    it[status] = "INVENTORY_ADDED"
+                    it[addedToInventoryAt] = now
+                    it[addedToInventoryByUserId] = userId
+                }
+            }
+
+            val updated = DraugoveRequisitions.selectAll()
+                .where { DraugoveRequisitions.id eq requestId }
+                .first()
+            Result.success(toResponse(updated))
+        }
+    }
+
     private fun isUnitLeader(userId: UUID, tuntasId: UUID, unitId: UUID): Boolean {
         return UserLeadershipRoles
             .innerJoin(Roles)
@@ -486,6 +698,8 @@ class RequisitionService {
         }
         val lastAction = when {
             row[DraugoveRequisitions.status] == "CANCELLED" -> "CANCELLED"
+            row[DraugoveRequisitions.status] == "INVENTORY_ADDED" -> "INVENTORY_ADDED"
+            row[DraugoveRequisitions.status] == "PURCHASED" -> "PURCHASED"
             row[DraugoveRequisitions.status] == "APPROVED" && row[DraugoveRequisitions.topLevelReviewStatus] == "APPROVED" -> "TOP_LEVEL_APPROVED"
             row[DraugoveRequisitions.status] == "APPROVED" && row[DraugoveRequisitions.unitReviewStatus] == "APPROVED" -> "UNIT_APPROVED"
             row[DraugoveRequisitions.unitReviewStatus] == "FORWARDED" -> "FORWARDED"
@@ -507,6 +721,8 @@ class RequisitionService {
             topLevelReviewStatus = row[DraugoveRequisitions.topLevelReviewStatus],
             topLevelReviewedByUserId = row[DraugoveRequisitions.topLevelReviewedByUserId]?.toString(),
             topLevelReviewedAt = row[DraugoveRequisitions.topLevelReviewedAt]?.toString(),
+            purchasedAt = row[DraugoveRequisitions.purchasedAt]?.toString(),
+            addedToInventoryAt = row[DraugoveRequisitions.addedToInventoryAt]?.toString(),
             reviewLevel = reviewLevel,
             lastAction = lastAction,
             neededByDate = neededByDate,
@@ -524,6 +740,12 @@ class RequisitionService {
             if (rawNotes.isNotBlank()) add(rawNotes)
         }
         return lines.takeIf { it.isNotEmpty() }?.joinToString("\n")
+    }
+
+    private fun mergePlainNotes(existing: String?, addition: String?): String? {
+        val next = addition?.trim().orEmpty()
+        if (next.isBlank()) return existing
+        return listOfNotNull(existing?.takeIf { it.isNotBlank() }, next).joinToString("\n")
     }
 
     private fun stripNeededByDate(notes: String?): String? {

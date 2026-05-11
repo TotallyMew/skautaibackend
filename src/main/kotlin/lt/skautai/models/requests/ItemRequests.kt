@@ -55,3 +55,24 @@ data class UpdateItemRequest(
     val clearSourceSharedItemId: Boolean = false,
     val clearResponsibleUserId: Boolean = false
 )
+
+@Serializable
+data class TransferItemToUnitRequest(
+    val targetUnitId: String,
+    val quantity: Int,
+    val notes: String? = null
+)
+
+@Serializable
+data class ReturnItemToSharedRequest(
+    val quantity: Int,
+    val notes: String? = null
+)
+
+@Serializable
+data class RestockItemRequest(
+    val quantity: Int,
+    val purchaseDate: String? = null,
+    val purchasePrice: Double? = null,
+    val notes: String? = null
+)

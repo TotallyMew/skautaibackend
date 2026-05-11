@@ -353,7 +353,11 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                     if (!eventService.isTuntasMember(userId, tuntasUUID)) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                     }
-                    val canManageInventory = eventService.canManageEventInventory(eventUUID, tuntasUUID, userId)
+                    val userPermissions = resolveUserPermissions(userId, tuntasUUID)
+                    val canManageInventory = eventService.canManageEventInventory(eventUUID, tuntasUUID, userId) ||
+                        userPermissions.any {
+                            it.permissionName == "events.inventory.distribute" && it.scope == "ALL"
+                        }
                     val request = call.receive<CreateEventInventoryMovementRequest>()
                     eventService.createInventoryMovement(eventUUID, tuntasUUID, userId, request, canManageInventory)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }

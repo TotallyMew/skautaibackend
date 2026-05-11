@@ -21,7 +21,7 @@ class EventService {
         "VADOVAS", "SAVANORIS", "PATYRE_SKAUTAS", "SKAUTAS",
         "PROGRAMERIS", "MAISTININKAS"
     )
-    private val validTargetGroups = listOf("PATYRE_SKAUTAI", "SKAUTAI_VILKAI", "TEVAI")
+    private val validTargetGroups = listOf("VILKAI", "SKAUTAI", "PATYRE_SKAUTAI", "VYR_SKAUTAI", "VYR_SKAUTES", "SKAUTAI_VILKAI", "TEVAI")
     private val eventManagerRoles = listOf("VIRSININKAS")
     private val eventInventoryRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS")
     private val validBucketTypes = listOf("PROGRAM", "KITCHEN", "ADMIN", "MEDICAL", "PASTOVYKLE", "OTHER")
@@ -42,7 +42,7 @@ class EventService {
         "TRANSFER"
     )
     private val vadovasRankName = "Vadovas"
-    private val seniorScoutRankNames = setOf("Vyr. skautas", "Vyr. skautas kandidatas")
+    private val seniorScoutRankNames = setOf("Patyres skautas", "Patyręs skautas", "Vyr. skautas", "Vyr. skautas kandidatas")
     private val globalEventRoleNames = setOf("Tuntininkas", "Tuntininko pavaduotojas")
     private val seniorScoutUnitTypes = setOf("VYR_SKAUTU_VIENETAS", "VYR_SKAUCIU_VIENETAS")
 
@@ -54,6 +54,38 @@ class EventService {
                         (UserTuntasMemberships.leftAt.isNull())
             }
             .firstOrNull() != null
+    }
+
+    private fun ensureUserHasNoEventStaffRole(
+        eventId: UUID,
+        userId: UUID,
+        excludingPastovykleId: UUID? = null
+    ): Exception? {
+        val existingRole = EventRoles.selectAll()
+            .where {
+                (EventRoles.eventId eq eventId) and
+                    (EventRoles.userId eq userId)
+            }
+            .firstOrNull()
+
+        if (existingRole != null) {
+            return Exception("User already has an event staff role")
+        }
+
+        val existingPastovykle = Pastovykles.selectAll()
+            .where {
+                (Pastovykles.eventId eq eventId) and
+                    (Pastovykles.responsibleUserId eq userId)
+            }
+            .firstOrNull { row ->
+                excludingPastovykleId == null || row[Pastovykles.id] != excludingPastovykleId
+            }
+
+        return if (existingPastovykle != null) {
+            Exception("User already has an event staff role")
+        } else {
+            null
+        }
     }
 
     fun canViewEvents(userId: UUID, tuntasId: UUID): Boolean = transaction {
@@ -233,8 +265,8 @@ class EventService {
                 return@transaction Result.failure(Exception("Name cannot be blank"))
             }
 
-            if (request.type !in validTypes) {
-                return@transaction Result.failure(Exception("Invalid type. Must be one of: ${validTypes.joinToString()}"))
+            validateEventType(request.type)?.let {
+                return@transaction Result.failure(it)
             }
 
             val startDate = try {
@@ -459,21 +491,54 @@ class EventService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("User is not a member of this tuntas"))
 
-            // VIRSININKAS and KOMENDANTAS are unique per event
-            if (request.role in listOf("VIRSININKAS", "KOMENDANTAS")) {
-                val existing = EventRoles.selectAll()
-                    .where {
-                        (EventRoles.eventId eq eventId) and
-                                (EventRoles.role eq request.role)
-                    }
-                    .firstOrNull()
+            val existingUserRole = EventRoles.selectAll()
+                .where {
+                    (EventRoles.eventId eq eventId) and
+                        (EventRoles.userId eq targetUserUUID)
+                }
+                .firstOrNull()
 
-                if (existing != null) {
-                    // Transfer the role - remove from current holder
-                    EventRoles.deleteWhere {
+            if (existingUserRole != null) {
+                val isSameSlot = existingUserRole[EventRoles.role] == request.role &&
+                    existingUserRole[EventRoles.targetGroup] == request.targetGroup
+                if (isSameSlot) {
+                    return@transaction Result.success(toEventRoleResponse(existingUserRole))
+                }
+                return@transaction Result.failure(Exception("User already has an event staff role"))
+            }
+
+            val existingPastovykleResponsibility = Pastovykles.selectAll()
+                .where {
+                    (Pastovykles.eventId eq eventId) and
+                        (Pastovykles.responsibleUserId eq targetUserUUID)
+                }
+                .firstOrNull()
+
+            if (existingPastovykleResponsibility != null) {
+                return@transaction Result.failure(Exception("User already has an event staff role"))
+            }
+
+            val existingSlotRole = EventRoles.selectAll()
+                .where {
                         (EventRoles.eventId eq eventId) and
-                                (EventRoles.role eq request.role)
-                    }
+                        (EventRoles.role eq request.role) and
+                        if (request.targetGroup == null) {
+                            (EventRoles.targetGroup eq null)
+                        } else {
+                            EventRoles.targetGroup eq request.targetGroup
+                        }
+                }
+                .firstOrNull()
+
+            if (existingSlotRole != null) {
+                EventRoles.deleteWhere {
+                        (EventRoles.eventId eq eventId) and
+                        (EventRoles.role eq request.role) and
+                        if (request.targetGroup == null) {
+                            (EventRoles.targetGroup eq null)
+                        } else {
+                            EventRoles.targetGroup eq request.targetGroup
+                        }
                 }
             }
 
@@ -714,6 +779,9 @@ class EventService {
                 if (!isActiveTuntasMember(it, tuntasId)) {
                     return@transaction Result.failure(Exception("Responsible user must be a member of this tuntas"))
                 }
+                ensureUserHasNoEventStaffRole(eventId, it)?.let { error ->
+                    return@transaction Result.failure(error)
+                }
             }
 
             val newId = Pastovykles.insert {
@@ -758,13 +826,20 @@ class EventService {
                 if (!isActiveTuntasMember(it, tuntasId)) {
                     return@transaction Result.failure(Exception("Responsible user must be a member of this tuntas"))
                 }
+                ensureUserHasNoEventStaffRole(eventId, it, excludingPastovykleId = pastovykleId)?.let { error ->
+                    return@transaction Result.failure(error)
+                }
             }
 
             Pastovykles.update({ (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }) {
                 request.name?.let { v -> it[name] = v }
                 request.ageGroup?.let { v -> it[ageGroup] = v }
                 request.notes?.let { v -> it[notes] = v }
-                responsibleUUID?.let { v -> it[responsibleUserId] = v }
+                if (request.clearResponsibleUser) {
+                    it[responsibleUserId] = null
+                } else {
+                    responsibleUUID?.let { v -> it[responsibleUserId] = v }
+                }
             }
 
             val updated = Pastovykles.selectAll().where { Pastovykles.id eq pastovykleId }.first()
@@ -1945,6 +2020,21 @@ class EventService {
                     notes = line.notes,
                     createdAt = now
                 )
+                sourceItemId?.let { itemId ->
+                    val quantityChange = when (decision) {
+                        "MISSING", "CONSUMED" -> -line.quantity
+                        "RETURNED" -> line.quantity
+                        else -> 0
+                    }
+                    ItemService.recordItemHistory(
+                        itemId = itemId,
+                        eventType = "EVENT_RECONCILE_$decision",
+                        quantityChange = quantityChange,
+                        performedByUserId = userId,
+                        notes = line.notes ?: "Renginio suvedimas: $decision",
+                        createdAt = now
+                    )
+                }
             }
 
             Result.success(toReconciliationResponse(event))
@@ -1963,6 +2053,7 @@ class EventService {
                 return@transaction Result.failure(Exception("Purchases can be reconciled only during wrap-up"))
             }
 
+            val touchedPurchaseIds = mutableSetOf<UUID>()
             request.purchases.forEach { line ->
                 val decision = line.decision.uppercase()
                 if (decision !in listOf("ADD_NEW_ITEM", "INCREASE_EXISTING_ITEM", "CONSUMED", "IGNORE")) {
@@ -1984,17 +2075,21 @@ class EventService {
                     }
                     .forUpdate()
                     .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase item not found"))
+                val purchaseId = row[EventPurchaseItems.purchaseId]
+                touchedPurchaseIds += purchaseId
                 if (row[EventPurchaseItems.addedToInventory]) {
                     return@transaction Result.failure(Exception("Purchase item already reconciled"))
                 }
-                if (line.quantity > row[EventPurchaseItems.purchasedQuantity]) {
-                    return@transaction Result.failure(Exception("Purchase decision quantity exceeds purchased quantity"))
+                val alreadyReconciled = reconciledPurchaseQuantity(purchaseItemId)
+                val remainingQuantity = row[EventPurchaseItems.purchasedQuantity] - alreadyReconciled
+                if (line.quantity > remainingQuantity) {
+                    return@transaction Result.failure(Exception("Purchase decision quantity exceeds remaining purchased quantity"))
                 }
 
                 val now = kotlinx.datetime.Clock.System.now()
                 val addedItemId = when (decision) {
                     "ADD_NEW_ITEM" -> {
-                        Items.insert {
+                        val createdItemId = Items.insert {
                             it[Items.tuntasId] = tuntasId
                             it[custodianId] = null
                             it[origin] = "UNIT_ACQUIRED"
@@ -2014,6 +2109,15 @@ class EventService {
                             it[createdAt] = now
                             it[updatedAt] = now
                         } get Items.id
+                        ItemService.recordItemHistory(
+                            itemId = createdItemId,
+                            eventType = "EVENT_PURCHASED_NEW",
+                            quantityChange = line.quantity,
+                            performedByUserId = userId,
+                            notes = line.notes ?: "Nupirkta renginiui ir sukurta inventoriuje",
+                            createdAt = now
+                        )
+                        createdItemId
                     }
                     "INCREASE_EXISTING_ITEM" -> {
                         val existingItemId = try {
@@ -2030,6 +2134,14 @@ class EventService {
                             it[updatedAt] = now
                             line.notes?.let { note -> it[notes] = note }
                         }
+                        ItemService.recordItemHistory(
+                            itemId = existingItemId,
+                            eventType = "EVENT_PURCHASE_RESTOCKED",
+                            quantityChange = line.quantity,
+                            performedByUserId = userId,
+                            notes = line.notes ?: "Papildyta po renginio pirkimo",
+                            createdAt = now
+                        )
                         existingItemId
                     }
                     else -> null
@@ -2047,12 +2159,40 @@ class EventService {
                     }
                 }
 
+                EventPurchaseItemReconciliations.insert {
+                    it[this.purchaseItemId] = purchaseItemId
+                    it[this.decision] = decision
+                    it[this.quantity] = line.quantity
+                    it[addedInventoryItemId] = addedItemId
+                    it[performedByUserId] = userId
+                    it[notes] = line.notes
+                    it[createdAt] = now
+                }
+                val fullyReconciled = alreadyReconciled + line.quantity >= row[EventPurchaseItems.purchasedQuantity]
                 EventPurchaseItems.update({ EventPurchaseItems.id eq purchaseItemId }) {
-                    it[addedToInventory] = true
-                    it[addedToInventoryItemId] = addedItemId
+                    it[addedToInventory] = fullyReconciled
+                    if (addedItemId != null) it[addedToInventoryItemId] = addedItemId
                     it[notes] = listOfNotNull(row[EventPurchaseItems.notes], "${decision}: ${line.notes.orEmpty()}".trim())
                         .filter { note -> note.isNotBlank() }
                         .joinToString(" | ")
+                }
+            }
+
+            touchedPurchaseIds.forEach { purchaseId ->
+                val hasOpenLines = EventPurchaseItems.selectAll()
+                    .where {
+                        (EventPurchaseItems.purchaseId eq purchaseId) and
+                            (EventPurchaseItems.addedToInventory eq false)
+                    }
+                    .any()
+                if (!hasOpenLines) {
+                    EventPurchases.update({
+                        (EventPurchases.id eq purchaseId) and
+                            (EventPurchases.status eq "PURCHASED")
+                    }) {
+                        it[status] = "ADDED_TO_INVENTORY"
+                        it[updatedAt] = kotlinx.datetime.Clock.System.now()
+                    }
                 }
             }
 
@@ -2159,7 +2299,17 @@ class EventService {
                     .firstOrNull() ?: return@transaction Result.failure(Exception("Custody record not found"))
             }
 
-            if (!canManageInventory && movementType !in listOf("PASTOVYKLE_REQUEST", "CHECKOUT_TO_PERSON", "RETURN_TO_PASTOVYKLE", "RETURN_TO_EVENT_STORAGE")) {
+            val responsiblePastovykleIds = Pastovykles.selectAll()
+                .where {
+                    (Pastovykles.eventId eq eventId) and
+                        (Pastovykles.responsibleUserId eq performedByUserId)
+                }
+                .map { it[Pastovykles.id] }
+                .toSet()
+            fun isResponsiblePastovykle(pastovykleId: UUID?): Boolean =
+                pastovykleId != null && pastovykleId in responsiblePastovykleIds
+
+            if (!canManageInventory && movementType !in listOf("PASTOVYKLE_REQUEST", "CHECKOUT_TO_PERSON", "RETURN_TO_PASTOVYKLE", "RETURN_TO_EVENT_STORAGE", "TRANSFER")) {
                 return@transaction Result.failure(Exception("Insufficient permissions"))
             }
 
@@ -2225,15 +2375,10 @@ class EventService {
                     }
                 }
                 "CHECKOUT_TO_PERSON" -> {
-                    val targetUserId = if (canManageInventory) (toUserId ?: performedByUserId) else performedByUserId
-                    if (!canManageInventory && pastovykleId != null) {
-                        val pastovykle = Pastovykles.selectAll()
-                            .where { (Pastovykles.id eq pastovykleId) and (Pastovykles.eventId eq eventId) }
-                            .firstOrNull()
-                            ?: return@transaction Result.failure(Exception("Pastovykle not found"))
-                        if (pastovykle[Pastovykles.responsibleUserId] != performedByUserId) {
-                            return@transaction Result.failure(Exception("You can checkout from a pastovykle only if you are its responsible member"))
-                        }
+                    val targetUserId = if (canManageInventory || isResponsiblePastovykle(pastovykleId)) {
+                        toUserId ?: performedByUserId
+                    } else {
+                        performedByUserId
                     }
                     val available = if (pastovykleId != null) {
                         pastovykleAvailable(eventInventoryItemId, pastovykleId)
@@ -2265,7 +2410,8 @@ class EventService {
                 "RETURN_TO_PASTOVYKLE", "RETURN_TO_EVENT_STORAGE" -> {
                     val source = sourceCustody ?: return@transaction Result.failure(Exception("fromCustodyId is required"))
                     val holderId = source[EventInventoryCustody.holderUserId]
-                    if (!canManageInventory && holderId != performedByUserId) {
+                    val isResponsibleReturn = isResponsiblePastovykle(source[EventInventoryCustody.pastovykleId])
+                    if (!canManageInventory && !isResponsibleReturn && holderId != performedByUserId) {
                         return@transaction Result.failure(Exception("You can return only your own checkout"))
                     }
                     val remaining = source[EventInventoryCustody.quantity] - source[EventInventoryCustody.returnedQuantity]
@@ -2311,13 +2457,20 @@ class EventService {
                     )
                 }
                 else -> {
-                    if (!canManageInventory) return@transaction Result.failure(Exception("Insufficient permissions"))
                     val source = sourceCustody ?: return@transaction Result.failure(Exception("fromCustodyId is required"))
+                    val sourcePastovykleId = source[EventInventoryCustody.pastovykleId]
+                    val isResponsibleTransfer = isResponsiblePastovykle(sourcePastovykleId)
+                    if (!canManageInventory && !isResponsibleTransfer) {
+                        return@transaction Result.failure(Exception("Insufficient permissions"))
+                    }
                     val remaining = source[EventInventoryCustody.quantity] - source[EventInventoryCustody.returnedQuantity]
                     if (request.quantity > remaining) {
                         return@transaction Result.failure(Exception("Transfer quantity exceeds remaining quantity"))
                     }
                     val targetPastovykleId = pastovykleId ?: source[EventInventoryCustody.pastovykleId]
+                    if (!canManageInventory && targetPastovykleId != sourcePastovykleId) {
+                        return@transaction Result.failure(Exception("Pastovykle responsible member can transfer only within their pastovykle"))
+                    }
                     val targetUserId = toUserId
                     val nextReturned = source[EventInventoryCustody.returnedQuantity] + request.quantity
                     EventInventoryCustody.update({ EventInventoryCustody.id eq source[EventInventoryCustody.id] }) {
@@ -3222,17 +3375,25 @@ class EventService {
     }
 
     private fun toReconciliationPurchaseLineResponse(row: ResultRow): EventReconciliationPurchaseLineResponse {
+        val reconciledQuantity = reconciledPurchaseQuantity(row[EventPurchaseItems.id])
+        val remainingQuantity = (row[EventPurchaseItems.purchasedQuantity] - reconciledQuantity).coerceAtLeast(0)
         return EventReconciliationPurchaseLineResponse(
             purchaseId = row[EventPurchaseItems.purchaseId].toString(),
             purchaseItemId = row[EventPurchaseItems.id].toString(),
             eventInventoryItemId = row[EventPurchaseItems.eventInventoryItemId].toString(),
             itemId = row[EventInventoryItems.itemId]?.toString(),
             itemName = row[EventInventoryItems.name],
-            purchasedQuantity = row[EventPurchaseItems.purchasedQuantity],
+            purchasedQuantity = remainingQuantity,
             status = row[EventPurchases.status],
             invoiceFileUrl = row[EventPurchases.invoiceFileUrl],
             notes = row[EventPurchaseItems.notes]
         )
+    }
+
+    private fun reconciledPurchaseQuantity(purchaseItemId: UUID): Int {
+        return EventPurchaseItemReconciliations.selectAll()
+            .where { EventPurchaseItemReconciliations.purchaseItemId eq purchaseItemId }
+            .sumOf { it[EventPurchaseItemReconciliations.quantity] }
     }
 
     private fun reconciliationPurchaseRows(eventId: UUID): List<ResultRow> {
@@ -3440,6 +3601,15 @@ class EventService {
         }) {
             it[Reservations.quantity] = quantity
         }
+    }
+
+    private fun validateEventType(type: String): Exception? {
+        val normalized = type.trim()
+        if (normalized.isBlank()) return Exception("Event type is required")
+        if (normalized.length > 20) return Exception("Event type must be at most 20 characters")
+        val allowed = normalized in validTypes ||
+            (normalized.startsWith("CUSTOM_") && normalized.matches(Regex("[A-Z0-9_]+")))
+        return if (allowed) null else Exception("Invalid event type")
     }
 
     private fun deleteManagedDocument(url: String?) {

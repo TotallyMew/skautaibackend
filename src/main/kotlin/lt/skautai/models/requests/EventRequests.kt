@@ -43,6 +43,7 @@ data class CreatePastovykleRequest(
 data class UpdatePastovykleRequest(
     val name: String? = null,
     val responsibleUserId: String? = null,
+    val clearResponsibleUser: Boolean = false,
     val ageGroup: String? = null,
     val notes: String? = null
 )

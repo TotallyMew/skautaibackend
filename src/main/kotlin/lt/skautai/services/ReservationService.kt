@@ -606,7 +606,7 @@ class ReservationService {
                     val canManageItem = if (custodianId == null) {
                         canApproveTopLevel
                     } else {
-                        canApproveTopLevel || custodianId in approvableUnitIds
+                        custodianId in approvableUnitIds
                     }
                     if (!canManageItem) {
                         return@transaction Result.failure(Exception("Insufficient permissions for ${item[Items.name]}"))
@@ -639,6 +639,7 @@ class ReservationService {
                     reservedByUserId = rows.first()[Reservations.reservedByUserId]
                 )?.let { return@transaction Result.failure(it) }
 
+                val now = Clock.System.now()
                 ReservationMovements.insert {
                     it[reservationGroupId] = groupId
                     it[itemId] = itemUUID
@@ -647,8 +648,26 @@ class ReservationService {
                     it[quantity] = movementItem.quantity
                     it[performedByUserId] = userId
                     it[notes] = request.notes
-                    it[createdAt] = Clock.System.now()
+                    it[createdAt] = now
                 }
+                val historyType = when (movementType) {
+                    "ISSUE" -> "RESERVATION_ISSUED"
+                    "RETURN_MARKED" -> "RESERVATION_RETURN_MARKED"
+                    else -> "RESERVATION_RETURNED"
+                }
+                val quantityChange = when (movementType) {
+                    "ISSUE" -> -movementItem.quantity
+                    "RETURN" -> movementItem.quantity
+                    else -> 0
+                }
+                ItemService.recordItemHistory(
+                    itemId = itemUUID,
+                    eventType = historyType,
+                    quantityChange = quantityChange,
+                    performedByUserId = userId,
+                    notes = request.notes ?: "Rezervacijos judejimas: $movementType",
+                    createdAt = now
+                )
             }
 
             val nextTotals = movementTotals(groupId)

@@ -28,6 +28,8 @@ data class RequisitionResponse(
     val topLevelReviewStatus: String,
     val topLevelReviewedByUserId: String? = null,
     val topLevelReviewedAt: String? = null,
+    val purchasedAt: String? = null,
+    val addedToInventoryAt: String? = null,
     val reviewLevel: String,
     val lastAction: String,
     val neededByDate: String? = null,

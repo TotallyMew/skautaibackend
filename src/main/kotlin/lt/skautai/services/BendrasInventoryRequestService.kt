@@ -468,10 +468,11 @@ class BendrasInventoryRequestService {
                         }
                         .firstOrNull()
 
-                    if (existingUnitItem != null) {
+                    val unitItemId = if (existingUnitItem != null) {
                         Items.update({ Items.id eq existingUnitItem[Items.id] }) {
                             it[quantity] = existingUnitItem[Items.quantity] + line.quantity
                         }
+                        existingUnitItem[Items.id]
                     } else {
                         Items.insert {
                             it[this.tuntasId] = tuntasId
@@ -479,7 +480,7 @@ class BendrasInventoryRequestService {
                             it[origin] = "TRANSFERRED_FROM_TUNTAS"
                             it[name] = sharedItem[Items.name]
                             it[description] = sharedItem[Items.description]
-                            it[type] = "ASSIGNED"
+                            it[type] = "COLLECTIVE"
                             it[category] = sharedItem[Items.category]
                             it[condition] = sharedItem[Items.condition]
                             it[quantity] = line.quantity
@@ -492,7 +493,7 @@ class BendrasInventoryRequestService {
                             it[purchasePrice] = sharedItem[Items.purchasePrice]
                             it[notes] = sharedItem[Items.notes]
                             it[status] = "ACTIVE"
-                        }
+                        } get Items.id
                     }
 
                     ItemTransfers.insert {
@@ -505,6 +506,23 @@ class BendrasInventoryRequestService {
                         it[status] = "COMPLETED"
                         it[completedAt] = Clock.System.now()
                     }
+                    val now = Clock.System.now()
+                    ItemService.recordItemHistory(
+                        itemId = sharedItem[Items.id],
+                        eventType = "TRANSFERRED_TO_UNIT",
+                        quantityChange = -line.quantity,
+                        performedByUserId = reviewerUserId,
+                        notes = existing[BendrasInventoryRequests.notes] ?: "Perduota pagal paemimo prasyma",
+                        createdAt = now
+                    )
+                    ItemService.recordItemHistory(
+                        itemId = unitItemId,
+                        eventType = "RECEIVED_FROM_SHARED",
+                        quantityChange = line.quantity,
+                        performedByUserId = reviewerUserId,
+                        notes = existing[BendrasInventoryRequests.notes] ?: "Gauta pagal paemimo prasyma",
+                        createdAt = now
+                    )
                 }
             }
 

@@ -10,6 +10,9 @@ import lt.skautai.database.tables.Roles
 import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserRanks
 import lt.skautai.models.requests.CreateItemRequest
+import lt.skautai.models.requests.ReturnItemToSharedRequest
+import lt.skautai.models.requests.RestockItemRequest
+import lt.skautai.models.requests.TransferItemToUnitRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.responses.DuplicateItemConflictResponse
 import lt.skautai.models.responses.ErrorResponse
@@ -131,6 +134,56 @@ fun Route.itemRoutes(itemService: ItemService) {
                     .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Item not found")) }
             }
 
+            get("{id}/transfers") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                itemService.getItemTransfers(itemUUID, tuntasUUID, userId)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Item not found")) }
+            }
+
+            get("{id}/history") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                itemService.getItemHistory(itemUUID, tuntasUUID, userId)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Item not found")) }
+            }
+
             get("resolve-qr/{token}") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
@@ -245,7 +298,93 @@ fun Route.itemRoutes(itemService: ItemService) {
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to update item")) }
             }
 
+            post("{id}/restock") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
+                    ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                val targetOrgUnitId = if (scopeInfo.origin == "TRANSFERRED_FROM_TUNTAS") null else scopeInfo.custodianId
+                if (!checkPermission("items.update", tuntasUUID, targetOrgUnitId)) return@post
+
+                val request = call.receive<RestockItemRequest>()
+                itemService.restockItem(itemUUID, tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to restock item")) }
+            }
+
+            post("{id}/transfer-to-unit") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val permissions = PermissionContextService.resolve(userId, tuntasUUID)
+                if (!permissions.hasAll("items.transfer")) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                val request = call.receive<TransferItemToUnitRequest>()
+                itemService.transferSharedItemToUnit(itemUUID, tuntasUUID, request, userId)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to transfer item")) }
+            }
+
+            post("{id}/return-to-shared") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
+                    ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                val permissions = PermissionContextService.resolve(userId, tuntasUUID)
+                if (!permissions.hasAll("items.transfer") && !permissions.targetAllowed("items.update", scopeInfo.custodianId)) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val request = call.receive<ReturnItemToSharedRequest>()
+                itemService.returnTransferredItemToShared(itemUUID, tuntasUUID, request, userId)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to return item")) }
+            }
+
             delete("{id}") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
                     ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
@@ -262,7 +401,7 @@ fun Route.itemRoutes(itemService: ItemService) {
                 val deleteTargetOrgUnitId = if (deleteScopeInfo?.origin == "TRANSFERRED_FROM_TUNTAS") null else deleteScopeInfo?.custodianId
                 if (!checkPermission("items.delete", tuntasUUID, deleteTargetOrgUnitId)) return@delete
 
-                itemService.deleteItem(itemUUID, tuntasUUID)
+                itemService.deleteItem(itemUUID, tuntasUUID, userId)
                     .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Item deactivated")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to delete item")) }
             }

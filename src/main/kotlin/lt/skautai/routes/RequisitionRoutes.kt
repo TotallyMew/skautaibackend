@@ -12,8 +12,10 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import lt.skautai.models.requests.CreateRequisitionRequest
+import lt.skautai.models.requests.AddRequisitionToInventoryRequest
 import lt.skautai.models.requests.RequisitionTopLevelReviewRequest
 import lt.skautai.models.requests.RequisitionUnitReviewRequest
+import lt.skautai.models.requests.RequisitionMarkPurchasedRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
@@ -219,6 +221,62 @@ fun Route.requisitionRoutes(service: RequisitionService) {
                 service.topLevelReview(requestUUID, tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to process top-level review")) }
+            }
+
+            post("{id}/mark-purchased") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try {
+                    UUID.fromString(tuntasId)
+                } catch (_: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!checkPermission("requisitions.approve", tuntasUUID)) return@post
+
+                val requestId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Request ID required"))
+                val requestUUID = try {
+                    UUID.fromString(requestId)
+                } catch (_: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
+                }
+
+                val request = call.receive<RequisitionMarkPurchasedRequest>()
+                service.markPurchased(requestUUID, tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to mark requisition purchased")) }
+            }
+
+            post("{id}/add-to-inventory") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try {
+                    UUID.fromString(tuntasId)
+                } catch (_: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!checkPermission("items.create", tuntasUUID)) return@post
+
+                val requestId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Request ID required"))
+                val requestUUID = try {
+                    UUID.fromString(requestId)
+                } catch (_: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
+                }
+
+                val request = call.receive<AddRequisitionToInventoryRequest>()
+                service.addPurchasedItemsToInventory(requestUUID, tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to add requisition to inventory")) }
             }
         }
     }

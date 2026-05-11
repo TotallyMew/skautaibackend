@@ -147,8 +147,8 @@ CREATE TABLE items (
                        name VARCHAR(200) NOT NULL,
                        description TEXT,
                        type VARCHAR(20) NOT NULL CHECK (type IN ('COLLECTIVE', 'ASSIGNED', 'INDIVIDUAL')),
-                       category VARCHAR(30) NOT NULL CHECK (category IN ('CAMPING', 'TOOLS', 'COOKING', 'FIRST_AID', 'UNIFORMS', 'BOOKS', 'PERSONAL_LOANS')),
-                       condition VARCHAR(20) DEFAULT 'GOOD' CHECK (condition IN ('GOOD', 'DAMAGED', 'WRITTEN_OFF')),
+                       category VARCHAR(30) NOT NULL,
+                       condition VARCHAR(30) DEFAULT 'GOOD',
                        quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
                        location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                        temporary_storage_label VARCHAR(255),
@@ -204,8 +204,8 @@ CREATE TABLE item_assignments (
 CREATE TABLE item_condition_log (
                                     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                     item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-                                    previous_condition VARCHAR(20),
-                                    new_condition VARCHAR(20) NOT NULL,
+                                    previous_condition VARCHAR(30),
+                                    new_condition VARCHAR(30) NOT NULL,
                                     reported_by_user_id UUID REFERENCES users(id),
                                     reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                                     notes TEXT
@@ -410,6 +410,17 @@ CREATE TABLE event_purchase_items (
 );
 
 -- Draugovė requisitions
+CREATE TABLE event_purchase_item_reconciliations (
+                                                     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                                     purchase_item_id UUID NOT NULL REFERENCES event_purchase_items(id) ON DELETE CASCADE,
+                                                     decision VARCHAR(40) NOT NULL CHECK (decision IN ('ADD_NEW_ITEM', 'INCREASE_EXISTING_ITEM', 'CONSUMED', 'IGNORE')),
+                                                     quantity INTEGER NOT NULL CHECK (quantity > 0),
+                                                     added_inventory_item_id UUID REFERENCES items(id),
+                                                     performed_by_user_id UUID NOT NULL REFERENCES users(id),
+                                                     notes TEXT,
+                                                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE draugove_requisitions (
                                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                        tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
@@ -417,13 +428,17 @@ CREATE TABLE draugove_requisitions (
                                        event_id UUID REFERENCES events(id),
                                        created_by_user_id UUID NOT NULL REFERENCES users(id),
                                        reviewed_by_user_id UUID REFERENCES users(id),
-                                       status VARCHAR(30) DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'SUBMITTED', 'PARTIALLY_APPROVED', 'APPROVED', 'REJECTED')),
-                                       unit_review_status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (unit_review_status IN ('PENDING', 'APPROVED', 'FORWARDED', 'REJECTED', 'SKIPPED')),
+                                       status VARCHAR(30) DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'SUBMITTED', 'PARTIALLY_APPROVED', 'APPROVED', 'PURCHASED', 'INVENTORY_ADDED', 'REJECTED', 'CANCELLED')),
+                                       unit_review_status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (unit_review_status IN ('PENDING', 'APPROVED', 'FORWARDED', 'REJECTED', 'SKIPPED', 'CANCELLED')),
                                        unit_reviewed_by_user_id UUID REFERENCES users(id),
                                        unit_reviewed_at TIMESTAMP,
-                                       top_level_review_status VARCHAR(20) NOT NULL DEFAULT 'NOT_REQUIRED' CHECK (top_level_review_status IN ('NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED')),
+                                       top_level_review_status VARCHAR(20) NOT NULL DEFAULT 'NOT_REQUIRED' CHECK (top_level_review_status IN ('NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')),
                                        top_level_reviewed_by_user_id UUID REFERENCES users(id),
                                        top_level_reviewed_at TIMESTAMP,
+                                       purchased_at TIMESTAMP,
+                                       purchased_by_user_id UUID REFERENCES users(id),
+                                       added_to_inventory_at TIMESTAMP,
+                                       added_to_inventory_by_user_id UUID REFERENCES users(id),
                                        notes TEXT,
                                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -446,6 +461,17 @@ CREATE TABLE draugove_requisition_items (
                                             notes TEXT,
                                             CHECK (item_id IS NOT NULL OR item_name IS NOT NULL),
                                             CHECK (quantity_approved <= quantity_requested)
+);
+
+CREATE TABLE item_history (
+                              id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                              item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                              event_type VARCHAR(40) NOT NULL,
+                              quantity_change INTEGER,
+                              performed_by_user_id UUID REFERENCES users(id),
+                              requisition_id UUID REFERENCES draugove_requisitions(id),
+                              notes TEXT,
+                              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Reservations
@@ -676,6 +702,7 @@ CREATE UNIQUE INDEX idx_event_inventory_movements_client_request ON event_invent
 CREATE INDEX idx_event_purchases_event ON event_purchases(event_id);
 CREATE INDEX idx_event_purchase_items_purchase ON event_purchase_items(purchase_id);
 CREATE INDEX idx_event_purchase_items_inventory_item ON event_purchase_items(event_inventory_item_id);
+CREATE INDEX idx_event_purchase_item_reconciliations_item ON event_purchase_item_reconciliations(purchase_item_id);
 CREATE INDEX idx_item_assignments_item ON item_assignments(item_id);
 CREATE INDEX idx_item_assignments_user ON item_assignments(assigned_to_user_id);
 CREATE INDEX idx_draugove_requisitions_tuntas ON draugove_requisitions(tuntas_id);

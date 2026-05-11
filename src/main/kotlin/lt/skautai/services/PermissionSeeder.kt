@@ -442,7 +442,9 @@ object PermissionSeeder {
             "items.request.bendras" to "ALL",
             "requisitions.create" to "OWN_UNIT",
             "reservations.view" to "OWN_UNIT",
-            "reservations.create" to "ALL"
+            "reservations.create" to "ALL",
+            "events.view" to "ALL",
+            "events.create" to "ALL"
         ),
 
         "Vyr. skautas kandidatas" to listOf(

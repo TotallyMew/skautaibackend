@@ -3,7 +3,9 @@ package lt.skautai.services
 import lt.skautai.database.tables.Items
 import lt.skautai.database.tables.ItemAssignments
 import lt.skautai.database.tables.ItemConditionLog
+import lt.skautai.database.tables.ItemHistory
 import lt.skautai.database.tables.ItemCustomFields
+import lt.skautai.database.tables.ItemTransfers
 import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.Reservations
@@ -14,15 +16,23 @@ import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.ItemCustomFieldRequest
+import lt.skautai.models.requests.ReturnItemToSharedRequest
+import lt.skautai.models.requests.RestockItemRequest
+import lt.skautai.models.requests.TransferItemToUnitRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.responses.ItemCustomFieldResponse
 import lt.skautai.models.responses.ItemAssignmentListResponse
 import lt.skautai.models.responses.ItemAssignmentResponse
 import lt.skautai.models.responses.ItemConditionLogListResponse
 import lt.skautai.models.responses.ItemConditionLogResponse
+import lt.skautai.models.responses.ItemHistoryListResponse
+import lt.skautai.models.responses.ItemHistoryResponse
 import lt.skautai.models.responses.ItemListResponse
 import lt.skautai.models.responses.ItemResponse
+import lt.skautai.models.responses.ItemTransferListResponse
+import lt.skautai.models.responses.ItemTransferResponse
 import kotlinx.datetime.Clock
+import kotlinx.datetime.LocalDate
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -58,9 +68,6 @@ class ItemService {
                     query.andWhere {
                         Items.custodianId.isNull() or (Items.custodianId inList visibleUnitIds.toList())
                     }
-                }
-                query = query.andWhere {
-                    (Items.type neq "INDIVIDUAL") or (Items.createdByUserId eq requestingUserId)
                 }
             }
 
@@ -114,12 +121,6 @@ class ItemService {
                 return@transaction Result.failure(Exception("Item not found"))
             }
             val custodianId = item[Items.custodianId]
-            if (!canSeeAllInventory &&
-                item[Items.type] == "INDIVIDUAL" &&
-                item[Items.createdByUserId] != requestingUserId
-            ) {
-                return@transaction Result.failure(Exception("Item not found"))
-            }
             if (!canSeeAllInventory && custodianId != null && custodianId !in userVisibleUnitIds(requestingUserId, tuntasId)) {
                 return@transaction Result.failure(Exception("Item not found"))
             }
@@ -170,12 +171,12 @@ class ItemService {
                 return@transaction Result.failure(Exception("Invalid inventory type"))
             }
 
-            if (request.category !in listOf("CAMPING", "TOOLS", "COOKING", "FIRST_AID", "UNIFORMS", "BOOKS", "PERSONAL_LOANS")) {
-                return@transaction Result.failure(Exception("Invalid inventory category"))
+            validateInventoryCategory(request.category)?.let {
+                return@transaction Result.failure(it)
             }
 
-            if (request.condition !in listOf("GOOD", "DAMAGED", "WRITTEN_OFF")) {
-                return@transaction Result.failure(Exception("Invalid condition"))
+            validateItemCondition(request.condition)?.let {
+                return@transaction Result.failure(it)
             }
 
             if (request.quantity < 1) {
@@ -272,6 +273,15 @@ class ItemService {
                             it[quantity] = duplicateItem[Items.quantity] + request.quantity
                             it[updatedAt] = now
                         }
+                        recordItemHistory(
+                            itemId = duplicateItem[Items.id],
+                            eventType = "RESTOCKED",
+                            quantityChange = request.quantity,
+                            performedByUserId = createdByUserId,
+                            requisitionId = null,
+                            notes = request.notes ?: "Papildyta kuriant inventoriaus įrašą",
+                            createdAt = now
+                        )
                         val updatedItem = Items.selectAll()
                             .where { Items.id eq duplicateItem[Items.id] }
                             .first()
@@ -308,6 +318,15 @@ class ItemService {
             } get Items.id
 
             replaceCustomFields(itemId, request.customFields)
+            recordItemHistory(
+                itemId = itemId,
+                eventType = "CREATED",
+                quantityChange = request.quantity,
+                performedByUserId = createdByUserId,
+                requisitionId = null,
+                notes = request.notes ?: "Sukurtas inventoriaus įrašas",
+                createdAt = now
+            )
             upsertResponsibleAssignment(
                 itemId = itemId,
                 previousResponsibleUserId = null,
@@ -362,6 +381,51 @@ class ItemService {
 
     private fun normalizeItemName(value: String): String = value.trim().lowercase()
 
+    fun restockItem(
+        itemId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        request: RestockItemRequest
+    ): Result<ItemResponse> {
+        return transaction {
+            if (request.quantity < 1) {
+                return@transaction Result.failure(Exception("Quantity must be at least 1"))
+            }
+            val item = Items.selectAll()
+                .where {
+                    (Items.id eq itemId) and
+                        (Items.tuntasId eq tuntasId) and
+                        (Items.status eq "ACTIVE")
+                }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Item not found"))
+
+            val purchaseDate = request.purchaseDate?.let {
+                try { LocalDate.parse(it) } catch (_: Exception) {
+                    return@transaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
+                }
+            }
+            val now = Clock.System.now()
+            Items.update({ Items.id eq itemId }) {
+                it[quantity] = item[Items.quantity] + request.quantity
+                request.purchaseDate?.let { _ -> it[Items.purchaseDate] = purchaseDate }
+                request.purchasePrice?.let { value -> it[purchasePrice] = value.toBigDecimal() }
+                if (!request.notes.isNullOrBlank()) it[notes] = request.notes
+                it[updatedAt] = now
+            }
+            recordItemHistory(
+                itemId = itemId,
+                eventType = "MANUAL_RESTOCKED",
+                quantityChange = request.quantity,
+                performedByUserId = userId,
+                notes = request.notes ?: "Papildyta tiesiogiai daikto korteleje",
+                createdAt = now
+            )
+            Result.success(toItemResponse(Items.selectAll().where { Items.id eq itemId }.first()))
+        }
+    }
+
     fun updateItem(
         itemId: UUID,
         tuntasId: UUID,
@@ -389,15 +453,11 @@ class ItemService {
             }
 
             request.category?.let {
-                if (it !in listOf("CAMPING", "TOOLS", "COOKING", "FIRST_AID", "UNIFORMS", "BOOKS", "PERSONAL_LOANS")) {
-                    return@transaction Result.failure(Exception("Invalid inventory category"))
-                }
+                validateInventoryCategory(it)?.let { error -> return@transaction Result.failure(error) }
             }
 
             request.condition?.let {
-                if (it !in listOf("GOOD", "DAMAGED", "WRITTEN_OFF")) {
-                    return@transaction Result.failure(Exception("Invalid condition"))
-                }
+                validateItemCondition(it)?.let { error -> return@transaction Result.failure(error) }
             }
 
             request.status?.let {
@@ -546,6 +606,221 @@ class ItemService {
         }
     }
 
+    fun transferSharedItemToUnit(
+        itemId: UUID,
+        tuntasId: UUID,
+        request: TransferItemToUnitRequest,
+        initiatedByUserId: UUID
+    ): Result<ItemResponse> {
+        return transaction {
+            if (request.quantity < 1) {
+                return@transaction Result.failure(Exception("Quantity must be at least 1"))
+            }
+
+            val targetUnitId = try {
+                UUID.fromString(request.targetUnitId)
+            } catch (e: Exception) {
+                return@transaction Result.failure(Exception("Invalid target unit ID"))
+            }
+
+            OrganizationalUnits.selectAll()
+                .where {
+                    (OrganizationalUnits.id eq targetUnitId) and
+                        (OrganizationalUnits.tuntasId eq tuntasId)
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Target unit not found in this tuntas"))
+
+            val sharedItem = Items.selectAll()
+                .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Shared item not found"))
+
+            if (sharedItem[Items.custodianId] != null || sharedItem[Items.type] == "INDIVIDUAL") {
+                return@transaction Result.failure(Exception("Only shared tuntas inventory can be transferred"))
+            }
+            if (sharedItem[Items.status] != "ACTIVE") {
+                return@transaction Result.failure(Exception("Only active shared inventory can be transferred"))
+            }
+            if (sharedItem[Items.quantity] < request.quantity) {
+                return@transaction Result.failure(Exception("Not enough quantity left"))
+            }
+
+            val now = Clock.System.now()
+            val remaining = sharedItem[Items.quantity] - request.quantity
+            Items.update({ Items.id eq sharedItem[Items.id] }) {
+                it[quantity] = remaining
+                it[status] = if (remaining == 0) "INACTIVE" else "ACTIVE"
+                it[updatedAt] = now
+            }
+
+            val existingUnitItem = Items.selectAll()
+                .where {
+                    (Items.tuntasId eq tuntasId) and
+                        (Items.custodianId eq targetUnitId) and
+                        (Items.sourceSharedItemId eq sharedItem[Items.id]) and
+                        (Items.status eq "ACTIVE")
+                }
+                .forUpdate()
+                .firstOrNull()
+
+            val unitItemId = if (existingUnitItem != null) {
+                Items.update({ Items.id eq existingUnitItem[Items.id] }) {
+                    it[quantity] = existingUnitItem[Items.quantity] + request.quantity
+                    it[updatedAt] = now
+                }
+                existingUnitItem[Items.id]
+            } else {
+                Items.insert {
+                    it[this.tuntasId] = tuntasId
+                    it[custodianId] = targetUnitId
+                    it[origin] = "TRANSFERRED_FROM_TUNTAS"
+                    it[name] = sharedItem[Items.name]
+                    it[description] = sharedItem[Items.description]
+                    it[type] = "COLLECTIVE"
+                    it[category] = sharedItem[Items.category]
+                    it[condition] = sharedItem[Items.condition]
+                    it[quantity] = request.quantity
+                    it[locationId] = null
+                    it[temporaryStorageLabel] = null
+                    it[sourceSharedItemId] = sharedItem[Items.id]
+                    it[createdByUserId] = initiatedByUserId
+                    it[qrToken] = UUID.randomUUID().toString()
+                    it[photoUrl] = sharedItem[Items.photoUrl]
+                    it[purchaseDate] = sharedItem[Items.purchaseDate]
+                    it[purchasePrice] = sharedItem[Items.purchasePrice]
+                    it[notes] = request.notes ?: sharedItem[Items.notes]
+                    it[status] = "ACTIVE"
+                    it[createdAt] = now
+                    it[updatedAt] = now
+                } get Items.id
+            }
+
+            ItemTransfers.insert {
+                it[ItemTransfers.itemId] = sharedItem[Items.id]
+                it[fromCustodianId] = null
+                it[toCustodianId] = targetUnitId
+                it[ItemTransfers.initiatedByUserId] = initiatedByUserId
+                it[approvedByUserId] = initiatedByUserId
+                it[notes] = request.notes
+                it[status] = "COMPLETED"
+                it[createdAt] = now
+                it[completedAt] = now
+            }
+            recordItemHistory(
+                itemId = sharedItem[Items.id],
+                eventType = "TRANSFERRED_TO_UNIT",
+                quantityChange = -request.quantity,
+                performedByUserId = initiatedByUserId,
+                notes = request.notes ?: "Perduota vienetui",
+                createdAt = now
+            )
+            recordItemHistory(
+                itemId = unitItemId,
+                eventType = "RECEIVED_FROM_SHARED",
+                quantityChange = request.quantity,
+                performedByUserId = initiatedByUserId,
+                notes = request.notes ?: "Gauta is bendro inventoriaus",
+                createdAt = now
+            )
+
+            val updatedUnitItem = Items.selectAll()
+                .where { Items.id eq unitItemId }
+                .first()
+
+            Result.success(toItemResponse(updatedUnitItem))
+        }
+    }
+
+    fun returnTransferredItemToShared(
+        itemId: UUID,
+        tuntasId: UUID,
+        request: ReturnItemToSharedRequest,
+        initiatedByUserId: UUID
+    ): Result<ItemResponse> {
+        return transaction {
+            if (request.quantity < 1) {
+                return@transaction Result.failure(Exception("Quantity must be at least 1"))
+            }
+
+            val unitItem = Items.selectAll()
+                .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Unit item not found"))
+
+            val sourceSharedItemId = unitItem[Items.sourceSharedItemId]
+                ?: return@transaction Result.failure(Exception("Item is not linked to shared inventory"))
+            val fromCustodianId = unitItem[Items.custodianId]
+                ?: return@transaction Result.failure(Exception("Only unit inventory can be returned"))
+
+            if (unitItem[Items.origin] != "TRANSFERRED_FROM_TUNTAS") {
+                return@transaction Result.failure(Exception("Only transferred shared inventory can be returned"))
+            }
+            if (unitItem[Items.status] != "ACTIVE") {
+                return@transaction Result.failure(Exception("Only active unit inventory can be returned"))
+            }
+            if (unitItem[Items.quantity] < request.quantity) {
+                return@transaction Result.failure(Exception("Return quantity exceeds unit inventory quantity"))
+            }
+
+            val sharedItem = Items.selectAll()
+                .where { (Items.id eq sourceSharedItemId) and (Items.tuntasId eq tuntasId) }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Source shared item not found"))
+
+            val now = Clock.System.now()
+            Items.update({ Items.id eq sharedItem[Items.id] }) {
+                it[quantity] = sharedItem[Items.quantity] + request.quantity
+                it[status] = "ACTIVE"
+                it[updatedAt] = now
+            }
+
+            val remaining = unitItem[Items.quantity] - request.quantity
+            Items.update({ Items.id eq unitItem[Items.id] }) {
+                it[quantity] = remaining
+                it[status] = if (remaining == 0) "INACTIVE" else "ACTIVE"
+                it[updatedAt] = now
+            }
+
+            ItemTransfers.insert {
+                it[ItemTransfers.itemId] = sharedItem[Items.id]
+                it[ItemTransfers.fromCustodianId] = fromCustodianId
+                it[toCustodianId] = null
+                it[ItemTransfers.initiatedByUserId] = initiatedByUserId
+                it[approvedByUserId] = initiatedByUserId
+                it[notes] = request.notes
+                it[status] = "COMPLETED"
+                it[createdAt] = now
+                it[completedAt] = now
+            }
+            recordItemHistory(
+                itemId = unitItem[Items.id],
+                eventType = "RETURNED_TO_SHARED",
+                quantityChange = -request.quantity,
+                performedByUserId = initiatedByUserId,
+                notes = request.notes ?: "Grazinta i bendra inventoriu",
+                createdAt = now
+            )
+            recordItemHistory(
+                itemId = sharedItem[Items.id],
+                eventType = "RECEIVED_FROM_UNIT",
+                quantityChange = request.quantity,
+                performedByUserId = initiatedByUserId,
+                notes = request.notes ?: "Gauta atgal is vieneto",
+                createdAt = now
+            )
+
+            val updatedUnitItem = Items.selectAll()
+                .where { Items.id eq unitItem[Items.id] }
+                .first()
+
+            Result.success(toItemResponse(updatedUnitItem))
+        }
+    }
+
     fun getItemAssignments(
         itemId: UUID,
         tuntasId: UUID,
@@ -604,9 +879,117 @@ class ItemService {
         }
     }
 
+    fun getItemHistory(
+        itemId: UUID,
+        tuntasId: UUID,
+        requestingUserId: UUID
+    ): Result<ItemHistoryListResponse> {
+        return transaction {
+            getVisibleItemRow(itemId, tuntasId, requestingUserId)
+                ?: return@transaction Result.failure(Exception("Item not found"))
+
+            val entries = ItemHistory.selectAll()
+                .where { ItemHistory.itemId eq itemId }
+                .orderBy(ItemHistory.createdAt to SortOrder.DESC)
+                .map { row ->
+                    ItemHistoryResponse(
+                        id = row[ItemHistory.id].toString(),
+                        itemId = row[ItemHistory.itemId].toString(),
+                        eventType = row[ItemHistory.eventType],
+                        quantityChange = row[ItemHistory.quantityChange],
+                        performedByUserId = row[ItemHistory.performedByUserId]?.toString(),
+                        performedByUserName = userDisplayName(row[ItemHistory.performedByUserId]),
+                        requisitionId = row[ItemHistory.requisitionId]?.toString(),
+                        notes = row[ItemHistory.notes],
+                        createdAt = row[ItemHistory.createdAt].toString()
+                    )
+                }
+            Result.success(ItemHistoryListResponse(entries, entries.size))
+        }
+    }
+
+    companion object {
+        fun recordItemHistory(
+            itemId: UUID,
+            eventType: String,
+            quantityChange: Int?,
+            performedByUserId: UUID?,
+            requisitionId: UUID? = null,
+            notes: String?,
+            createdAt: kotlinx.datetime.Instant = Clock.System.now()
+        ) {
+            ItemHistory.insert {
+                it[this.itemId] = itemId
+                it[this.eventType] = eventType
+                it[this.quantityChange] = quantityChange
+                it[this.performedByUserId] = performedByUserId
+                it[this.requisitionId] = requisitionId
+                it[this.notes] = notes
+                it[this.createdAt] = createdAt
+            }
+        }
+    }
+
+    private fun getVisibleItemRow(itemId: UUID, tuntasId: UUID, requestingUserId: UUID): ResultRow? {
+        val canSeeAll = userCanSeeAllStatuses(requestingUserId, tuntasId)
+        val canSeeAllInventory = userCanManageAllInventory(requestingUserId, tuntasId)
+        val item = Items.selectAll()
+            .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
+            .firstOrNull() ?: return null
+        if (!canSeeAll && item[Items.status] != "ACTIVE") return null
+        val custodianId = item[Items.custodianId]
+        if (!canSeeAllInventory && custodianId != null && custodianId !in userVisibleUnitIds(requestingUserId, tuntasId)) {
+            return null
+        }
+        return item
+    }
+
+    fun getItemTransfers(
+        itemId: UUID,
+        tuntasId: UUID,
+        requestingUserId: UUID
+    ): Result<ItemTransferListResponse> {
+        return transaction {
+            val item = getItem(itemId, tuntasId, requestingUserId).getOrElse {
+                return@transaction Result.failure(it)
+            }
+            val linkedItemIds = Items.selectAll()
+                .where {
+                    ((Items.id eq itemId) or (Items.sourceSharedItemId eq itemId)) and
+                        (Items.tuntasId eq tuntasId)
+                }
+                .map { it[Items.id] }
+                .toSet() + item.sourceSharedItemId?.let { UUID.fromString(it) }
+
+            val transfers = ItemTransfers.selectAll()
+                .where { ItemTransfers.itemId inList linkedItemIds.filterNotNull() }
+                .orderBy(ItemTransfers.createdAt to SortOrder.DESC)
+                .map { row ->
+                    ItemTransferResponse(
+                        id = row[ItemTransfers.id].toString(),
+                        itemId = row[ItemTransfers.itemId].toString(),
+                        fromCustodianId = row[ItemTransfers.fromCustodianId]?.toString(),
+                        fromCustodianName = orgUnitName(row[ItemTransfers.fromCustodianId]) ?: "Bendras sandėlis",
+                        toCustodianId = row[ItemTransfers.toCustodianId]?.toString(),
+                        toCustodianName = orgUnitName(row[ItemTransfers.toCustodianId]) ?: "Bendras sandėlis",
+                        initiatedByUserId = row[ItemTransfers.initiatedByUserId]?.toString(),
+                        initiatedByUserName = userDisplayName(row[ItemTransfers.initiatedByUserId]),
+                        approvedByUserId = row[ItemTransfers.approvedByUserId]?.toString(),
+                        approvedByUserName = userDisplayName(row[ItemTransfers.approvedByUserId]),
+                        notes = row[ItemTransfers.notes],
+                        status = row[ItemTransfers.status],
+                        createdAt = row[ItemTransfers.createdAt].toString(),
+                        completedAt = row[ItemTransfers.completedAt]?.toString()
+                    )
+                }
+            Result.success(ItemTransferListResponse(transfers, transfers.size))
+        }
+    }
+
     fun deleteItem(
         itemId: UUID,
-        tuntasId: UUID
+        tuntasId: UUID,
+        userId: UUID? = null
     ): Result<Unit> {
         return transaction {
             val existing = Items.selectAll()
@@ -635,6 +1018,14 @@ class ItemService {
             Items.update({ (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }) {
                 it[status] = "INACTIVE"
             }
+            recordItemHistory(
+                itemId = itemId,
+                eventType = "DEACTIVATED",
+                quantityChange = null,
+                performedByUserId = userId,
+                notes = "Daiktas deaktyvuotas",
+                createdAt = Clock.System.now()
+            )
 
             Result.success(Unit)
         }
@@ -798,6 +1189,26 @@ class ItemService {
         return null
     }
 
+    private fun validateInventoryCategory(category: String): Exception? {
+        val normalized = category.trim()
+        if (normalized.isBlank()) return Exception("Inventory category is required")
+        if (normalized.length > 30) return Exception("Inventory category must be at most 30 characters")
+        val defaultCategories = setOf("CAMPING", "TOOLS", "COOKING", "FIRST_AID", "UNIFORMS", "BOOKS", "PERSONAL_LOANS")
+        val allowed = normalized in defaultCategories ||
+            (normalized.startsWith("CUSTOM_") && normalized.matches(Regex("[A-Z0-9_]+")))
+        return if (allowed) null else Exception("Invalid inventory category")
+    }
+
+    private fun validateItemCondition(condition: String): Exception? {
+        val normalized = condition.trim()
+        if (normalized.isBlank()) return Exception("Item condition is required")
+        if (normalized.length > 30) return Exception("Item condition must be at most 30 characters")
+        val defaultConditions = setOf("GOOD", "DAMAGED", "WRITTEN_OFF")
+        val allowed = normalized in defaultConditions ||
+            (normalized.startsWith("CUSTOM_") && normalized.matches(Regex("[A-Z0-9_]+")))
+        return if (allowed) null else Exception("Invalid condition")
+    }
+
     private fun replaceCustomFields(itemId: UUID, fields: List<ItemCustomFieldRequest>) {
         ItemCustomFields.deleteWhere { ItemCustomFields.itemId eq itemId }
         fields.forEach { field ->
@@ -868,6 +1279,14 @@ class ItemService {
             .where { Users.id eq userId }
             .firstOrNull()
             ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+    }
+
+    private fun orgUnitName(orgUnitId: UUID?): String? {
+        if (orgUnitId == null) return null
+        return OrganizationalUnits.selectAll()
+            .where { OrganizationalUnits.id eq orgUnitId }
+            .firstOrNull()
+            ?.get(OrganizationalUnits.name)
     }
 
     private fun validateItemLocation(

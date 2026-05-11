@@ -605,13 +605,7 @@ class EventRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val eventId = client.createTestEvent(token, tuntasId)
-
-        val membersResponse = client.get("/api/members") {
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-        }
-        val userId = Json.parseToJsonElement(membersResponse.bodyAsText())
-            .jsonObject["members"]!!.jsonArray[0].jsonObject["userId"]!!.jsonPrimitive.content
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Vadovas", "ukvedys-role@test.com")
 
         val response = client.post("/api/events/$eventId/roles") {
             contentType(ContentType.Application.Json)
@@ -631,17 +625,36 @@ class EventRoutesTest {
     }
 
     @Test
+    fun `event staff member cannot hold multiple roles`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Vadovas", "single-staff-role@test.com")
+
+        val firstResponse = client.post("/api/events/$eventId/roles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$userId", "role": "MAISTININKAS" }""")
+        }
+        assertEquals(HttpStatusCode.Created, firstResponse.status)
+
+        val secondResponse = client.post("/api/events/$eventId/roles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$userId", "role": "KOMENDANTAS" }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, secondResponse.status)
+        assertTrue(secondResponse.bodyAsText().contains("already has an event staff role", ignoreCase = true))
+    }
+
+    @Test
     fun `assign programeris without target group returns 400`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val eventId = client.createTestEvent(token, tuntasId)
-
-        val membersResponse = client.get("/api/members") {
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-        }
-        val userId = Json.parseToJsonElement(membersResponse.bodyAsText())
-            .jsonObject["members"]!!.jsonArray[0].jsonObject["userId"]!!.jsonPrimitive.content
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Vadovas", "remove-role-ukvedys@test.com")
 
         val response = client.post("/api/events/$eventId/roles") {
             contentType(ContentType.Application.Json)
@@ -758,13 +771,7 @@ class EventRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val eventId = client.createTestEvent(token, tuntasId)
-
-        val membersResponse = client.get("/api/members") {
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-        }
-        val userId = Json.parseToJsonElement(membersResponse.bodyAsText())
-            .jsonObject["members"]!!.jsonArray[0].jsonObject["userId"]!!.jsonPrimitive.content
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Vadovas", "remove-role-ukvedys@test.com")
 
         val assignResponse = client.post("/api/events/$eventId/roles") {
             contentType(ContentType.Application.Json)
@@ -773,7 +780,9 @@ class EventRoutesTest {
             setBody("""{ "userId": "$userId", "role": "UKVEDYS" }""")
         }
 
-        val roleId = Json.parseToJsonElement(assignResponse.bodyAsText())
+        val assignBody = assignResponse.bodyAsText()
+        assertEquals(HttpStatusCode.Created, assignResponse.status, assignBody)
+        val roleId = Json.parseToJsonElement(assignBody)
             .jsonObject["id"]!!.jsonPrimitive.content
 
         val response = client.delete("/api/events/$eventId/roles/$roleId") {
@@ -952,6 +961,49 @@ class EventRoutesTest {
     }
 
     @Test
+    fun `pastovykle responsible user cannot already hold event role`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Vadovas", "pastovykle-conflict-role@test.com")
+
+        val assignResponse = client.post("/api/events/$eventId/roles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$userId", "role": "KOMENDANTAS" }""")
+        }
+        assertEquals(HttpStatusCode.Created, assignResponse.status)
+
+        val response = client.post("/api/events/$eventId/pastovykles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Skautai", "responsibleUserId": "$userId" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `event role user cannot already be pastovykle responsible`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Vadovas", "role-conflict-pastovykle@test.com")
+        client.createTestPastovykle(token, tuntasId, eventId, "Skautai", userId)
+
+        val response = client.post("/api/events/$eventId/roles") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$userId", "role": "MAISTININKAS" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
     fun `get pastovykles returns 200 with list`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
@@ -1031,6 +1083,26 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals("Atnaujinta grupė", body["name"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `update pastovykle can clear responsible user`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = client.createTestEvent(token, tuntasId)
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Skautas", "clear-pastovykle-leader@test.com")
+        val pid = client.createTestPastovykle(token, tuntasId, eventId, responsibleUserId = userId)
+
+        val response = client.put("/api/events/$eventId/pastovykles/$pid") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "clearResponsibleUser": true }""")
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertNull(body["responsibleUserId"])
     }
 
     @Test

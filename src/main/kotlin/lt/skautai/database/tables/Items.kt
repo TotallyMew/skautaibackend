@@ -13,7 +13,7 @@ object Items : Table("items") {
     val description = text("description").nullable()
     val type = varchar("type", 20)
     val category = varchar("category", 30)
-    val condition = varchar("condition", 20).default("GOOD")
+    val condition = varchar("condition", 30).default("GOOD")
     val quantity = integer("quantity").default(1)
     val locationId = uuid("location_id").references(Locations.id).nullable()
     val temporaryStorageLabel = varchar("temporary_storage_label", 255).nullable()

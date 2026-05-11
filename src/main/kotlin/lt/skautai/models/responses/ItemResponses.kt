@@ -95,6 +95,49 @@ data class ItemConditionLogListResponse(
 )
 
 @Serializable
+data class ItemTransferResponse(
+    val id: String,
+    val itemId: String,
+    val fromCustodianId: String? = null,
+    val fromCustodianName: String? = null,
+    val toCustodianId: String? = null,
+    val toCustodianName: String? = null,
+    val initiatedByUserId: String? = null,
+    val initiatedByUserName: String? = null,
+    val approvedByUserId: String? = null,
+    val approvedByUserName: String? = null,
+    val notes: String? = null,
+    val status: String,
+    val createdAt: String,
+    val completedAt: String? = null
+)
+
+@Serializable
+data class ItemTransferListResponse(
+    val transfers: List<ItemTransferResponse>,
+    val total: Int
+)
+
+@Serializable
+data class ItemHistoryResponse(
+    val id: String,
+    val itemId: String,
+    val eventType: String,
+    val quantityChange: Int? = null,
+    val performedByUserId: String? = null,
+    val performedByUserName: String? = null,
+    val requisitionId: String? = null,
+    val notes: String? = null,
+    val createdAt: String
+)
+
+@Serializable
+data class ItemHistoryListResponse(
+    val entries: List<ItemHistoryResponse>,
+    val total: Int
+)
+
+@Serializable
 data class ItemQrResolveResponse(
     val itemId: String
 )
