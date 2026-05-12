@@ -117,6 +117,9 @@ class RequisitionService {
             if (request.items.any { it.quantity < 1 }) {
                 return@transaction Result.failure(Exception("Kiekis turi buti bent 1"))
             }
+            if (request.items.any { it.requestType !in listOf("NEW_ITEM", "RESTOCK_EXISTING") }) {
+                return@transaction Result.failure(Exception("Neteisingas prašymo tipas"))
+            }
 
             val requestingUnitId = request.requestingUnitId?.let {
                 try {
@@ -153,7 +156,7 @@ class RequisitionService {
             } ?: false
 
             if (requestingUnitId == null && !canCreateTopLevelRequest(createdByUserId, tuntasId)) {
-                return@transaction Result.failure(Exception("Only active leaders can create a tuntas-level request"))
+                return@transaction Result.failure(Exception("Tik aktyvus draugininkas arba tuntinio lygio vadovas gali kurti prašymą tuntui"))
             }
 
             val neededByDate = request.neededByDate?.let {
@@ -191,10 +194,39 @@ class RequisitionService {
             } get DraugoveRequisitions.id
 
             request.items.forEach { item ->
+                val existingItemId = item.existingItemId?.let {
+                    try {
+                        UUID.fromString(it)
+                    } catch (_: Exception) {
+                        return@transaction Result.failure(Exception("Neteisingas existing item ID"))
+                    }
+                }
+                if (item.requestType == "RESTOCK_EXISTING" && existingItemId == null) {
+                    return@transaction Result.failure(Exception("RESTOCK_EXISTING tipui privalomas existingItemId"))
+                }
+                if (item.requestType == "NEW_ITEM" && existingItemId != null) {
+                    return@transaction Result.failure(Exception("NEW_ITEM tipui existingItemId neturi būti nurodytas"))
+                }
+                val existingItemRow = existingItemId?.let { requestedItemId ->
+                    Items.selectAll()
+                        .where {
+                            (Items.id eq requestedItemId) and
+                                (Items.tuntasId eq tuntasId) and
+                                (Items.status eq "ACTIVE")
+                        }
+                        .firstOrNull()
+                        ?: return@transaction Result.failure(Exception("Pasirinktas papildomas daiktas nerastas"))
+                }
+                val normalizedName = when {
+                    item.requestType == "RESTOCK_EXISTING" -> existingItemRow?.get(Items.name) ?: item.itemName
+                    else -> item.itemName
+                }
                 DraugoveRequisitionItems.insert {
                     it[this.requisitionId] = requisitionId
                     it[itemId] = null
-                    it[itemName] = item.itemName
+                    it[requestType] = item.requestType
+                    it[this.existingItemId] = existingItemId
+                    it[itemName] = normalizedName
                     it[itemDescription] = item.itemDescription
                     it[quantityRequested] = item.quantity
                     it[quantityApproved] = null
@@ -556,7 +588,11 @@ class RequisitionService {
                     }
                     "RESTOCK_EXISTING" -> {
                         val existingItemId = try {
-                            UUID.fromString(action.existingItemId ?: return@transaction Result.failure(Exception("existingItemId is required")))
+                            UUID.fromString(
+                                action.existingItemId
+                                    ?: line[DraugoveRequisitionItems.existingItemId]?.toString()
+                                    ?: return@transaction Result.failure(Exception("existingItemId is required"))
+                            )
                         } catch (_: Exception) {
                             return@transaction Result.failure(Exception("Invalid existing item ID"))
                         }
@@ -634,8 +670,7 @@ class RequisitionService {
             "Tuntininko pavaduotojas",
             "Inventorininkas"
         )
-
-        return UserLeadershipRoles
+        val hasTopLevelRole = UserLeadershipRoles
             .innerJoin(Roles)
             .selectAll()
             .where {
@@ -647,6 +682,23 @@ class RequisitionService {
                     (Roles.name inList topLevelLeaderRoles)
             }
             .any()
+        if (hasTopLevelRole) return true
+
+        return UserLeadershipRoles
+            .innerJoin(Roles)
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.leftAt.isNull() and
+                    UserLeadershipRoles.organizationalUnitId.isNotNull()
+            }
+            .any { row ->
+                val roleName = row[Roles.name]
+                roleName.contains("drauginink", ignoreCase = true) &&
+                    !roleName.contains("pavaduotoj", ignoreCase = true)
+            }
     }
 
     private fun loadItems(requisitionId: UUID): List<RequisitionItemResponse> {
@@ -656,6 +708,8 @@ class RequisitionService {
                 RequisitionItemResponse(
                     id = row[DraugoveRequisitionItems.id].toString(),
                     itemId = row[DraugoveRequisitionItems.itemId]?.toString(),
+                    requestType = row[DraugoveRequisitionItems.requestType],
+                    existingItemId = row[DraugoveRequisitionItems.existingItemId]?.toString(),
                     itemName = row[DraugoveRequisitionItems.itemName]
                         ?: row[DraugoveRequisitionItems.itemId]?.toString()
                         ?: "Neivardytas daiktas",

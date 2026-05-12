@@ -6,6 +6,8 @@ import kotlinx.serialization.Serializable
 data class RequisitionItemResponse(
     val id: String,
     val itemId: String? = null,
+    val requestType: String = "NEW_ITEM",
+    val existingItemId: String? = null,
     val itemName: String,
     val itemDescription: String? = null,
     val quantityRequested: Int,

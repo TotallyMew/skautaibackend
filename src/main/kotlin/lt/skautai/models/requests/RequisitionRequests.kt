@@ -7,7 +7,9 @@ data class CreateRequisitionItemRequest(
     val itemName: String,
     val itemDescription: String? = null,
     val quantity: Int = 1,
-    val notes: String? = null
+    val notes: String? = null,
+    val requestType: String = "NEW_ITEM",
+    val existingItemId: String? = null
 )
 
 @Serializable

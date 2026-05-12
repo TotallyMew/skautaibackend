@@ -76,3 +76,9 @@ data class RestockItemRequest(
     val purchasePrice: Double? = null,
     val notes: String? = null
 )
+
+@Serializable
+data class ReviewItemAdditionRequest(
+    val decision: String,
+    val rejectionReason: String? = null
+)

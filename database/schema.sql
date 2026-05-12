@@ -161,6 +161,11 @@ CREATE TABLE items (
                        purchase_price DECIMAL(10,2),
                        notes TEXT,
                        status VARCHAR(20) DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PENDING_APPROVAL', 'INACTIVE')),
+                       submitted_by_user_id UUID REFERENCES users(id),
+                       target_scope VARCHAR(10) CHECK (target_scope IN ('SHARED', 'UNIT')),
+                       reviewed_by_user_id UUID REFERENCES users(id),
+                       reviewed_at TIMESTAMP,
+                       rejection_reason VARCHAR(500),
                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -453,6 +458,8 @@ CREATE TABLE draugove_requisition_items (
                                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                             requisition_id UUID NOT NULL REFERENCES draugove_requisitions(id) ON DELETE CASCADE,
                                             item_id UUID REFERENCES items(id),
+                                            request_type VARCHAR(30) NOT NULL DEFAULT 'NEW_ITEM' CHECK (request_type IN ('NEW_ITEM', 'RESTOCK_EXISTING')),
+                                            existing_item_id UUID REFERENCES items(id),
                                             item_name VARCHAR(200),
                                             item_description TEXT,
                                             quantity_requested INTEGER NOT NULL CHECK (quantity_requested > 0),
@@ -460,7 +467,8 @@ CREATE TABLE draugove_requisition_items (
                                             rejection_reason TEXT,
                                             notes TEXT,
                                             CHECK (item_id IS NOT NULL OR item_name IS NOT NULL),
-                                            CHECK (quantity_approved <= quantity_requested)
+                                            CHECK (quantity_approved <= quantity_requested),
+                                            CHECK ((request_type = 'RESTOCK_EXISTING' AND existing_item_id IS NOT NULL) OR (request_type = 'NEW_ITEM' AND existing_item_id IS NULL))
 );
 
 CREATE TABLE item_history (

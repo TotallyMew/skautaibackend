@@ -26,6 +26,11 @@ object Items : Table("items") {
     val purchasePrice = decimal("purchase_price", 10, 2).nullable()
     val notes = text("notes").nullable()
     val status = varchar("status", 20).default("ACTIVE")
+    val submittedByUserId = uuid("submitted_by_user_id").references(Users.id).nullable()
+    val targetScope = varchar("target_scope", 10).nullable()
+    val reviewedByUserId = uuid("reviewed_by_user_id").references(Users.id).nullable()
+    val reviewedAt = timestamp("reviewed_at").nullable()
+    val rejectionReason = varchar("rejection_reason", 500).nullable()
     val createdAt = timestamp("created_at")
     val updatedAt = timestamp("updated_at")
 

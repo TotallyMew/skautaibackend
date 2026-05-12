@@ -185,8 +185,15 @@ fun Route.userRoutes() {
                     resolvedPermissions.map { it.permissionName } +
                         resolvedPermissions.map { "${it.permissionName}:${it.scope}" }
                     ).distinct()
+                val leadershipUnitIds = resolvedPermissions
+                    .flatMap { it.userOrgUnitIds }
+                    .map { it.toString() }
+                    .distinct()
 
-                call.respond(HttpStatusCode.OK, mapOf("permissions" to perms))
+                call.respond(HttpStatusCode.OK, mapOf(
+                    "permissions" to perms,
+                    "leadershipUnitIds" to leadershipUnitIds
+                ))
             }
 
             get("/tuntai") {

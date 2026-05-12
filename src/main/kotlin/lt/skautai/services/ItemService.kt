@@ -15,6 +15,8 @@ import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateItemRequest
+import lt.skautai.models.requests.ReviewItemAdditionRequest
+import lt.skautai.plugins.ResolvedPermission
 import lt.skautai.models.requests.ItemCustomFieldRequest
 import lt.skautai.models.requests.ReturnItemToSharedRequest
 import lt.skautai.models.requests.RestockItemRequest
@@ -72,7 +74,19 @@ class ItemService {
             }
 
             if (!canSeeAll) {
-                query = query.andWhere { Items.status eq "ACTIVE" }
+                val reviewUnitIds = userLeadershipUnitIds(requestingUserId, tuntasId)
+                query = query.andWhere {
+                    val activeClause = Items.status eq "ACTIVE"
+                    val submitterClause = Items.submittedByUserId eq requestingUserId
+                    if (reviewUnitIds.isEmpty()) {
+                        activeClause or submitterClause
+                    } else {
+                        val reviewUnitList = reviewUnitIds.toList()
+                        activeClause or submitterClause or
+                            (Items.custodianId inList reviewUnitList) or
+                            (Items.custodianId.isNull() and (Items.targetScope eq "SHARED"))
+                    }
+                }
             }
 
             if (custodianId != null) {
@@ -118,7 +132,15 @@ class ItemService {
                 ?: return@transaction Result.failure(Exception("Item not found"))
 
             if (!canSeeAll && item[Items.status] != "ACTIVE") {
-                return@transaction Result.failure(Exception("Item not found"))
+                val isSubmitter = item[Items.submittedByUserId] == requestingUserId
+                val reviewUnitIds = userLeadershipUnitIds(requestingUserId, tuntasId)
+                val custodianIdForCheck = item[Items.custodianId]
+                val isReviewer = reviewUnitIds.isNotEmpty() &&
+                    (custodianIdForCheck != null && custodianIdForCheck in reviewUnitIds ||
+                     custodianIdForCheck == null && item[Items.targetScope] == "SHARED")
+                if (!isSubmitter && !isReviewer) {
+                    return@transaction Result.failure(Exception("Item not found"))
+                }
             }
             val custodianId = item[Items.custodianId]
             if (!canSeeAllInventory && custodianId != null && custodianId !in userVisibleUnitIds(requestingUserId, tuntasId)) {
@@ -313,6 +335,10 @@ class ItemService {
                 it[purchasePrice] = request.purchasePrice?.toBigDecimal()
                 it[notes] = request.notes
                 it[status] = if (isPendingApproval) "PENDING_APPROVAL" else "ACTIVE"
+                it[submittedByUserId] = if (isPendingApproval) createdByUserId else null
+                it[targetScope] = if (isPendingApproval) {
+                    if (custodianUUID == null) "SHARED" else "UNIT"
+                } else null
                 it[createdAt] = now
                 it[updatedAt] = now
             } get Items.id
@@ -1031,6 +1057,89 @@ class ItemService {
         }
     }
 
+    fun reviewItemAddition(
+        itemId: UUID,
+        tuntasId: UUID,
+        reviewerUserId: UUID,
+        request: ReviewItemAdditionRequest,
+        reviewerPermissions: List<ResolvedPermission>
+    ): Result<ItemResponse> {
+        if (request.decision !in listOf("APPROVED", "REJECTED")) {
+            return Result.failure(Exception("Decision must be APPROVED or REJECTED"))
+        }
+        if (request.decision == "REJECTED" && request.rejectionReason.isNullOrBlank()) {
+            return Result.failure(Exception("Rejection reason is required"))
+        }
+
+        return transaction {
+            val item = Items.selectAll()
+                .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Item not found"))
+
+            if (item[Items.status] != "PENDING_APPROVAL") {
+                return@transaction Result.failure(Exception("Item is not pending approval"))
+            }
+
+            val scope = item[Items.targetScope]
+            val custodianId = item[Items.custodianId]
+
+            val canReview = if (scope == "SHARED") {
+                reviewerPermissions.any { it.permissionName == "items.review" && it.scope == "ALL" }
+            } else {
+                reviewerPermissions.any { it.permissionName == "items.review" && it.scope == "ALL" } ||
+                    (custodianId != null && reviewerPermissions.any {
+                        it.permissionName == "items.review" && it.scope == "OWN_UNIT" &&
+                            custodianId in it.userOrgUnitIds
+                    })
+            }
+
+            if (!canReview) {
+                return@transaction Result.failure(Exception("Insufficient permissions to review this item"))
+            }
+
+            val now = Clock.System.now()
+            val newStatus = if (request.decision == "APPROVED") "ACTIVE" else "INACTIVE"
+
+            Items.update({ Items.id eq itemId }) {
+                it[status] = newStatus
+                it[reviewedByUserId] = reviewerUserId
+                it[reviewedAt] = now
+                if (request.decision == "REJECTED") {
+                    it[rejectionReason] = request.rejectionReason
+                }
+                it[updatedAt] = now
+            }
+
+            recordItemHistory(
+                itemId = itemId,
+                eventType = request.decision,
+                quantityChange = null,
+                performedByUserId = reviewerUserId,
+                requisitionId = null,
+                notes = request.rejectionReason,
+                createdAt = now
+            )
+
+            val updated = Items.selectAll().where { Items.id eq itemId }.first()
+            Result.success(toItemResponse(updated))
+        }
+    }
+
+    private fun userLeadershipUnitIds(userId: UUID, tuntasId: UUID): Set<UUID> {
+        return UserLeadershipRoles
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    (UserLeadershipRoles.leftAt.isNull()) and
+                    (UserLeadershipRoles.organizationalUnitId.isNotNull())
+            }
+            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
+            .toSet()
+    }
+
     // Tuntininkas, Tuntininko pavaduotojas, Inventorininkas can see all statuses
     private fun userCanSeeAllStatuses(userId: UUID, tuntasId: UUID): Boolean {
         return userCanManageAllInventory(userId, tuntasId)
@@ -1167,6 +1276,11 @@ class ItemService {
             quantityBreakdown = quantityBreakdown,
             totalQuantityAcrossCustodians = totalQuantityAcrossCustodians,
             status = row[Items.status],
+            submittedByUserId = row[Items.submittedByUserId]?.toString(),
+            submittedByUserName = userDisplayName(row[Items.submittedByUserId]),
+            targetScope = row[Items.targetScope],
+            reviewedByUserId = row[Items.reviewedByUserId]?.toString(),
+            rejectionReason = row[Items.rejectionReason],
             createdAt = row[Items.createdAt].toString(),
             updatedAt = row[Items.updatedAt].toString()
         )

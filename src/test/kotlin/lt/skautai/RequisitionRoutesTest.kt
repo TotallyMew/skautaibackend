@@ -199,6 +199,79 @@ class RequisitionRoutesTest {
     }
 
     @Test
+    fun `draugininkas can create tuntas level requisition`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Draugove")
+        val (leaderToken, _) = registerUserWithRole(
+            token = token,
+            tuntasId = tuntasId,
+            roleName = "Draugininkas",
+            email = "draugininkas-top@test.com",
+            organizationalUnitId = unitId
+        )
+
+        val response = createRequisition(leaderToken, tuntasId, requestingUnitId = null)
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("SKIPPED", body["unitReviewStatus"]?.jsonPrimitive?.content)
+        assertEquals("PENDING", body["topLevelReviewStatus"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `requisition supports restock type with existing item id`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val createdItemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "name": "Test palapine",
+                    "type": "COLLECTIVE",
+                    "category": "CAMPING",
+                    "quantity": 2,
+                    "condition": "GOOD",
+                    "origin": "UNIT_ACQUIRED"
+                }
+                """.trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.Created, createdItemResponse.status)
+        val itemId = Json.parseToJsonElement(createdItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.post("/api/requisitions") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "items": [
+                        {
+                            "itemName": "palapiniu papildymas",
+                            "requestType": "RESTOCK_EXISTING",
+                            "existingItemId": "$itemId",
+                            "quantity": 3
+                        }
+                    ]
+                }
+                """.trimIndent()
+            )
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        val createdItem = body["items"]!!.jsonArray.first().jsonObject
+        assertEquals("RESTOCK_EXISTING", createdItem["requestType"]!!.jsonPrimitive.content)
+        assertEquals(itemId, createdItem["existingItemId"]!!.jsonPrimitive.content)
+        assertEquals("Test palapine", createdItem["itemName"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `requisition listing is scoped to creator reviewable unit and top level reviewer`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()

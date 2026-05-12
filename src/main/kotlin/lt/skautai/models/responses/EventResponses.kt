@@ -293,6 +293,22 @@ data class EventReconciliationPurchaseLineResponse(
 )
 
 @Serializable
+data class EventPurchaseReconciliationCandidateResponse(
+    val itemId: String,
+    val name: String,
+    val quantity: Int,
+    val custodianId: String? = null,
+    val custodianName: String? = null,
+    val recommended: Boolean = false
+)
+
+@Serializable
+data class EventPurchaseReconciliationCandidateListResponse(
+    val candidates: List<EventPurchaseReconciliationCandidateResponse>,
+    val total: Int
+)
+
+@Serializable
 data class EventReconciliationResponse(
     val eventId: String,
     val status: String,

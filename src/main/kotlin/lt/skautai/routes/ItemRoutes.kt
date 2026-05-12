@@ -6,12 +6,10 @@ import io.ktor.server.auth.jwt.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import lt.skautai.database.tables.Roles
-import lt.skautai.database.tables.UserLeadershipRoles
-import lt.skautai.database.tables.UserRanks
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.ReturnItemToSharedRequest
 import lt.skautai.models.requests.RestockItemRequest
+import lt.skautai.models.requests.ReviewItemAdditionRequest
 import lt.skautai.models.requests.TransferItemToUnitRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.responses.DuplicateItemConflictResponse
@@ -24,10 +22,6 @@ import lt.skautai.services.DuplicateItemConflictException
 import lt.skautai.services.ItemScopeHelper
 import lt.skautai.services.ItemService
 import lt.skautai.services.PermissionContextService
-import org.jetbrains.exposed.sql.and
-import org.jetbrains.exposed.sql.innerJoin
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.*
 
 fun Route.itemRoutes(itemService: ItemService) {
@@ -223,25 +217,28 @@ fun Route.itemRoutes(itemService: ItemService) {
                     try { UUID.fromString(it) } catch (e: Exception) { null }
                 }
 
+                val userPerms = resolveUserPermissions(userId, tuntasUUID)
                 val isPendingApproval: Boolean = if (targetOrgUnitId != null) {
-                    // Assigning to a specific unit uses normal scope check.
-                    if (!checkPermission("items.create", tuntasUUID, targetOrgUnitId)) return@post
-                    false
-                } else {
-                    // Tuntas shared storage: top-level users create directly;
-                    // unit leaders and Vadovas submit into the approval queue.
-                    val userPerms = resolveUserPermissions(userId, tuntasUUID)
-                    val canCreateDirectly = userPerms.any {
-                        it.permissionName == "items.create" && it.scope == "ALL"
-                    }
-                    val canSubmitForApproval = userPerms.any {
-                        it.permissionName == "items.create" && it.scope == "OWN_UNIT"
-                    } || userHasAnyRole(userId, tuntasUUID, sharedInventoryAdditionRequesterRoles)
-
-                    if (!canCreateDirectly && !canSubmitForApproval) {
+                    val canDirect = userPerms.any { it.permissionName == "items.create" && it.scope == "ALL" } ||
+                        userPerms.any { it.permissionName == "items.create" && it.scope == "OWN_UNIT" && targetOrgUnitId in it.userOrgUnitIds }
+                    val canSubmit = !canDirect && (
+                        userPerms.any { it.permissionName == "items.create.submit" && it.scope == "ALL" } ||
+                            userPerms.any { it.permissionName == "items.create.submit" && it.scope == "OWN_UNIT" && targetOrgUnitId in it.userOrgUnitIds }
+                        )
+                    if (!canDirect && !canSubmit) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                     }
-                    !canCreateDirectly
+                    !canDirect
+                } else {
+                    val canDirect = userPerms.any { it.permissionName == "items.create" && it.scope == "ALL" }
+                    val canSubmit = !canDirect && (
+                        userPerms.any { it.permissionName == "items.create" && it.scope == "OWN_UNIT" } ||
+                            userPerms.any { it.permissionName == "items.create.submit" }
+                        )
+                    if (!canDirect && !canSubmit) {
+                        return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                    }
+                    !canDirect
                 }
 
                 itemService.createItem(tuntasUUID, userId, request, isPendingApproval)
@@ -323,6 +320,36 @@ fun Route.itemRoutes(itemService: ItemService) {
                 itemService.restockItem(itemUUID, tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to restock item")) }
+            }
+
+            post("{id}/review") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                val reviewerPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canReview = reviewerPerms.any {
+                    it.permissionName == "items.review"
+                }
+                if (!canReview) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val request = call.receive<ReviewItemAdditionRequest>()
+                itemService.reviewItemAddition(itemUUID, tuntasUUID, userId, request, reviewerPerms)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to review item")) }
             }
 
             post("{id}/transfer-to-unit") {
@@ -409,48 +436,3 @@ fun Route.itemRoutes(itemService: ItemService) {
     }
 }
 
-private val sharedInventoryAdditionRequesterRoles = setOf(
-    "Draugininkas",
-    "Draugininko pavaduotojas",
-    "Gildijos pirmininkas",
-    "Gildijos pirmininko pavaduotojas",
-    "Vyr. skautu draugoves draugininkas",
-    "Vyr. skautu draugoves draugininko pavaduotojas",
-    "Vyr. skautu burelio pirmininkas",
-    "Vyr. skautu burelio pirmininko pavaduotojas",
-    "Vyr. skauciu draugoves draugininkas",
-    "Vyr. skauciu draugoves draugininko pavaduotojas",
-    "Vyr. skauciu burelio pirmininkas",
-    "Vyr. skauciu burelio pirmininko pavaduotojas",
-    "Vadovas"
-)
-
-private fun userHasAnyRole(userId: UUID, tuntasId: UUID, roleNames: Set<String>): Boolean {
-    return transaction {
-        val hasLeadershipRole = UserLeadershipRoles
-            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
-            .selectAll()
-            .where {
-                (UserLeadershipRoles.userId eq userId) and
-                    (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                    (UserLeadershipRoles.leftAt.isNull()) and
-                    (Roles.name inList roleNames)
-            }
-            .firstOrNull() != null
-
-        if (hasLeadershipRole) {
-            true
-        } else {
-            UserRanks
-                .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
-                .selectAll()
-                .where {
-                    (UserRanks.userId eq userId) and
-                        (UserRanks.tuntasId eq tuntasId) and
-                        (Roles.name inList roleNames)
-                }
-                .firstOrNull() != null
-        }
-    }
-}
