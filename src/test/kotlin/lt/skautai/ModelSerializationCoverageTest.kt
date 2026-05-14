@@ -235,6 +235,7 @@ class ModelSerializationCoverageTest {
             returnedQuantity = 2,
             remainingQuantity = 2,
             status = "PARTIAL",
+            isReturned = false,
             notes = "H"
         )
         val purchaseLine = EventReconciliationPurchaseLineResponse(

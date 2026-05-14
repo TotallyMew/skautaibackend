@@ -332,6 +332,10 @@ CREATE TABLE event_inventory_items (
                                        available_quantity INTEGER NOT NULL DEFAULT 0 CHECK (available_quantity >= 0),
                                        needs_purchase BOOLEAN NOT NULL DEFAULT FALSE,
                                        notes TEXT,
+                                       source_custodian_name VARCHAR(200),
+                                       source_location_path VARCHAR(500),
+                                       source_temporary_storage_label VARCHAR(255),
+                                       source_responsible_user_name VARCHAR(200),
                                        responsible_user_id UUID REFERENCES users(id),
                                        created_by_user_id UUID REFERENCES users(id),
                                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

@@ -122,6 +122,11 @@ data class EventInventoryItemResponse(
     val unallocatedQuantity: Int,
     val needsPurchase: Boolean,
     val notes: String? = null,
+    val sourceCustodianName: String? = null,
+    val sourceLocationPath: String? = null,
+    val sourceTemporaryStorageLabel: String? = null,
+    val sourceResponsibleUserName: String? = null,
+    val sourcePickupSummary: String? = null,
     val responsibleUserId: String? = null,
     val responsibleUserName: String? = null,
     val createdByUserId: String? = null,
@@ -295,6 +300,12 @@ data class EventReconciliationReturnLineResponse(
     val returnedQuantity: Int,
     val remainingQuantity: Int,
     val status: String,
+    val isReturned: Boolean,
+    val currentHolderSummary: String? = null,
+    val sourcePickupSummary: String? = null,
+    val returnDecision: String? = null,
+    val returnedToSummary: String? = null,
+    val returnCondition: String? = null,
     val notes: String? = null
 )
 

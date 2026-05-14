@@ -2129,6 +2129,7 @@ class EventService {
             }
             val available = if (itemUUID != null) reservableQuantity else 0
             val itemName = request.name.ifBlank { item?.get(Items.name).orEmpty() }
+            val sourceSnapshot = item?.let { buildEventItemSourceSnapshot(it) }
 
             val id = EventInventoryItems.insert {
                 it[this.eventId] = eventId
@@ -2140,6 +2141,10 @@ class EventService {
                 it[availableQuantity] = available
                 it[needsPurchase] = request.plannedQuantity > available
                 it[notes] = request.notes
+                it[sourceCustodianName] = sourceSnapshot?.custodianName
+                it[sourceLocationPath] = sourceSnapshot?.locationPath
+                it[sourceTemporaryStorageLabel] = sourceSnapshot?.temporaryStorageLabel
+                it[sourceResponsibleUserName] = sourceSnapshot?.responsibleUserName
                 it[responsibleUserId] = responsibleUUID
                 it[this.createdByUserId] = createdByUserId
                 it[createdAt] = kotlinx.datetime.Clock.System.now()
@@ -2440,9 +2445,26 @@ class EventService {
                     }
                 }
                 if (sourceItemId != null && decision == "DAMAGED") {
-                    Items.update({ (Items.id eq sourceItemId) and (Items.tuntasId eq tuntasId) }) {
-                        it[condition] = "DAMAGED"
-                        it[updatedAt] = now
+                    val item = Items.selectAll()
+                        .where { (Items.id eq sourceItemId) and (Items.tuntasId eq tuntasId) }
+                        .forUpdate()
+                        .firstOrNull()
+                    if (item != null) {
+                        val previousCondition = item[Items.condition]
+                        Items.update({ Items.id eq sourceItemId }) {
+                            it[condition] = "DAMAGED"
+                            it[updatedAt] = now
+                        }
+                        if (previousCondition != "DAMAGED") {
+                            ItemConditionLog.insert {
+                                it[this.itemId] = sourceItemId
+                                it[this.previousCondition] = previousCondition
+                                it[this.newCondition] = "DAMAGED"
+                                it[this.reportedByUserId] = userId
+                                it[this.reportedAt] = now
+                                it[this.notes] = line.notes ?: "Renginio suvedimas: DAMAGED"
+                            }
+                        }
                     }
                 }
 
@@ -3071,6 +3093,7 @@ class EventService {
             }
 
         val quantity = sourceItem[Items.quantity].coerceAtLeast(1)
+        val sourceSnapshot = buildEventItemSourceSnapshot(sourceItem)
         val eventInventoryItemId = EventInventoryItems.insert {
             it[this.eventId] = eventId
             it[itemId] = sourceItemId
@@ -3081,6 +3104,10 @@ class EventService {
             it[availableQuantity] = quantity
             it[needsPurchase] = false
             it[notes] = "FROM_TUNTAS_INVENTORY"
+            it[sourceCustodianName] = sourceSnapshot.custodianName
+            it[sourceLocationPath] = sourceSnapshot.locationPath
+            it[sourceTemporaryStorageLabel] = sourceSnapshot.temporaryStorageLabel
+            it[sourceResponsibleUserName] = sourceSnapshot.responsibleUserName
             it[responsibleUserId] = sourceItem[Items.responsibleUserId]
             it[createdByUserId] = performedByUserId
             it[createdAt] = kotlinx.datetime.Clock.System.now()
@@ -3620,6 +3647,16 @@ class EventService {
             unallocatedQuantity = (planned - allocated).coerceAtLeast(0),
             needsPurchase = row[EventInventoryItems.needsPurchase],
             notes = row[EventInventoryItems.notes],
+            sourceCustodianName = row[EventInventoryItems.sourceCustodianName],
+            sourceLocationPath = row[EventInventoryItems.sourceLocationPath],
+            sourceTemporaryStorageLabel = row[EventInventoryItems.sourceTemporaryStorageLabel],
+            sourceResponsibleUserName = row[EventInventoryItems.sourceResponsibleUserName],
+            sourcePickupSummary = buildSourcePickupSummary(
+                row[EventInventoryItems.sourceCustodianName],
+                row[EventInventoryItems.sourceLocationPath],
+                row[EventInventoryItems.sourceTemporaryStorageLabel],
+                row[EventInventoryItems.sourceResponsibleUserName]
+            ),
             responsibleUserId = row[EventInventoryItems.responsibleUserId]?.toString(),
             responsibleUserName = responsible?.let { "${it[Users.name]} ${it[Users.surname]}".trim() },
             createdByUserId = row[EventInventoryItems.createdByUserId]?.toString(),
@@ -3891,16 +3928,32 @@ class EventService {
             .selectAll()
             .where { EventInventoryItems.eventId eq eventId }
             .toList()
+        val reconciliationMovementsByCustodyId = EventInventoryMovements.selectAll()
+            .where {
+                (EventInventoryMovements.eventId eq eventId) and
+                    EventInventoryMovements.custodyId.isNotNull() and
+                    (EventInventoryMovements.movementType inList listOf(
+                        "RECONCILE_RETURNED",
+                        "RECONCILE_DAMAGED",
+                        "RECONCILE_MISSING",
+                        "RECONCILE_CONSUMED"
+                    ))
+            }
+            .groupBy { it[EventInventoryMovements.custodyId]!! }
 
         val openReturns = custodyRows
             .filter { it[EventInventoryCustody.status] == "OPEN" && openQuantity(it) > 0 }
-            .map { toReconciliationReturnLineResponse(it) }
+            .map { row ->
+                toReconciliationReturnLineResponse(row, reconciliationMovementsByCustodyId[row[EventInventoryCustody.id]].orEmpty())
+            }
         val returnedToEventStorage = custodyRows
             .filter {
                 it[EventInventoryCustody.status] != "OPEN" ||
                     (it[EventInventoryCustody.pastovykleId] == null && it[EventInventoryCustody.holderUserId] == null)
             }
-            .map { toReconciliationReturnLineResponse(it) }
+            .map { row ->
+                toReconciliationReturnLineResponse(row, reconciliationMovementsByCustodyId[row[EventInventoryCustody.id]].orEmpty())
+            }
         val unresolvedPurchases = reconciliationPurchaseRows(eventId)
             .map { toReconciliationPurchaseLineResponse(it) }
 
@@ -3914,12 +3967,39 @@ class EventService {
         )
     }
 
-    private fun toReconciliationReturnLineResponse(row: ResultRow): EventReconciliationReturnLineResponse {
+    private fun toReconciliationReturnLineResponse(
+        row: ResultRow,
+        reconciliationMovements: List<ResultRow>
+    ): EventReconciliationReturnLineResponse {
         val pastovykle = row[EventInventoryCustody.pastovykleId]?.let { id ->
             Pastovykles.selectAll().where { Pastovykles.id eq id }.firstOrNull()
         }
         val holder = row[EventInventoryCustody.holderUserId]?.let { userId ->
             Users.selectAll().where { Users.id eq userId }.firstOrNull()
+        }
+        val currentHolderSummary = listOfNotNull(
+            pastovykle?.get(Pastovykles.name),
+            holder?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+        ).joinToString(" / ").ifBlank { "Renginio sandėlis" }
+        val sourcePickupSummary = buildSourcePickupSummary(
+            row[EventInventoryItems.sourceCustodianName],
+            row[EventInventoryItems.sourceLocationPath],
+            row[EventInventoryItems.sourceTemporaryStorageLabel],
+            row[EventInventoryItems.sourceResponsibleUserName]
+        )
+        val latestDecision = reconciliationMovements.maxByOrNull { it[EventInventoryMovements.createdAt] }
+        val returnDecision = latestDecision?.get(EventInventoryMovements.movementType)?.removePrefix("RECONCILE_")
+        val returnCondition = when (returnDecision) {
+            "RETURNED" -> itemConditionLabel(row[EventInventoryItems.itemId])
+            "DAMAGED" -> "DAMAGED"
+            "MISSING" -> "MISSING"
+            "CONSUMED" -> "CONSUMED"
+            else -> null
+        }
+        val returnedToSummary = when (returnDecision) {
+            "RETURNED", "DAMAGED" -> sourcePickupSummary ?: "Renginio sandėlis"
+            "MISSING", "CONSUMED" -> "Negrįžo"
+            else -> null
         }
         return EventReconciliationReturnLineResponse(
             custodyId = row[EventInventoryCustody.id].toString(),
@@ -3934,6 +4014,12 @@ class EventService {
             returnedQuantity = row[EventInventoryCustody.returnedQuantity],
             remainingQuantity = openQuantity(row),
             status = row[EventInventoryCustody.status],
+            isReturned = row[EventInventoryCustody.status] != "OPEN" || openQuantity(row) == 0,
+            currentHolderSummary = currentHolderSummary,
+            sourcePickupSummary = sourcePickupSummary,
+            returnDecision = returnDecision,
+            returnedToSummary = returnedToSummary,
+            returnCondition = returnCondition,
             notes = row[EventInventoryCustody.notes]
         )
     }
@@ -3952,6 +4038,64 @@ class EventService {
             invoiceFileUrl = row[EventPurchases.invoiceFileUrl],
             notes = row[EventPurchaseItems.notes]
         )
+    }
+
+    private data class EventItemSourceSnapshot(
+        val custodianName: String?,
+        val locationPath: String?,
+        val temporaryStorageLabel: String?,
+        val responsibleUserName: String?
+    )
+
+    private fun buildEventItemSourceSnapshot(sourceItem: ResultRow): EventItemSourceSnapshot {
+        val custodianName = sourceItem[Items.custodianId]?.let { custodianId ->
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id eq custodianId }
+                .firstOrNull()
+                ?.get(OrganizationalUnits.name)
+        }
+        val locationPath = sourceItem[Items.locationId]?.let { locationId ->
+            val nodesById = Locations.selectAll()
+                .where { Locations.tuntasId eq sourceItem[Items.tuntasId] }
+                .toList()
+                .associate { it[Locations.id] to it.toLocationNodeData() }
+            buildLocationPath(locationId, nodesById)
+        }
+        val responsibleUserName = sourceItem[Items.responsibleUserId]?.let { responsibleUserId ->
+            Users.selectAll()
+                .where { Users.id eq responsibleUserId }
+                .firstOrNull()
+                ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+        }
+        return EventItemSourceSnapshot(
+            custodianName = custodianName,
+            locationPath = locationPath,
+            temporaryStorageLabel = sourceItem[Items.temporaryStorageLabel],
+            responsibleUserName = responsibleUserName
+        )
+    }
+
+    private fun buildSourcePickupSummary(
+        custodianName: String?,
+        locationPath: String?,
+        temporaryStorageLabel: String?,
+        responsibleUserName: String?
+    ): String? {
+        val parts = listOfNotNull(
+            custodianName?.takeIf { it.isNotBlank() },
+            locationPath?.takeIf { it.isNotBlank() },
+            temporaryStorageLabel?.takeIf { it.isNotBlank() },
+            responsibleUserName?.takeIf { it.isNotBlank() }?.let { "Pas $it" }
+        )
+        return parts.joinToString(" / ").takeIf { it.isNotBlank() }
+    }
+
+    private fun itemConditionLabel(itemId: UUID?): String? {
+        if (itemId == null) return null
+        return Items.select(Items.condition)
+            .where { Items.id eq itemId }
+            .firstOrNull()
+            ?.get(Items.condition)
     }
 
     private fun reconciledPurchaseQuantity(purchaseItemId: UUID): Int {

@@ -20,10 +20,12 @@ import lt.skautai.models.requests.CreateEventInventoryAllocationRequest
 import lt.skautai.models.requests.CreateEventInventoryBucketRequest
 import lt.skautai.models.requests.CreateEventInventoryItemRequest
 import lt.skautai.models.requests.CreateEventInventoryItemsBulkRequest
+import lt.skautai.models.requests.CreateEventInventoryMovementRequest
 import lt.skautai.models.requests.ReconcileEventPurchaseLineRequest
 import lt.skautai.models.requests.ReconcileEventPurchasesRequest
 import lt.skautai.models.requests.ReconcileEventReturnLineRequest
 import lt.skautai.models.requests.ReconcileEventReturnsRequest
+import lt.skautai.models.requests.UpdateEventRequest
 import lt.skautai.services.EventService
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.deleteWhere
@@ -106,6 +108,22 @@ class EventServiceDirectTest {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
             setBody("""{ "name": "Direct item", "type": "COLLECTIVE", "category": "TOOLS", "quantity": $quantity }""")
+        }
+        check(response.status == HttpStatusCode.Created)
+        return Json.parseToJsonElement(response.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+    }
+
+    private suspend fun HttpClient.createLocation(
+        token: String,
+        tuntasId: String,
+        name: String,
+        visibility: String = "PUBLIC"
+    ): String {
+        val response = post("/api/locations") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "$name", "visibility": "$visibility" }""")
         }
         check(response.status == HttpStatusCode.Created)
         return Json.parseToJsonElement(response.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
@@ -251,6 +269,54 @@ class EventServiceDirectTest {
     }
 
     @Test
+    fun `event inventory item exposes pickup source snapshot`() = testApplication {
+        configureFullApp()
+        val email = "pickup-source@test.com"
+        val (token, tuntasIdText) = client.registerAndActivateTuntininkas(email = email)
+        val tuntasId = UUID.fromString(tuntasIdText)
+        val eventId = UUID.fromString(client.createEvent(token, tuntasIdText))
+        val userId = userIdForEmail(email)
+        val locationId = client.createLocation(token, tuntasIdText, "Garazas")
+        client.activateEvent(token, tuntasIdText, eventId.toString())
+
+        val itemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasIdText)
+            setBody(
+                """
+                {
+                    "name": "Puodas",
+                    "type": "COLLECTIVE",
+                    "category": "TOOLS",
+                    "quantity": 2,
+                    "locationId": "$locationId",
+                    "responsibleUserId": "$userId",
+                    "temporaryStorageLabel": "Virsutine lentyna"
+                }
+                """.trimIndent()
+            )
+        }
+        val itemId = Json.parseToJsonElement(itemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val created = service.createInventoryItem(
+            eventId = eventId,
+            tuntasId = tuntasId,
+            createdByUserId = userId,
+            request = CreateEventInventoryItemRequest(
+                itemId = itemId,
+                name = "Puodas",
+                plannedQuantity = 2
+            )
+        ).getOrThrow()
+
+        assertEquals("Garazas", created.sourceLocationPath)
+        assertEquals("Virsutine lentyna", created.sourceTemporaryStorageLabel)
+        assertTrue(created.sourceResponsibleUserName?.contains("Test Tuntininkas") == true)
+        assertTrue(created.sourcePickupSummary?.contains("Garazas") == true)
+    }
+
+    @Test
     fun `event service validates and applies return reconciliation directly`() = testApplication {
         configureFullApp()
         val email = "returns-direct@test.com"
@@ -338,6 +404,87 @@ class EventServiceDirectTest {
         val reconciliation = result.getOrThrow()
         assertEquals(0, reconciliation.openReturns.size)
         assertTrue(reconciliation.returnedToEventStorage.isNotEmpty())
+    }
+
+    @Test
+    fun `event reconciliation summary includes return destination and condition`() = testApplication {
+        configureFullApp()
+        val email = "reconciliation-summary@test.com"
+        val (token, tuntasIdText) = client.registerAndActivateTuntininkas(email = email)
+        val tuntasId = UUID.fromString(tuntasIdText)
+        val eventId = UUID.fromString(client.createEvent(token, tuntasIdText))
+        val userId = userIdForEmail(email)
+        val locationId = client.createLocation(token, tuntasIdText, "Garazas")
+        client.activateEvent(token, tuntasIdText, eventId.toString())
+
+        val itemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasIdText)
+            setBody(
+                """
+                {
+                    "name": "Kirvis",
+                    "type": "COLLECTIVE",
+                    "category": "TOOLS",
+                    "quantity": 1,
+                    "locationId": "$locationId",
+                    "temporaryStorageLabel": "Stovas A"
+                }
+                """.trimIndent()
+            )
+        }
+        val itemId = Json.parseToJsonElement(itemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val eventItem = service.createInventoryItem(
+            eventId = eventId,
+            tuntasId = tuntasId,
+            createdByUserId = userId,
+            request = CreateEventInventoryItemRequest(
+                itemId = itemId,
+                name = "Kirvis",
+                plannedQuantity = 1
+            )
+        ).getOrThrow()
+        val pastovykle = service.createPastovykle(eventId, tuntasId, CreatePastovykleRequest(name = "Aitvarai")).getOrThrow()
+
+        val movement = service.createInventoryMovement(
+            eventId = eventId,
+            tuntasId = tuntasId,
+            performedByUserId = userId,
+            request = CreateEventInventoryMovementRequest(
+                eventInventoryItemId = eventItem.id,
+                movementType = "ASSIGN_TO_PASTOVYKLE",
+                quantity = 1,
+                pastovykleId = pastovykle.id
+            ),
+            canManageInventory = true
+        ).getOrThrow()
+
+        service.updateEvent(eventId, tuntasId, UpdateEventRequest(status = "WRAP_UP")).getOrThrow()
+
+        val reconciliation = service.reconcileReturns(
+            eventId = eventId,
+            tuntasId = tuntasId,
+            userId = userId,
+            request = ReconcileEventReturnsRequest(
+                returns = listOf(
+                    ReconcileEventReturnLineRequest(
+                        custodyId = movement.custodyId!!,
+                        decision = "DAMAGED",
+                        quantity = 1,
+                        notes = "Suluzo"
+                    )
+                )
+            )
+        ).getOrThrow()
+
+        val row = reconciliation.returnedToEventStorage.first()
+        assertTrue(row.isReturned)
+        assertEquals("DAMAGED", row.returnDecision)
+        assertEquals("DAMAGED", row.returnCondition)
+        assertTrue(row.returnedToSummary?.contains("Garazas") == true)
+        assertTrue(row.sourcePickupSummary?.contains("Stovas A") == true)
     }
 
     @Test
