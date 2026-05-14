@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 data class InventoryTemplateItemResponse(
     val id: String,
     val templateId: String,
+    val itemId: String? = null,
     val itemName: String,
     val quantity: Int,
     val category: String? = null,
@@ -28,4 +29,31 @@ data class InventoryTemplateResponse(
 data class InventoryTemplateListResponse(
     val templates: List<InventoryTemplateResponse>,
     val total: Int
+)
+
+@Serializable
+data class AppliedTemplateReservedItemResponse(
+    val templateItemName: String,
+    val itemId: String,
+    val itemName: String,
+    val eventInventoryItemId: String,
+    val reservationGroupId: String,
+    val quantity: Int
+)
+
+@Serializable
+data class AppliedTemplatePurchaseItemResponse(
+    val templateItemName: String,
+    val eventInventoryItemId: String,
+    val purchaseId: String,
+    val purchaseItemId: String,
+    val quantity: Int
+)
+
+@Serializable
+data class AppliedInventoryTemplateResponse(
+    val reserved: List<AppliedTemplateReservedItemResponse>,
+    val toPurchase: List<AppliedTemplatePurchaseItemResponse>,
+    val reservedTotal: Int,
+    val toPurchaseTotal: Int
 )

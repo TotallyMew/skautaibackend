@@ -8,7 +8,7 @@ object Events : Table("events") {
     val id = uuid("id").autoGenerate()
     val tuntasId = uuid("tuntas_id").references(Tuntai.id)
     val name = varchar("name", 200)
-    val type = varchar("type", 20)
+    val type = varchar("type", 100)
     val startDate = date("start_date")
     val endDate = date("end_date")
     val locationId = uuid("location_id").references(Locations.id).nullable()

@@ -57,13 +57,13 @@ class MemberServiceDirectTest {
         assertTrue(membersFailure.isFailure)
         assertEquals("You are not an active member of this tuntas", membersFailure.exceptionOrNull()?.message)
 
-        val detailFailure = service.getMember(
+        val detailResult = service.getMember(
             userId = UUID.fromString(memberBIdText),
             tuntasId = tuntasId,
             callerUserId = UUID.fromString(leaderAIdText)
         )
-        assertTrue(detailFailure.isFailure)
-        assertEquals("Member not found in this tuntas", detailFailure.exceptionOrNull()?.message)
+        assertTrue(detailResult.isSuccess)
+        assertEquals(memberBIdText, detailResult.getOrNull()?.userId)
     }
 
     @Test

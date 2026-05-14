@@ -9,6 +9,7 @@ data class EventRoleResponse(
     val userName: String? = null,
     val role: String,
     val targetGroup: String? = null,
+    val pastovykleId: String? = null,
     val assignedByUserId: String? = null,
     val assignedAt: String
 )
@@ -50,6 +51,23 @@ data class PastovykleResponse(
 @Serializable
 data class PastovykleListResponse(
     val pastovykles: List<PastovykleResponse>,
+    val total: Int
+)
+
+@Serializable
+data class PastovykleMemberResponse(
+    val id: String,
+    val pastovykleId: String,
+    val userId: String,
+    val userName: String,
+    val status: String,
+    val addedAt: String,
+    val addedByUserId: String
+)
+
+@Serializable
+data class PastovykleMemberListResponse(
+    val members: List<PastovykleMemberResponse>,
     val total: Int
 )
 
@@ -240,8 +258,9 @@ data class EventInventoryRequestResponse(
     val eventInventoryItemId: String,
     val itemId: String? = null,
     val itemName: String,
-    val pastovykleId: String,
-    val pastovykleName: String,
+    val pastovykleId: String? = null,
+    val pastovykleName: String? = null,
+    val targetGroup: String? = null,
     val requestedByUserId: String,
     val requestedByName: String? = null,
     val quantity: Int,

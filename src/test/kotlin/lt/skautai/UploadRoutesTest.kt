@@ -8,6 +8,8 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.client.request.forms.MultiPartFormDataContent
+import io.ktor.client.request.forms.formData
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -82,6 +84,59 @@ class UploadRoutesTest {
         }
         assertEquals(HttpStatusCode.NotFound, missingFile.status)
         assertEquals("File not found", parseError(missingFile.bodyAsText()))
+    }
+
+    @Test
+    fun `upload image route rejects invalid file metadata and signatures`() = testApplication {
+        configureFullApp()
+        val (token, _) = client.registerAndActivateTuntininkas()
+
+        val unsupportedExtension = client.post("/api/uploads/images") {
+            header("Authorization", "Bearer $token")
+            setBody(multiPartForFile(fileName = "bad.gif", contentType = ContentType.Image.PNG, bytes = pngBytes()))
+        }
+        assertEquals(HttpStatusCode.BadRequest, unsupportedExtension.status)
+        assertEquals("Unsupported file type", parseError(unsupportedExtension.bodyAsText()))
+
+        val missingContentType = client.post("/api/uploads/images") {
+            header("Authorization", "Bearer $token")
+            setBody(multiPartForFile(fileName = "valid.png", contentType = null, bytes = pngBytes()))
+        }
+        assertEquals(HttpStatusCode.BadRequest, missingContentType.status)
+        assertEquals("Content-Type is required", parseError(missingContentType.bodyAsText()))
+
+        val invalidName = client.post("/api/uploads/images") {
+            header("Authorization", "Bearer $token")
+            setBody(multiPartForFile(fileName = "nodot", contentType = ContentType.Image.PNG, bytes = pngBytes()))
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidName.status)
+        assertEquals("Original file name is required", parseError(invalidName.bodyAsText()))
+
+        val mismatchedContent = client.post("/api/uploads/images") {
+            header("Authorization", "Bearer $token")
+            setBody(multiPartForFile(fileName = "looks-valid.png", contentType = ContentType.Image.PNG, bytes = pdfBytes()))
+        }
+        assertEquals(HttpStatusCode.BadRequest, mismatchedContent.status)
+        assertEquals("File contents do not match the declared type", parseError(mismatchedContent.bodyAsText()))
+    }
+
+    @Test
+    fun `upload routes reject empty document payload and invalid download path`() = testApplication {
+        configureFullApp()
+        val (token, _) = client.registerAndActivateTuntininkas()
+
+        val missingDocument = client.post("/api/uploads/documents") {
+            header("Authorization", "Bearer $token")
+            setBody(MultiPartFormDataContent(formData { }))
+        }
+        assertEquals(HttpStatusCode.BadRequest, missingDocument.status)
+        assertEquals("Document file required", parseError(missingDocument.bodyAsText()))
+
+        val invalidDownload = client.get("/uploads/images/%20") {
+            header("Authorization", "Bearer $token")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidDownload.status)
+        assertEquals("Invalid file name", parseError(invalidDownload.bodyAsText()))
     }
 
     private fun pngBytes(): ByteArray = byteArrayOf(

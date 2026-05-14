@@ -9,6 +9,7 @@ object EventRoles : Table("event_roles") {
     val userId = uuid("user_id").references(Users.id)
     val role = varchar("role", 30)
     val targetGroup = varchar("target_group", 20).nullable()
+    val pastovykleId = uuid("pastovykle_id").references(Pastovykles.id).nullable()
     val assignedByUserId = uuid("assigned_by_user_id").references(Users.id).nullable()
     val assignedAt = timestamp("assigned_at")
 

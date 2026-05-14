@@ -21,7 +21,7 @@ class EventService {
         "VADOVAS", "SAVANORIS", "PATYRE_SKAUTAS", "SKAUTAS",
         "PROGRAMERIS", "MAISTININKAS"
     )
-    private val validTargetGroups = listOf("VILKAI", "SKAUTAI", "PATYRE_SKAUTAI", "VYR_SKAUTAI", "VYR_SKAUTES", "SKAUTAI_VILKAI", "TEVAI")
+    private val validTargetGroups = listOf("VILKAI", "SKAUTAI", "PATYRE_SKAUTAI", "VYR_SKAUTAI", "VYR_SKAUTES", "SKAUTAI_VILKAI", "TEVAI", "PROGRAMA")
     private val eventManagerRoles = listOf("VIRSININKAS")
     private val eventInventoryRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS")
     private val eventViewerRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "PROGRAMERIS")
@@ -510,6 +510,15 @@ class EventService {
             val targetUserUUID = try { UUID.fromString(request.userId) } catch (e: Exception) {
                 return@transaction Result.failure(Exception("Invalid user ID"))
             }
+            val targetPastovykleUUID = request.pastovykleId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid pastovykle ID"))
+                }
+            }
+            targetPastovykleUUID?.let {
+                ensurePastovykle(eventId, it)
+                    ?: return@transaction Result.failure(Exception("Pastovykle not found"))
+            }
 
             // Verify user is a tuntas member
             UserTuntasMemberships.selectAll()
@@ -530,7 +539,8 @@ class EventService {
 
             if (existingUserRole != null) {
                 val isSameSlot = existingUserRole[EventRoles.role] == request.role &&
-                    existingUserRole[EventRoles.targetGroup] == request.targetGroup
+                    existingUserRole[EventRoles.targetGroup] == request.targetGroup &&
+                    existingUserRole[EventRoles.pastovykleId] == targetPastovykleUUID
                 if (isSameSlot) {
                     return@transaction Result.success(toEventRoleResponse(existingUserRole))
                 }
@@ -550,25 +560,35 @@ class EventService {
 
             val existingSlotRole = EventRoles.selectAll()
                 .where {
-                        (EventRoles.eventId eq eventId) and
+                    (EventRoles.eventId eq eventId) and
                         (EventRoles.role eq request.role) and
-                        if (request.targetGroup == null) {
-                            (EventRoles.targetGroup eq null)
+                        (if (request.targetGroup == null) {
+                            EventRoles.targetGroup eq null
                         } else {
                             EventRoles.targetGroup eq request.targetGroup
-                        }
+                        }) and
+                        (if (targetPastovykleUUID == null) {
+                            EventRoles.pastovykleId eq null
+                        } else {
+                            EventRoles.pastovykleId eq targetPastovykleUUID
+                        })
                 }
                 .firstOrNull()
 
             if (existingSlotRole != null) {
                 EventRoles.deleteWhere {
-                        (EventRoles.eventId eq eventId) and
+                    (EventRoles.eventId eq eventId) and
                         (EventRoles.role eq request.role) and
-                        if (request.targetGroup == null) {
-                            (EventRoles.targetGroup eq null)
+                        (if (request.targetGroup == null) {
+                            EventRoles.targetGroup eq null
                         } else {
                             EventRoles.targetGroup eq request.targetGroup
-                        }
+                        }) and
+                        (if (targetPastovykleUUID == null) {
+                            EventRoles.pastovykleId eq null
+                        } else {
+                            EventRoles.pastovykleId eq targetPastovykleUUID
+                        })
                 }
             }
 
@@ -577,6 +597,7 @@ class EventService {
                 it[userId] = targetUserUUID
                 it[role] = request.role
                 it[targetGroup] = request.targetGroup
+                targetPastovykleUUID?.let { value -> it[pastovykleId] = value }
                 it[this.assignedByUserId] = assignedByUserId
             } get EventRoles.id
 
@@ -621,7 +642,7 @@ class EventService {
     }
 
     private val validAgeGroups = listOf("VILKAI", "SKAUTAI", "PATYRE_SKAUTAI", "VYR_SKAUTAI", "VYR_SKAUTES", "MIXED")
-    private val validRecipientTypes = listOf("DIRECT", "GURU_PROXY")
+    private val validRecipientTypes = listOf("DIRECT", "GURU_PROXY", "MEMBER")
 
     private fun verifyStovyklaEvent(eventId: UUID, tuntasId: UUID): ResultRow? {
         val event = Events.selectAll()
@@ -632,17 +653,28 @@ class EventService {
     }
 
     fun isPastovykleResponsible(eventId: UUID, pastovykleId: UUID, tuntasId: UUID, userId: UUID): Boolean = transaction {
-        Pastovykles.selectAll()
+        val isPrimaryLeader = Pastovykles.selectAll()
             .where {
                 (Pastovykles.id eq pastovykleId) and
                     (Pastovykles.eventId eq eventId) and
                     (Pastovykles.responsibleUserId eq userId)
             }
-            .firstOrNull() != null && verifyStovyklaEvent(eventId, tuntasId) != null
+            .firstOrNull() != null
+
+        val isCoLeader = EventRoles.selectAll()
+            .where {
+                (EventRoles.eventId eq eventId) and
+                    (EventRoles.pastovykleId eq pastovykleId) and
+                    (EventRoles.userId eq userId) and
+                    (EventRoles.role eq "PASTOVYKLES_GURU")
+            }
+            .firstOrNull() != null
+
+        (isPrimaryLeader || isCoLeader) && verifyStovyklaEvent(eventId, tuntasId) != null
     }
 
     fun hasResponsiblePastovykle(userId: UUID, tuntasId: UUID): Boolean = transaction {
-        Pastovykles
+        val primaryLeader = Pastovykles
             .innerJoin(Events, { eventId }, { id })
             .selectAll()
             .where {
@@ -651,10 +683,24 @@ class EventService {
                     (Events.type eq "STOVYKLA")
             }
             .firstOrNull() != null
+
+        val coLeader = EventRoles
+            .innerJoin(Events, { eventId }, { id })
+            .selectAll()
+            .where {
+                (EventRoles.userId eq userId) and
+                    (EventRoles.role eq "PASTOVYKLES_GURU") and
+                    (EventRoles.pastovykleId.isNotNull()) and
+                    (Events.tuntasId eq tuntasId) and
+                    (Events.type eq "STOVYKLA")
+            }
+            .firstOrNull() != null
+
+        primaryLeader || coLeader
     }
 
     fun hasResponsiblePastovykleForEvent(userId: UUID, tuntasId: UUID, targetEventId: UUID): Boolean = transaction {
-        Pastovykles
+        val primaryLeader = Pastovykles
             .innerJoin(Events, { eventId }, { id })
             .selectAll()
             .where {
@@ -664,6 +710,21 @@ class EventService {
                     (Events.type eq "STOVYKLA")
             }
             .firstOrNull() != null
+
+        val coLeader = EventRoles
+            .innerJoin(Events, { eventId }, { id })
+            .selectAll()
+            .where {
+                (EventRoles.userId eq userId) and
+                    (EventRoles.eventId eq targetEventId) and
+                    (EventRoles.role eq "PASTOVYKLES_GURU") and
+                    (EventRoles.pastovykleId.isNotNull()) and
+                    (Events.tuntasId eq tuntasId) and
+                    (Events.type eq "STOVYKLA")
+            }
+            .firstOrNull() != null
+
+        primaryLeader || coLeader
     }
 
     private fun ensurePastovykle(eventId: UUID, pastovykleId: UUID): ResultRow? {
@@ -680,6 +741,32 @@ class EventService {
         ageGroup = row[Pastovykles.ageGroup],
         notes = row[Pastovykles.notes]
     )
+
+    private fun toPastovykleMemberResponse(row: ResultRow): PastovykleMemberResponse {
+        val user = Users.selectAll()
+            .where { Users.id eq row[PastovykleMembers.userId] }
+            .firstOrNull()
+        val userName = user?.let { "${it[Users.name]} ${it[Users.surname]}".trim() } ?: "Unknown"
+        return PastovykleMemberResponse(
+            id = row[PastovykleMembers.id].toString(),
+            pastovykleId = row[PastovykleMembers.pastovykleId].toString(),
+            userId = row[PastovykleMembers.userId].toString(),
+            userName = userName,
+            status = row[PastovykleMembers.status],
+            addedAt = row[PastovykleMembers.addedAt].toString(),
+            addedByUserId = row[PastovykleMembers.addedByUserId].toString()
+        )
+    }
+
+    private fun isActivePastovykleMember(pastovykleId: UUID, userId: UUID): Boolean {
+        return PastovykleMembers.selectAll()
+            .where {
+                (PastovykleMembers.pastovykleId eq pastovykleId) and
+                    (PastovykleMembers.userId eq userId) and
+                    (PastovykleMembers.status eq "ACTIVE")
+            }
+            .firstOrNull() != null
+    }
 
     private fun toInventoryResponse(row: ResultRow): PastovykleInventoryResponse {
         val itemName = Items.selectAll()
@@ -705,9 +792,11 @@ class EventService {
         val inventoryItem = EventInventoryItems.selectAll()
             .where { EventInventoryItems.id eq row[EventInventoryRequests.eventInventoryItemId] }
             .first()
-        val pastovykle = Pastovykles.selectAll()
-            .where { Pastovykles.id eq row[EventInventoryRequests.pastovykleId] }
-            .first()
+        val pastovykle = row[EventInventoryRequests.pastovykleId]?.let { pastovykleId ->
+            Pastovykles.selectAll()
+                .where { Pastovykles.id eq pastovykleId }
+                .firstOrNull()
+        }
 
         fun userName(id: UUID?): String? = id?.let {
             Users.selectAll()
@@ -722,8 +811,9 @@ class EventService {
             eventInventoryItemId = row[EventInventoryRequests.eventInventoryItemId].toString(),
             itemId = inventoryItem[EventInventoryItems.itemId]?.toString(),
             itemName = inventoryItem[EventInventoryItems.name],
-            pastovykleId = row[EventInventoryRequests.pastovykleId].toString(),
-            pastovykleName = pastovykle[Pastovykles.name],
+            pastovykleId = row[EventInventoryRequests.pastovykleId]?.toString(),
+            pastovykleName = pastovykle?.get(Pastovykles.name),
+            targetGroup = row[EventInventoryRequests.targetGroup],
             requestedByUserId = row[EventInventoryRequests.requestedByUserId].toString(),
             requestedByName = userName(row[EventInventoryRequests.requestedByUserId]),
             quantity = row[EventInventoryRequests.quantity],
@@ -757,14 +847,133 @@ class EventService {
             verifyStovyklaEvent(eventId, tuntasId)
                 ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
 
+            val coLeaderPastovykleIds = EventRoles.select(EventRoles.pastovykleId)
+                .where {
+                    (EventRoles.eventId eq eventId) and
+                        (EventRoles.userId eq userId) and
+                        (EventRoles.role eq "PASTOVYKLES_GURU") and
+                        (EventRoles.pastovykleId.isNotNull())
+                }
+                .mapNotNull { it[EventRoles.pastovykleId] }
+                .toSet()
+
             val list = Pastovykles.selectAll()
                 .where {
                     (Pastovykles.eventId eq eventId) and
-                        (Pastovykles.responsibleUserId eq userId)
+                        (if (coLeaderPastovykleIds.isEmpty()) {
+                            Pastovykles.responsibleUserId eq userId
+                        } else {
+                            (Pastovykles.responsibleUserId eq userId) or
+                                (Pastovykles.id inList coLeaderPastovykleIds)
+                        })
                 }
                 .map { toPastovykleResponse(it) }
 
             Result.success(PastovykleListResponse(pastovykles = list, total = list.size))
+        }
+    }
+
+    fun assignPastovykleLeader(
+        eventId: UUID,
+        pastovykleId: UUID,
+        tuntasId: UUID,
+        assignedByUserId: UUID,
+        request: AssignPastovykleLeaderRequest
+    ): Result<EventRoleResponse> {
+        return transaction {
+            val event = verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            val pastovykle = ensurePastovykle(eventId, pastovykleId)
+                ?: return@transaction Result.failure(Exception("Pastovykle not found"))
+
+            val targetUserId = try { UUID.fromString(request.userId) } catch (e: Exception) {
+                return@transaction Result.failure(Exception("Invalid user ID"))
+            }
+            UserTuntasMemberships.selectAll()
+                .where {
+                    (UserTuntasMemberships.userId eq targetUserId) and
+                        (UserTuntasMemberships.tuntasId eq tuntasId) and
+                        (UserTuntasMemberships.leftAt.isNull())
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("User is not a member of this tuntas"))
+
+            if (pastovykle[Pastovykles.responsibleUserId] == targetUserId) {
+                return@transaction Result.failure(Exception("Pagrindinis vadovas jau turi pastovyklės vadovo teises"))
+            }
+
+            val existingRole = EventRoles.selectAll()
+                .where {
+                    (EventRoles.eventId eq eventId) and
+                        (EventRoles.userId eq targetUserId)
+                }
+                .firstOrNull()
+
+            if (existingRole != null) {
+                val isSamePastovykleLeader = existingRole[EventRoles.role] == "PASTOVYKLES_GURU" &&
+                    existingRole[EventRoles.pastovykleId] == pastovykleId
+                return@transaction if (isSamePastovykleLeader) {
+                    Result.success(toEventRoleResponse(existingRole))
+                } else {
+                    Result.failure(Exception("User already has an event staff role"))
+                }
+            }
+
+            val existingPastovykleResponsibility = Pastovykles.selectAll()
+                .where {
+                    (Pastovykles.eventId eq eventId) and
+                        (Pastovykles.responsibleUserId eq targetUserId)
+                }
+                .firstOrNull()
+            if (existingPastovykleResponsibility != null) {
+                return@transaction Result.failure(Exception("User already has an event staff role"))
+            }
+
+            val roleId = EventRoles.insert {
+                it[this.eventId] = eventId
+                it[userId] = targetUserId
+                it[role] = "PASTOVYKLES_GURU"
+                it[this.pastovykleId] = pastovykleId
+                it[this.assignedByUserId] = assignedByUserId
+            } get EventRoles.id
+
+            val role = EventRoles.selectAll()
+                .where { EventRoles.id eq roleId }
+                .first()
+            Result.success(toEventRoleResponse(role))
+        }
+    }
+
+    fun removePastovykleLeader(
+        eventId: UUID,
+        pastovykleId: UUID,
+        roleId: UUID,
+        tuntasId: UUID
+    ): Result<Unit> {
+        return transaction {
+            val event = verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            ensurePastovykle(eventId, pastovykleId)
+                ?: return@transaction Result.failure(Exception("Pastovykle not found"))
+
+            EventRoles.selectAll()
+                .where {
+                    (EventRoles.id eq roleId) and
+                        (EventRoles.eventId eq eventId) and
+                        (EventRoles.pastovykleId eq pastovykleId) and
+                        (EventRoles.role eq "PASTOVYKLES_GURU")
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Pastovykle leader not found"))
+
+            EventRoles.deleteWhere {
+                (EventRoles.id eq roleId) and
+                    (EventRoles.eventId eq eventId) and
+                    (EventRoles.pastovykleId eq pastovykleId)
+            }
+            Result.success(Unit)
         }
     }
 
@@ -901,6 +1110,126 @@ class EventService {
         }
     }
 
+    fun getPastovykleMembers(
+        eventId: UUID,
+        pastovykleId: UUID,
+        tuntasId: UUID
+    ): Result<PastovykleMemberListResponse> {
+        return transaction {
+            verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+
+            ensurePastovykle(eventId, pastovykleId)
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            val members = PastovykleMembers.selectAll()
+                .where {
+                    (PastovykleMembers.pastovykleId eq pastovykleId) and
+                        (PastovykleMembers.status eq "ACTIVE")
+                }
+                .map { toPastovykleMemberResponse(it) }
+
+            Result.success(PastovykleMemberListResponse(members = members, total = members.size))
+        }
+    }
+
+    fun addPastovykleMember(
+        eventId: UUID,
+        pastovykleId: UUID,
+        tuntasId: UUID,
+        addedByUserId: UUID,
+        request: AddPastovykleMemberRequest
+    ): Result<PastovykleMemberResponse> {
+        return transaction {
+            val event = verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+
+            ensurePastovykle(eventId, pastovykleId)
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            val memberUserId = try {
+                UUID.fromString(request.userId)
+            } catch (e: Exception) {
+                return@transaction Result.failure(Exception("Invalid user ID"))
+            }
+
+            if (!isActiveTuntasMember(memberUserId, tuntasId)) {
+                return@transaction Result.failure(Exception("User must be an active member of this tuntas"))
+            }
+
+            val existing = PastovykleMembers.selectAll()
+                .where {
+                    (PastovykleMembers.pastovykleId eq pastovykleId) and
+                        (PastovykleMembers.userId eq memberUserId)
+                }
+                .firstOrNull()
+
+            val memberId = if (existing != null) {
+                PastovykleMembers.update({ PastovykleMembers.id eq existing[PastovykleMembers.id] }) {
+                    it[status] = "ACTIVE"
+                    it[addedAt] = kotlinx.datetime.Clock.System.now()
+                    it[this.addedByUserId] = addedByUserId
+                }
+                existing[PastovykleMembers.id]
+            } else {
+                PastovykleMembers.insert {
+                    it[PastovykleMembers.pastovykleId] = pastovykleId
+                    it[userId] = memberUserId
+                    it[status] = "ACTIVE"
+                    it[addedAt] = kotlinx.datetime.Clock.System.now()
+                    it[this.addedByUserId] = addedByUserId
+                } get PastovykleMembers.id
+            }
+
+            val row = PastovykleMembers.selectAll()
+                .where { PastovykleMembers.id eq memberId }
+                .first()
+            Result.success(toPastovykleMemberResponse(row))
+        }
+    }
+
+    fun removePastovykleMember(
+        eventId: UUID,
+        pastovykleId: UUID,
+        memberId: UUID,
+        tuntasId: UUID
+    ): Result<Unit> {
+        return transaction {
+            val event = verifyStovyklaEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found or not of type STOVYKLA"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+
+            ensurePastovykle(eventId, pastovykleId)
+                ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
+
+            val existing = PastovykleMembers.selectAll()
+                .where {
+                    (PastovykleMembers.id eq memberId) and
+                        (PastovykleMembers.pastovykleId eq pastovykleId) and
+                        (PastovykleMembers.status eq "ACTIVE")
+                }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Pastovyklės narys nerastas"))
+
+            val openAssignments = PastovykleInventory.selectAll()
+                .where {
+                    (PastovykleInventory.pastovykleId eq pastovykleId) and
+                        (PastovykleInventory.recipientUserId eq existing[PastovykleMembers.userId]) and
+                        (PastovykleInventory.quantityReturned less PastovykleInventory.quantityAssigned)
+                }
+                .count()
+            if (openAssignments > 0) {
+                return@transaction Result.failure(Exception("Negalima pašalinti nario, kol jam yra išduotų negrąžintų daiktų"))
+            }
+
+            PastovykleMembers.update({ PastovykleMembers.id eq memberId }) {
+                it[status] = "REMOVED"
+            }
+            Result.success(Unit)
+        }
+    }
+
     fun getPastovykleInventory(
         eventId: UUID,
         pastovykleId: UUID,
@@ -960,6 +1289,13 @@ class EventService {
             val recipientUUID = request.recipientUserId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid recipient user ID"))
+                }
+            }
+            if (request.recipientType == "MEMBER") {
+                val memberUserId = recipientUUID
+                    ?: return@transaction Result.failure(Exception("Recipient user is required for member issue"))
+                if (!isActivePastovykleMember(pastovykleId, memberUserId)) {
+                    return@transaction Result.failure(Exception("Gavėjas nėra aktyvus šios pastovyklės narys"))
                 }
             }
 
@@ -1115,6 +1451,82 @@ class EventService {
                 it[this.eventId] = eventId
                 it[this.eventInventoryItemId] = eventInventoryItemId
                 it[this.pastovykleId] = pastovykleId
+                it[this.requestedByUserId] = requestedByUserId
+                it[quantity] = request.quantity
+                it[status] = "PENDING"
+                it[notes] = request.notes
+                it[createdAt] = kotlinx.datetime.Clock.System.now()
+            } get EventInventoryRequests.id
+
+            Result.success(
+                toInventoryRequestResponse(
+                    EventInventoryRequests.selectAll()
+                        .where { EventInventoryRequests.id eq requestId }
+                        .first()
+                )
+            )
+        }
+    }
+
+    fun getEventInventoryRequests(
+        eventId: UUID,
+        tuntasId: UUID,
+        requestedByUserId: UUID?,
+        includeAll: Boolean
+    ): Result<EventInventoryRequestListResponse> {
+        return transaction {
+            ensureEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found"))
+            val requests = EventInventoryRequests.selectAll()
+                .where {
+                    (EventInventoryRequests.eventId eq eventId) and
+                        (EventInventoryRequests.targetGroup eq "PROGRAMA") and
+                        if (includeAll || requestedByUserId == null) {
+                            Op.TRUE
+                        } else {
+                            EventInventoryRequests.requestedByUserId eq requestedByUserId
+                        }
+                }
+                .orderBy(EventInventoryRequests.createdAt, SortOrder.DESC)
+                .map { toInventoryRequestResponse(it) }
+
+            Result.success(EventInventoryRequestListResponse(requests = requests, total = requests.size))
+        }
+    }
+
+    fun createEventInventoryRequest(
+        eventId: UUID,
+        tuntasId: UUID,
+        requestedByUserId: UUID,
+        request: CreateEventInventoryRequestRequest
+    ): Result<EventInventoryRequestResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            if (!canRequestEventInventory(eventId, tuntasId, requestedByUserId)) {
+                return@transaction Result.failure(Exception("Insufficient permissions"))
+            }
+            if (request.quantity < 1) {
+                return@transaction Result.failure(Exception("Quantity must be at least 1"))
+            }
+
+            val eventInventoryItemId = try {
+                UUID.fromString(request.eventInventoryItemId)
+            } catch (e: Exception) {
+                return@transaction Result.failure(Exception("Invalid event inventory item ID"))
+            }
+
+            EventInventoryItems.selectAll()
+                .where { (EventInventoryItems.id eq eventInventoryItemId) and (EventInventoryItems.eventId eq eventId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Inventory item not found"))
+
+            val requestId = EventInventoryRequests.insert {
+                it[this.eventId] = eventId
+                it[this.eventInventoryItemId] = eventInventoryItemId
+                it[pastovykleId] = null
+                it[targetGroup] = "PROGRAMA"
                 it[this.requestedByUserId] = requestedByUserId
                 it[quantity] = request.quantity
                 it[status] = "PENDING"
@@ -2132,6 +2544,7 @@ class EventService {
                             it[temporaryStorageLabel] = "Renginio suvedimas"
                             it[responsibleUserId] = row[EventPurchases.purchasedByUserId]
                             it[createdByUserId] = userId
+                            it[qrToken] = UUID.randomUUID().toString()
                             it[purchaseDate] = row[EventPurchases.purchaseDate]
                             it[purchasePrice] = row[EventPurchaseItems.unitPrice]
                             it[notes] = line.notes ?: "Sukurta renginio suvedimo metu"
@@ -2329,16 +2742,17 @@ class EventService {
                 return@transaction Result.failure(Exception("Quantity must be at least 1"))
             }
 
-            val eventInventoryItemId = try {
+            val requestedInventoryItemId = try {
                 UUID.fromString(request.eventInventoryItemId)
             } catch (e: Exception) {
                 return@transaction Result.failure(Exception("Invalid event inventory item ID"))
             }
             val item = EventInventoryItems.selectAll()
-                .where { (EventInventoryItems.id eq eventInventoryItemId) and (EventInventoryItems.eventId eq eventId) }
+                .where { (EventInventoryItems.id eq requestedInventoryItemId) and (EventInventoryItems.eventId eq eventId) }
                 .firstOrNull()
-                ?: createEventInventoryItemForSourceItem(eventId, tuntasId, eventInventoryItemId, performedByUserId)
+                ?: createEventInventoryItemForSourceItem(eventId, tuntasId, requestedInventoryItemId, performedByUserId)
                 ?: return@transaction Result.failure(Exception("Inventory item not found"))
+            val eventInventoryItemId = item[EventInventoryItems.id]
 
             val pastovykleId = request.pastovykleId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
@@ -3100,6 +3514,7 @@ class EventService {
             userName = userName,
             role = row[EventRoles.role],
             targetGroup = row[EventRoles.targetGroup],
+            pastovykleId = row[EventRoles.pastovykleId]?.toString(),
             assignedByUserId = row[EventRoles.assignedByUserId]?.toString(),
             assignedAt = row[EventRoles.assignedAt].toString()
         )
@@ -3751,10 +4166,11 @@ class EventService {
     private fun validateEventType(type: String): Exception? {
         val normalized = type.trim()
         if (normalized.isBlank()) return Exception("Event type is required")
-        if (normalized.length > 20) return Exception("Event type must be at most 20 characters")
-        val allowed = normalized in validTypes ||
-            (normalized.startsWith("CUSTOM_") && normalized.matches(Regex("[A-Z0-9_]+")))
-        return if (allowed) null else Exception("Invalid event type")
+        if (normalized.length > 100) return Exception("Event type must be at most 100 characters")
+        if (normalized !in validTypes) {
+            return Exception("Invalid event type")
+        }
+        return null
     }
 
     private fun deleteManagedDocument(url: String?) {

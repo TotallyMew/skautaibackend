@@ -1307,20 +1307,14 @@ class ItemService {
         val normalized = category.trim()
         if (normalized.isBlank()) return Exception("Inventory category is required")
         if (normalized.length > 30) return Exception("Inventory category must be at most 30 characters")
-        val defaultCategories = setOf("CAMPING", "TOOLS", "COOKING", "FIRST_AID", "UNIFORMS", "BOOKS", "PERSONAL_LOANS")
-        val allowed = normalized in defaultCategories ||
-            (normalized.startsWith("CUSTOM_") && normalized.matches(Regex("[A-Z0-9_]+")))
-        return if (allowed) null else Exception("Invalid inventory category")
+        return null
     }
 
     private fun validateItemCondition(condition: String): Exception? {
         val normalized = condition.trim()
         if (normalized.isBlank()) return Exception("Item condition is required")
         if (normalized.length > 30) return Exception("Item condition must be at most 30 characters")
-        val defaultConditions = setOf("GOOD", "DAMAGED", "WRITTEN_OFF")
-        val allowed = normalized in defaultConditions ||
-            (normalized.startsWith("CUSTOM_") && normalized.matches(Regex("[A-Z0-9_]+")))
-        return if (allowed) null else Exception("Invalid condition")
+        return null
     }
 
     private fun replaceCustomFields(itemId: UUID, fields: List<ItemCustomFieldRequest>) {

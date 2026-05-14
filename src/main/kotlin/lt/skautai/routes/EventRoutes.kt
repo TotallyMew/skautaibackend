@@ -65,9 +65,16 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
             }
 
             get("{id}/candidate-members") {
+                val userId = currentUserId() ?: return@get
                 val tuntasUUID = parseTuntasId() ?: return@get
                 val eventUUID = parseEventId() ?: return@get
-                if (!canManageEvent(eventService, tuntasUUID, eventUUID)) return@get
+                val canViewCandidates =
+                    eventService.canManageEvent(eventUUID, tuntasUUID, userId) ||
+                        eventService.canManageEventInventory(eventUUID, tuntasUUID, userId) ||
+                        eventService.hasResponsiblePastovykleForEvent(userId, tuntasUUID, eventUUID)
+                if (!canViewCandidates) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 memberService.getEventCandidateMembers(tuntasUUID)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -208,6 +215,38 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                     eventService.getEventInventoryPlan(eventUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch inventory plan")) }
+                }
+            }
+
+            route("{id}/inventory-requests") {
+                get {
+                    val userId = currentUserId() ?: return@get
+                    val tuntasUUID = parseTuntasId() ?: return@get
+                    val eventUUID = parseEventId() ?: return@get
+                    if (!canViewEventInventory(eventService, tuntasUUID, eventUUID)) return@get
+                    val includeAll = canManageEventInventory(eventService, tuntasUUID, eventUUID)
+                    eventService.getEventInventoryRequests(eventUUID, tuntasUUID, userId, includeAll)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e ->
+                            val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                            call.respond(status, ErrorResponse(e.message ?: "Failed to fetch inventory requests"))
+                        }
+                }
+
+                post {
+                    val userId = currentUserId() ?: return@post
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    if (!eventService.canRequestEventInventory(eventUUID, tuntasUUID, userId)) {
+                        return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                    }
+                    val request = call.receive<CreateEventInventoryRequestRequest>()
+                    eventService.createEventInventoryRequest(eventUUID, tuntasUUID, userId, request)
+                        .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                        .onFailure { e ->
+                            val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                            call.respond(status, ErrorResponse(e.message ?: "Failed to create inventory request"))
+                        }
                 }
             }
 
@@ -640,6 +679,91 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                             val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
                             call.respond(status, ErrorResponse(e.message ?: "Failed to delete pastovyklė"))
                         }
+                }
+
+                route("{pid}/leaders") {
+                    post {
+                        val userId = currentUserId() ?: return@post
+                        val tuntasUUID = parseTuntasId() ?: return@post
+                        val eventUUID = parseEventId() ?: return@post
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklÄ— ID") ?: return@post
+                        if (!eventService.canManageEvent(eventUUID, tuntasUUID, userId)) {
+                            return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                        }
+
+                        val request = call.receive<AssignPastovykleLeaderRequest>()
+                        eventService.assignPastovykleLeader(eventUUID, pastovykleUUID, tuntasUUID, userId, request)
+                            .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to assign pastovyklÄ— leader"))
+                            }
+                    }
+
+                    delete("{roleId}") {
+                        val userId = currentUserId() ?: return@delete
+                        val tuntasUUID = parseTuntasId() ?: return@delete
+                        val eventUUID = parseEventId() ?: return@delete
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklÄ— ID") ?: return@delete
+                        val roleUUID = parseUuidParameter("roleId", "Invalid role ID") ?: return@delete
+                        if (!eventService.canManageEvent(eventUUID, tuntasUUID, userId)) {
+                            return@delete call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                        }
+
+                        eventService.removePastovykleLeader(eventUUID, pastovykleUUID, roleUUID, tuntasUUID)
+                            .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("PastovyklÄ—s bendravadovis paÅ¡alintas")) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to remove pastovyklÄ— leader"))
+                            }
+                    }
+                }
+
+                route("{pid}/members") {
+                    get {
+                        val tuntasUUID = parseTuntasId() ?: return@get
+                        val eventUUID = parseEventId() ?: return@get
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@get
+                        if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@get
+
+                        eventService.getPastovykleMembers(eventUUID, pastovykleUUID, tuntasUUID)
+                            .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to fetch pastovyklė members"))
+                            }
+                    }
+
+                    post {
+                        val userId = currentUserId() ?: return@post
+                        val tuntasUUID = parseTuntasId() ?: return@post
+                        val eventUUID = parseEventId() ?: return@post
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
+                        if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@post
+
+                        val request = call.receive<AddPastovykleMemberRequest>()
+                        eventService.addPastovykleMember(eventUUID, pastovykleUUID, tuntasUUID, userId, request)
+                            .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to add pastovyklė member"))
+                            }
+                    }
+
+                    delete("{memberId}") {
+                        val tuntasUUID = parseTuntasId() ?: return@delete
+                        val eventUUID = parseEventId() ?: return@delete
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@delete
+                        val memberUUID = parseUuidParameter("memberId", "Invalid member ID") ?: return@delete
+                        if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@delete
+
+                        eventService.removePastovykleMember(eventUUID, pastovykleUUID, memberUUID, tuntasUUID)
+                            .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Pastovyklės narys pašalintas")) }
+                            .onFailure { e ->
+                                val status = if ("not found" in (e.message ?: "").lowercase() || "nerastas" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                                call.respond(status, ErrorResponse(e.message ?: "Failed to remove pastovyklė member"))
+                            }
+                    }
                 }
 
                 route("{pid}/inventory") {

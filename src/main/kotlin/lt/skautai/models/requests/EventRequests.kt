@@ -28,7 +28,8 @@ data class UpdateEventRequest(
 data class AssignEventRoleRequest(
     val userId: String,
     val role: String,
-    val targetGroup: String? = null
+    val targetGroup: String? = null,
+    val pastovykleId: String? = null
 )
 
 @Serializable
@@ -46,6 +47,16 @@ data class UpdatePastovykleRequest(
     val clearResponsibleUser: Boolean = false,
     val ageGroup: String? = null,
     val notes: String? = null
+)
+
+@Serializable
+data class AddPastovykleMemberRequest(
+    val userId: String
+)
+
+@Serializable
+data class AssignPastovykleLeaderRequest(
+    val userId: String
 )
 
 @Serializable
@@ -163,6 +174,13 @@ data class CreateEventInventoryMovementRequest(
 
 @Serializable
 data class CreatePastovykleInventoryRequestRequest(
+    val eventInventoryItemId: String,
+    val quantity: Int,
+    val notes: String? = null
+)
+
+@Serializable
+data class CreateEventInventoryRequestRequest(
     val eventInventoryItemId: String,
     val quantity: Int,
     val notes: String? = null

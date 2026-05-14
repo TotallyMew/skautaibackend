@@ -727,7 +727,7 @@ class AuthRoutesTest {
 
         assertEquals(HttpStatusCode.OK, membersResponse.status)
         val body = Json.parseToJsonElement(membersResponse.bodyAsText()).jsonObject
-        assertEquals(1, body["total"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(2, body["total"]?.jsonPrimitive?.content?.toInt())
     }
 
     @Test

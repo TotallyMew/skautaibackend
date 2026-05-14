@@ -11,12 +11,18 @@ import kotlinx.serialization.json.jsonPrimitive
 import lt.skautai.TestHelper.configureFullApp
 import lt.skautai.TestHelper.getRoleId
 import lt.skautai.TestHelper.registerAndActivateTuntininkas
+import lt.skautai.database.tables.DraugoveRequisitionItems
+import lt.skautai.database.tables.Items
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.transactions.transaction
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import java.util.UUID
 import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -119,6 +125,32 @@ class RequisitionRoutesTest {
             }
             """.trimIndent()
         )
+    }
+
+    private suspend fun ApplicationTestBuilder.createItem(
+        token: String,
+        tuntasId: String,
+        name: String,
+        quantity: Int = 1
+    ): String {
+        val response = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "name": "$name",
+                    "type": "COLLECTIVE",
+                    "category": "TOOLS",
+                    "quantity": $quantity,
+                    "condition": "GOOD",
+                    "origin": "UNIT_ACQUIRED"
+                }
+                """.trimIndent()
+            )
+        }
+        return Json.parseToJsonElement(response.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
     }
 
     @Test
@@ -485,5 +517,208 @@ class RequisitionRoutesTest {
             setBody("""{ "action": "MAYBE" }""")
         }
         assertEquals(HttpStatusCode.BadRequest, invalidAction.status)
+    }
+
+    @Test
+    fun `cancel requisition works for creator and blocks invalid states`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Cancel Unit")
+        val (memberToken, memberId) = registerUserWithRole(token, tuntasId, "Skautas", "cancel-member@test.com")
+        assignMember(token, tuntasId, unitId, memberId)
+
+        val pendingRequestId = Json.parseToJsonElement(createRequisition(memberToken, tuntasId, unitId).bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+        val cancelPending = client.delete("/api/requisitions/$pendingRequestId") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, cancelPending.status)
+
+        val cancelledRequest = client.get("/api/requisitions/$pendingRequestId") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val cancelledBody = Json.parseToJsonElement(cancelledRequest.bodyAsText()).jsonObject
+        assertEquals("CANCELLED", cancelledBody["status"]!!.jsonPrimitive.content)
+        assertEquals("CANCELLED", cancelledBody["unitReviewStatus"]!!.jsonPrimitive.content)
+
+        val approvedRequestId = Json.parseToJsonElement(createRequisition(token, tuntasId, null).bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+        client.post("/api/requisitions/$approvedRequestId/top-level-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "APPROVED" }""")
+        }
+        val cancelApproved = client.delete("/api/requisitions/$approvedRequestId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, cancelApproved.status)
+        assertTrue(cancelApproved.bodyAsText().contains("cannot be cancelled", ignoreCase = true))
+    }
+
+    @Test
+    fun `mark purchased and add to inventory handle new item and restock flows`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val existingItemId = createItem(token, tuntasId, "Esamas kirvis", quantity = 2)
+
+        val createResponse = client.post("/api/requisitions") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "items": [
+                        { "itemName": "Naujas puodas", "quantity": 2, "requestType": "NEW_ITEM", "notes": "Puodams" },
+                        { "itemName": "Kirvio papildymas", "quantity": 3, "requestType": "RESTOCK_EXISTING", "existingItemId": "$existingItemId", "notes": "Kirviams" }
+                    ]
+                }
+                """.trimIndent()
+            )
+        }
+        val requestId = Json.parseToJsonElement(createResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val approveResponse = client.post("/api/requisitions/$requestId/top-level-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, approveResponse.status)
+
+        val markPurchased = client.post("/api/requisitions/$requestId/mark-purchased") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "notes": "Nupirkta viena partija" }""")
+        }
+        assertEquals(HttpStatusCode.OK, markPurchased.status)
+        val purchasedBody = Json.parseToJsonElement(markPurchased.bodyAsText()).jsonObject
+        assertEquals("PURCHASED", purchasedBody["status"]!!.jsonPrimitive.content)
+
+        val lineIds = transaction {
+            DraugoveRequisitionItems.selectAll()
+                .where { DraugoveRequisitionItems.requisitionId eq UUID.fromString(requestId) }
+                .map { it[DraugoveRequisitionItems.id].toString() to it[DraugoveRequisitionItems.requestType] }
+                .associate { it }
+        }
+        val newItemLineId = lineIds.entries.first { it.value == "NEW_ITEM" }.key
+        val restockLineId = lineIds.entries.first { it.value == "RESTOCK_EXISTING" }.key
+
+        val addToInventory = client.post("/api/requisitions/$requestId/add-to-inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "items": [
+                        {
+                            "requisitionItemId": "$newItemLineId",
+                            "action": "NEW_ITEM",
+                            "type": "COLLECTIVE",
+                            "category": "COOKING",
+                            "condition": "GOOD",
+                            "purchaseDate": "2026-08-10",
+                            "purchasePrice": 24.5,
+                            "notes": "Sukurta is prasymo"
+                        },
+                        {
+                            "requisitionItemId": "$restockLineId",
+                            "action": "RESTOCK_EXISTING",
+                            "existingItemId": "$existingItemId",
+                            "purchaseDate": "2026-08-11",
+                            "purchasePrice": 15.0,
+                            "notes": "Papildytas esamas"
+                        }
+                    ]
+                }
+                """.trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.OK, addToInventory.status)
+        val inventoryBody = Json.parseToJsonElement(addToInventory.bodyAsText()).jsonObject
+        assertEquals("INVENTORY_ADDED", inventoryBody["status"]!!.jsonPrimitive.content)
+
+        val itemNamesAndQuantities = transaction {
+            Items.selectAll()
+                .where { Items.tuntasId eq UUID.fromString(tuntasId) }
+                .map { it[Items.name] to it[Items.quantity] }
+                .toMap()
+        }
+        assertEquals(5, itemNamesAndQuantities["Esamas kirvis"])
+        assertEquals(2, itemNamesAndQuantities["Naujas puodas"])
+    }
+
+    @Test
+    fun `inventory addition endpoints validate payload and state`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val createResponse = createRequisition(token, tuntasId, null)
+        val requestId = Json.parseToJsonElement(createResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val markBeforeApprove = client.post("/api/requisitions/$requestId/mark-purchased") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, markBeforeApprove.status)
+
+        client.post("/api/requisitions/$requestId/top-level-review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "APPROVED" }""")
+        }
+        client.post("/api/requisitions/$requestId/mark-purchased") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{}""")
+        }
+
+        val emptyActions = client.post("/api/requisitions/$requestId/add-to-inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, emptyActions.status)
+
+        val invalidLineId = client.post("/api/requisitions/$requestId/add-to-inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [{ "requisitionItemId": "not-a-uuid", "action": "NEW_ITEM" }] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidLineId.status)
+
+        val lineId = transaction {
+            DraugoveRequisitionItems.selectAll()
+                .where { DraugoveRequisitionItems.requisitionId eq UUID.fromString(requestId) }
+                .first()[DraugoveRequisitionItems.id].toString()
+        }
+
+        val invalidAction = client.post("/api/requisitions/$requestId/add-to-inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [{ "requisitionItemId": "$lineId", "action": "SOMETHING_ELSE" }] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidAction.status)
+
+        val invalidType = client.post("/api/requisitions/$requestId/add-to-inventory") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "items": [{ "requisitionItemId": "$lineId", "action": "NEW_ITEM", "type": "BAD", "category": "TOOLS", "condition": "GOOD" }] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidType.status)
     }
 }

@@ -296,6 +296,71 @@ class ItemRoutesTest {
     }
 
     @Test
+    fun `get single item with invalid id returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.get("/api/items/not-a-uuid") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `item detail subroutes validate invalid ids and permission guards`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Own Unit")
+        val (memberToken, _) = registerUserWithRole(token, tuntasId, "Skautas", "item-subroute-guard@test.com", ownUnitId)
+        val sharedItemId = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Shared restock target", "type": "COLLECTIVE", "category": "TOOLS", "quantity": 1 }""")
+        }.bodyAsText().let { Json.parseToJsonElement(it).jsonObject["id"]!!.jsonPrimitive.content }
+
+        val badAssignments = client.get("/api/items/not-a-uuid/assignments") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, badAssignments.status)
+
+        val badConditionLog = client.get("/api/items/not-a-uuid/condition-log") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, badConditionLog.status)
+
+        val badTransfers = client.get("/api/items/not-a-uuid/transfers") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, badTransfers.status)
+
+        val badHistory = client.get("/api/items/not-a-uuid/history") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, badHistory.status)
+
+        val badListHeader = client.get("/api/items") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", "not-a-uuid")
+        }
+        assertEquals(HttpStatusCode.BadRequest, badListHeader.status)
+
+        val forbiddenSharedRestock = client.post("/api/items/$sharedItemId/restock") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantity": 1 }""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, forbiddenSharedRestock.status)
+    }
+
+    @Test
     fun `resolve qr token returns item id for accessible item`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
@@ -343,6 +408,19 @@ class ItemRoutesTest {
         }
 
         assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    @Test
+    fun `resolve qr token with blank token returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.get("/api/items/resolve-qr/%20") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
     @Test
@@ -530,6 +608,46 @@ class ItemRoutesTest {
     }
 
     @Test
+    fun `update item with invalid custodian id returns 400`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val createResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Invalid update", "type": "COLLECTIVE", "category": "TOOLS", "quantity": 1 }""")
+        }
+        val itemId = Json.parseToJsonElement(createResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.put("/api/items/$itemId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "custodianId": "not-a-uuid" }""")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `regular member cannot create shared item`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val ownUnitId = createUnit(token, tuntasId, "Own Unit")
+        val (memberToken, _) = registerUserWithRole(token, tuntasId, "Skautas", "shared-create-block@test.com", ownUnitId)
+
+        val response = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Shared Stove", "type": "COLLECTIVE", "category": "COOKING", "quantity": 1 }""")
+        }
+
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+    }
+
+    @Test
     fun `get items filtered by custodianId returns only that unit items`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
@@ -638,5 +756,391 @@ class ItemRoutesTest {
         }
 
         assertEquals(HttpStatusCode.Forbidden, response.status)
+    }
+
+    @Test
+    fun `transfer shared item to unit is visible in transfers and history`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai 1")
+
+        val sharedItemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Katilas", "type": "COLLECTIVE", "category": "COOKING", "quantity": 5 }""")
+        }
+        val sharedItemId = Json.parseToJsonElement(sharedItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val transferResponse = client.post("/api/items/$sharedItemId/transfer-to-unit") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "targetUnitId": "$unitId", "quantity": 2, "notes": "Perduota vienetui" }""")
+        }
+
+        assertEquals(HttpStatusCode.OK, transferResponse.status)
+        val transferredBody = Json.parseToJsonElement(transferResponse.bodyAsText()).jsonObject
+        val unitItemId = transferredBody["id"]!!.jsonPrimitive.content
+        assertEquals(unitId, transferredBody["custodianId"]!!.jsonPrimitive.content)
+        assertEquals("TRANSFERRED_FROM_TUNTAS", transferredBody["origin"]!!.jsonPrimitive.content)
+        assertEquals(2, transferredBody["quantity"]!!.jsonPrimitive.content.toInt())
+
+        val transfersResponse = client.get("/api/items/$sharedItemId/transfers") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, transfersResponse.status)
+        val transfersBody = Json.parseToJsonElement(transfersResponse.bodyAsText()).jsonObject
+        assertEquals(1, transfersBody["total"]!!.jsonPrimitive.content.toInt())
+
+        val historyResponse = client.get("/api/items/$unitItemId/history") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, historyResponse.status)
+        val historyBody = Json.parseToJsonElement(historyResponse.bodyAsText()).jsonObject
+        assertEquals(1, historyBody["total"]!!.jsonPrimitive.content.toInt())
+    }
+
+    @Test
+    fun `return transferred item to shared restores quantity and writes transfer`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Skautai 1")
+
+        val sharedItemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Kirvis", "type": "COLLECTIVE", "category": "TOOLS", "quantity": 4 }""")
+        }
+        val sharedItemId = Json.parseToJsonElement(sharedItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val transferResponse = client.post("/api/items/$sharedItemId/transfer-to-unit") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "targetUnitId": "$unitId", "quantity": 3, "notes": "Perduota" }""")
+        }
+        val unitItemId = Json.parseToJsonElement(transferResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val returnResponse = client.post("/api/items/$unitItemId/return-to-shared") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantity": 2, "notes": "Grazinta" }""")
+        }
+
+        assertEquals(HttpStatusCode.OK, returnResponse.status)
+        val unitBody = Json.parseToJsonElement(returnResponse.bodyAsText()).jsonObject
+        assertEquals(1, unitBody["quantity"]!!.jsonPrimitive.content.toInt())
+
+        val sharedItemAfterReturn = client.get("/api/items/$sharedItemId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, sharedItemAfterReturn.status)
+        val sharedBody = Json.parseToJsonElement(sharedItemAfterReturn.bodyAsText()).jsonObject
+        assertEquals(3, sharedBody["quantity"]!!.jsonPrimitive.content.toInt())
+
+        val transfersResponse = client.get("/api/items/$sharedItemId/transfers") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, transfersResponse.status)
+        val transfersBody = Json.parseToJsonElement(transfersResponse.bodyAsText()).jsonObject
+        assertEquals(2, transfersBody["total"]!!.jsonPrimitive.content.toInt())
+    }
+
+    @Test
+    fun `updating item condition creates condition log entry`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val createResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Zibintas", "type": "INDIVIDUAL", "category": "LIGHTING", "quantity": 1, "condition": "GOOD" }""")
+        }
+        val itemId = Json.parseToJsonElement(createResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val updateResponse = client.put("/api/items/$itemId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "condition": "DAMAGED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, updateResponse.status)
+
+        val conditionLogResponse = client.get("/api/items/$itemId/condition-log") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, conditionLogResponse.status)
+        val body = Json.parseToJsonElement(conditionLogResponse.bodyAsText()).jsonObject
+        assertEquals(1, body["total"]!!.jsonPrimitive.content.toInt())
+    }
+
+    @Test
+    fun `item review workflow supports unit approval shared approval and rejection`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Review Unit")
+        val (leaderToken, _) = registerUserWithRole(token, tuntasId, "Draugininkas", "item-review-leader@test.com", unitId)
+        val (submitterToken, _) = registerUserWithRole(token, tuntasId, "Vadovas", "item-review-submitter@test.com", unitId)
+        val (memberToken, _) = registerUserWithRole(token, tuntasId, "Skautas", "item-review-member@test.com", unitId)
+
+        val pendingUnitResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $submitterToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """{
+                    "name": "Lauzo puodas",
+                    "type": "COLLECTIVE",
+                    "category": "COOKING",
+                    "quantity": 2,
+                    "custodianId": "$unitId"
+                }""".trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.Created, pendingUnitResponse.status)
+        val pendingUnitBody = Json.parseToJsonElement(pendingUnitResponse.bodyAsText()).jsonObject
+        val pendingUnitId = pendingUnitBody["id"]!!.jsonPrimitive.content
+        assertEquals("PENDING_APPROVAL", pendingUnitBody["status"]!!.jsonPrimitive.content)
+
+        val pendingSharedCreate = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Bendras katilas", "type": "COLLECTIVE", "category": "COOKING", "quantity": 1 }""")
+        }
+        val pendingSharedId = Json.parseToJsonElement(pendingSharedCreate.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        val markSharedPending = client.put("/api/items/$pendingSharedId") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "status": "PENDING_APPROVAL" }""")
+        }
+        assertEquals(HttpStatusCode.OK, markSharedPending.status)
+
+        val pendingListResponse = client.get("/api/items?status=PENDING_APPROVAL") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, pendingListResponse.status)
+        val pendingItems = Json.parseToJsonElement(pendingListResponse.bodyAsText()).jsonObject["items"]!!.jsonArray
+        val pendingIds = pendingItems.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet()
+        assertTrue(pendingUnitId in pendingIds)
+        assertTrue(pendingSharedId in pendingIds)
+
+        val memberReviewAttempt = client.post("/api/items/$pendingUnitId/review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $submitterToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "decision": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, memberReviewAttempt.status)
+
+        val leaderSharedAttempt = client.post("/api/items/$pendingSharedId/review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "decision": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, leaderSharedAttempt.status)
+
+        val approveUnitResponse = client.post("/api/items/$pendingUnitId/review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "decision": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, approveUnitResponse.status)
+        val approvedUnitBody = Json.parseToJsonElement(approveUnitResponse.bodyAsText()).jsonObject
+        assertEquals("ACTIVE", approvedUnitBody["status"]!!.jsonPrimitive.content)
+
+        val approveSharedResponse = client.post("/api/items/$pendingSharedId/review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "decision": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, approveSharedResponse.status)
+        val approvedSharedBody = Json.parseToJsonElement(approveSharedResponse.bodyAsText()).jsonObject
+        assertEquals("ACTIVE", approvedSharedBody["status"]!!.jsonPrimitive.content)
+
+        val rejectedItemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $submitterToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """{
+                    "name": "Suluzusi spintele",
+                    "type": "COLLECTIVE",
+                    "category": "TOOLS",
+                    "quantity": 1,
+                    "custodianId": "$unitId"
+                }""".trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.Created, rejectedItemResponse.status)
+        val rejectedItemId = Json.parseToJsonElement(rejectedItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        val rejectResponse = client.post("/api/items/$rejectedItemId/review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "decision": "REJECTED", "rejectionReason": "Nebus naudojama" }""")
+        }
+        assertEquals(HttpStatusCode.OK, rejectResponse.status)
+        val rejectedBody = Json.parseToJsonElement(rejectResponse.bodyAsText()).jsonObject
+        assertEquals("INACTIVE", rejectedBody["status"]!!.jsonPrimitive.content)
+        assertEquals("Nebus naudojama", rejectedBody["rejectionReason"]!!.jsonPrimitive.content)
+
+        val repeatReviewResponse = client.post("/api/items/$pendingUnitId/review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "decision": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, repeatReviewResponse.status)
+    }
+
+    @Test
+    fun `approved unit item can be restocked and history reflects review and restock`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Restock Unit")
+        val (leaderToken, _) = registerUserWithRole(token, tuntasId, "Draugininkas", "item-restock-leader@test.com", unitId)
+        val (submitterToken, _) = registerUserWithRole(token, tuntasId, "Vadovas", "item-restock-submitter@test.com", unitId)
+
+        val createPending = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $submitterToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """{
+                    "name": "Vieneto kirvis",
+                    "type": "COLLECTIVE",
+                    "category": "TOOLS",
+                    "quantity": 2,
+                    "custodianId": "$unitId"
+                }""".trimIndent()
+            )
+        }
+        val itemId = Json.parseToJsonElement(createPending.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val approveResponse = client.post("/api/items/$itemId/review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "decision": "APPROVED" }""")
+        }
+        assertEquals(HttpStatusCode.OK, approveResponse.status)
+
+        val invalidRestock = client.post("/api/items/$itemId/restock") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantity": 1, "purchaseDate": "2026/05/01" }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidRestock.status)
+
+        val restockResponse = client.post("/api/items/$itemId/restock") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantity": 3, "purchaseDate": "2026-05-01", "purchasePrice": 15.5, "notes": "Papildytas vieneto kiekis" }""")
+        }
+        assertEquals(HttpStatusCode.OK, restockResponse.status)
+        val restockedBody = Json.parseToJsonElement(restockResponse.bodyAsText()).jsonObject
+        assertEquals(5, restockedBody["quantity"]!!.jsonPrimitive.content.toInt())
+        assertEquals("2026-05-01", restockedBody["purchaseDate"]!!.jsonPrimitive.content)
+        assertEquals("Papildytas vieneto kiekis", restockedBody["notes"]!!.jsonPrimitive.content)
+
+        val assignmentsResponse = client.get("/api/items/$itemId/assignments") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, assignmentsResponse.status)
+
+        val historyResponse = client.get("/api/items/$itemId/history") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, historyResponse.status)
+        val historyBody = Json.parseToJsonElement(historyResponse.bodyAsText()).jsonObject
+        assertTrue(historyBody["total"]!!.jsonPrimitive.content.toInt() >= 2)
+
+        val detailResponse = client.get("/api/items/$itemId") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, detailResponse.status)
+        val detailBody = Json.parseToJsonElement(detailResponse.bodyAsText()).jsonObject
+        assertEquals("ACTIVE", detailBody["status"]!!.jsonPrimitive.content)
+        assertEquals(unitId, detailBody["custodianId"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `unit leader can return transferred item to shared but cannot restock transferred inventory`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Transfer Unit")
+        val (leaderToken, _) = registerUserWithRole(token, tuntasId, "Draugininkas", "item-transfer-leader@test.com", unitId)
+
+        val sharedItemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Pjuklas", "type": "COLLECTIVE", "category": "TOOLS", "quantity": 6 }""")
+        }
+        val sharedItemId = Json.parseToJsonElement(sharedItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val transferResponse = client.post("/api/items/$sharedItemId/transfer-to-unit") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "targetUnitId": "$unitId", "quantity": 4, "notes": "Perduota draugovei" }""")
+        }
+        assertEquals(HttpStatusCode.OK, transferResponse.status)
+        val unitItemId = Json.parseToJsonElement(transferResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val forbiddenRestock = client.post("/api/items/$unitItemId/restock") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantity": 1 }""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, forbiddenRestock.status)
+
+        val leaderReturn = client.post("/api/items/$unitItemId/return-to-shared") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantity": 3, "notes": "Grazinta i sandeli" }""")
+        }
+        assertEquals(HttpStatusCode.OK, leaderReturn.status)
+        val returnedUnitBody = Json.parseToJsonElement(leaderReturn.bodyAsText()).jsonObject
+        assertEquals(1, returnedUnitBody["quantity"]!!.jsonPrimitive.content.toInt())
+        assertEquals("ACTIVE", returnedUnitBody["status"]!!.jsonPrimitive.content)
+
+        val sharedAfterReturn = client.get("/api/items/$sharedItemId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, sharedAfterReturn.status)
+        val sharedBody = Json.parseToJsonElement(sharedAfterReturn.bodyAsText()).jsonObject
+        assertEquals(5, sharedBody["quantity"]!!.jsonPrimitive.content.toInt())
+
+        val transfersResponse = client.get("/api/items/$sharedItemId/transfers") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, transfersResponse.status)
+        val transfersBody = Json.parseToJsonElement(transfersResponse.bodyAsText()).jsonObject
+        assertEquals(2, transfersBody["total"]!!.jsonPrimitive.content.toInt())
     }
 }

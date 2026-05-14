@@ -11,7 +11,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import lt.skautai.TestHelper.configureFullApp
 import lt.skautai.TestHelper.registerAndActivateTuntininkas
+import lt.skautai.database.tables.EventPurchases
+import lt.skautai.database.tables.PastovykleInventory
+import lt.skautai.database.tables.Pastovykles
 import lt.skautai.database.tables.Users
+import lt.skautai.models.requests.CreatePastovykleRequest
 import lt.skautai.models.requests.CreateEventInventoryAllocationRequest
 import lt.skautai.models.requests.CreateEventInventoryBucketRequest
 import lt.skautai.models.requests.CreateEventInventoryItemRequest
@@ -22,8 +26,11 @@ import lt.skautai.models.requests.ReconcileEventReturnLineRequest
 import lt.skautai.models.requests.ReconcileEventReturnsRequest
 import lt.skautai.services.EventService
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.deleteWhere
+import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.update
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -54,7 +61,7 @@ class EventServiceDirectTest {
         TestHelper.cleanTables()
     }
 
-    private suspend fun HttpClient.createEvent(token: String, tuntasId: String, plannedQuantity: Int = 3): String {
+    private suspend fun HttpClient.createEvent(token: String, tuntasId: String, type: String = "STOVYKLA"): String {
         val response = post("/api/events") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
@@ -63,7 +70,7 @@ class EventServiceDirectTest {
                 """
                 {
                     "name": "Direct test event",
-                    "type": "STOVYKLA",
+                    "type": "$type",
                     "startDate": "2026-07-01",
                     "endDate": "2026-07-07"
                 }
@@ -401,4 +408,141 @@ class EventServiceDirectTest {
         assertTrue(completed.isSuccess)
         assertEquals("COMPLETED", completed.getOrThrow().status)
     }
+
+    @Test
+    fun `event service validates invoice file names and purchase completion states`() = testApplication {
+        configureFullApp()
+        val email = "invoice-direct@test.com"
+        val (token, tuntasIdText) = client.registerAndActivateTuntininkas(email = email)
+        val tuntasId = UUID.fromString(tuntasIdText)
+        val eventIdText = client.createEvent(token, tuntasIdText)
+        val eventId = UUID.fromString(eventIdText)
+        val sourceItemId = client.createItem(token, tuntasIdText, quantity = 1)
+
+        val eventItemResponse = client.post("/api/events/$eventIdText/inventory-items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasIdText)
+            setBody("""{ "itemId": "$sourceItemId", "name": "Puodas", "plannedQuantity": 2 }""")
+        }
+        val eventItemId = Json.parseToJsonElement(eventItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val purchaseBody = client.post("/api/events/$eventIdText/purchases") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasIdText)
+            setBody("""{ "items": [{ "eventInventoryItemId": "$eventItemId", "purchasedQuantity": 1, "unitPrice": 7.0 }] }""")
+        }.bodyAsText()
+        val purchaseId = Json.parseToJsonElement(purchaseBody).jsonObject["id"]!!.jsonPrimitive.content
+        val purchaseUUID = UUID.fromString(purchaseId)
+
+        val missingInvoice = service.getPurchaseInvoiceFileName(eventId, purchaseUUID, tuntasId)
+        assertEquals("Invoice not attached", missingInvoice.exceptionOrNull()?.message)
+
+        transaction {
+            EventPurchases.update({ EventPurchases.id eq purchaseUUID }) {
+                it[invoiceFileUrl] = "https://example.com/invoice.pdf"
+            }
+        }
+        val nondownloadable = service.getPurchaseInvoiceFileName(eventId, purchaseUUID, tuntasId)
+        assertEquals("Invoice file URL is not downloadable", nondownloadable.exceptionOrNull()?.message)
+
+        transaction {
+            EventPurchases.update({ EventPurchases.id eq purchaseUUID }) {
+                it[invoiceFileUrl] = "/uploads/documents/folder/invoice.pdf"
+            }
+        }
+        val invalidFileName = service.getPurchaseInvoiceFileName(eventId, purchaseUUID, tuntasId)
+        assertEquals("Invalid invoice file name", invalidFileName.exceptionOrNull()?.message)
+
+        transaction {
+            EventPurchases.update({ EventPurchases.id eq purchaseUUID }) {
+                it[invoiceFileUrl] = "/uploads/documents/invoice-1.pdf"
+            }
+        }
+        assertEquals("invoice-1.pdf", service.getPurchaseInvoiceFileName(eventId, purchaseUUID, tuntasId).getOrThrow())
+
+        transaction {
+            EventPurchases.update({ EventPurchases.id eq purchaseUUID }) {
+                it[status] = "CANCELLED"
+            }
+        }
+        val cancelledComplete = service.completePurchase(eventId, purchaseUUID, tuntasId)
+        assertEquals("Cancelled purchase cannot be completed", cancelledComplete.exceptionOrNull()?.message)
+
+        val secondPurchaseBody = client.post("/api/events/$eventIdText/purchases") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasIdText)
+            setBody("""{ "items": [{ "eventInventoryItemId": "$eventItemId", "purchasedQuantity": 2, "unitPrice": 8.5 }] }""")
+        }.bodyAsText()
+        val secondPurchaseId = Json.parseToJsonElement(secondPurchaseBody).jsonObject["id"]!!.jsonPrimitive.content
+        val secondPurchaseUUID = UUID.fromString(secondPurchaseId)
+
+        val completed = service.completePurchase(eventId, secondPurchaseUUID, tuntasId)
+        assertTrue(completed.isSuccess)
+        assertEquals("PURCHASED", completed.getOrThrow().status)
+
+        val completedAgain = service.completePurchase(eventId, secondPurchaseUUID, tuntasId)
+        assertTrue(completedAgain.isSuccess)
+        assertEquals("PURCHASED", completedAgain.getOrThrow().status)
+    }
+
+    @Test
+    fun `event service gets and deletes pastovykles and inventory items directly`() = testApplication {
+        configureFullApp()
+        val email = "delete-direct@test.com"
+        val (token, tuntasIdText) = client.registerAndActivateTuntininkas(email = email)
+        val tuntasId = UUID.fromString(tuntasIdText)
+        val wrongTypeEventId = UUID.fromString(client.createEvent(token, tuntasIdText, type = "SUEIGA"))
+        val eventIdText = client.createEvent(token, tuntasIdText)
+        val eventId = UUID.fromString(eventIdText)
+        val itemId = client.createItem(token, tuntasIdText, quantity = 2)
+
+        val wrongTypePastovykle = service.getPastovykle(wrongTypeEventId, UUID.randomUUID(), tuntasId)
+        assertEquals("Event not found or not of type STOVYKLA", wrongTypePastovykle.exceptionOrNull()?.message)
+
+        val createdPastovykle = service.createPastovykle(
+            eventId = eventId,
+            tuntasId = tuntasId,
+            request = CreatePastovykleRequest(name = "Pirma")
+        ).getOrThrow()
+        val pastovykleId = UUID.fromString(createdPastovykle.id)
+
+        val fetchedPastovykle = service.getPastovykle(eventId, pastovykleId, tuntasId)
+        assertTrue(fetchedPastovykle.isSuccess)
+        assertEquals("Pirma", fetchedPastovykle.getOrThrow().name)
+
+        transaction {
+            PastovykleInventory.insert {
+                it[this.pastovykleId] = pastovykleId
+                it[this.itemId] = UUID.fromString(itemId)
+                it[quantityAssigned] = 1
+                it[quantityReturned] = 0
+                it[distributedByUserId] = null
+                it[recipientUserId] = null
+                it[recipientType] = null
+                it[notes] = null
+            }
+        }
+        val blockedDeletePastovykle = service.deletePastovykle(eventId, pastovykleId, tuntasId)
+        assertEquals("Cannot delete pastovykl\u0117 with assigned inventory", blockedDeletePastovykle.exceptionOrNull()?.message)
+
+        transaction {
+            PastovykleInventory.deleteWhere { PastovykleInventory.pastovykleId eq pastovykleId }
+        }
+        assertTrue(service.deletePastovykle(eventId, pastovykleId, tuntasId).isSuccess)
+        assertEquals("Pastovykl\u0117 not found", service.getPastovykle(eventId, pastovykleId, tuntasId).exceptionOrNull()?.message)
+
+        val createdInventoryItem = service.createInventoryItem(
+            eventId = eventId,
+            tuntasId = tuntasId,
+            createdByUserId = userIdForEmail(email),
+            request = CreateEventInventoryItemRequest(itemId = itemId, name = "Kirvis", plannedQuantity = 2)
+        ).getOrThrow()
+        val inventoryItemId = UUID.fromString(createdInventoryItem.id)
+        assertTrue(service.deleteInventoryItem(eventId, inventoryItemId, tuntasId).isSuccess)
+        assertEquals("Inventory item not found", service.deleteInventoryItem(eventId, inventoryItemId, tuntasId).exceptionOrNull()?.message)
+    }
 }
+

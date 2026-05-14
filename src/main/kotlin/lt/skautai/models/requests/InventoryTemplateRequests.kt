@@ -4,6 +4,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class InventoryTemplateItemRequest(
+    val itemId: String? = null,
     val itemName: String,
     val quantity: Int = 1,
     val category: String? = null,

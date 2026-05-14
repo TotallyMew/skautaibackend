@@ -235,7 +235,7 @@ CREATE TABLE events (
                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                         tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
                         name VARCHAR(200) NOT NULL,
-                        type VARCHAR(20) NOT NULL CHECK (type IN ('STOVYKLA', 'SUEIGA', 'RENGINYS')),
+                        type VARCHAR(100) NOT NULL,
                         start_date DATE NOT NULL,
                         end_date DATE NOT NULL,
                         location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
@@ -259,13 +259,23 @@ CREATE TABLE pastovykles (
 );
 
 -- Pastovyklė inventory
+CREATE TABLE pastovykle_members (
+                                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                    pastovykle_id UUID NOT NULL REFERENCES pastovykles(id) ON DELETE CASCADE,
+                                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                                    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'REMOVED')),
+                                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                    added_by_user_id UUID NOT NULL REFERENCES users(id),
+                                    UNIQUE(pastovykle_id, user_id)
+);
+
 CREATE TABLE pastovykle_inventory (
                                       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                       pastovykle_id UUID NOT NULL REFERENCES pastovykles(id) ON DELETE CASCADE,
                                       item_id UUID NOT NULL REFERENCES items(id),
                                       distributed_by_user_id UUID REFERENCES users(id),
                                       recipient_user_id UUID REFERENCES users(id),
-                                      recipient_type VARCHAR(20) CHECK (recipient_type IN ('DIRECT', 'GURU_PROXY')),
+                                      recipient_type VARCHAR(20) CHECK (recipient_type IN ('DIRECT', 'GURU_PROXY', 'MEMBER')),
                                       quantity_assigned INTEGER NOT NULL CHECK (quantity_assigned > 0),
                                       quantity_returned INTEGER DEFAULT 0,
                                       assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -285,6 +295,7 @@ CREATE TABLE event_roles (
                                                                        'PATYRE_SKAUTAS', 'SKAUTAS', 'PROGRAMERIS', 'MAISTININKAS'
                                  )),
                              target_group VARCHAR(20) CHECK (target_group IN ('PATYRE_SKAUTAI', 'SKAUTAI_VILKAI', 'TEVAI')),
+                             pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE CASCADE,
                              assigned_by_user_id UUID REFERENCES users(id),
                              assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                              UNIQUE(event_id, user_id, role)
@@ -355,7 +366,8 @@ CREATE TABLE event_inventory_requests (
                                           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                           event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
                                           event_inventory_item_id UUID NOT NULL REFERENCES event_inventory_items(id) ON DELETE CASCADE,
-                                          pastovykle_id UUID NOT NULL REFERENCES pastovykles(id) ON DELETE CASCADE,
+                                          pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE CASCADE,
+                                          target_group VARCHAR(30),
                                           requested_by_user_id UUID NOT NULL REFERENCES users(id),
                                           quantity INTEGER NOT NULL CHECK (quantity > 0),
                                           status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'FULFILLED', 'SELF_PROVIDED')),
@@ -553,7 +565,7 @@ CREATE TABLE inventory_list_templates (
                                           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                           tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
                                           name VARCHAR(200) NOT NULL,
-                                          event_type VARCHAR(20) CHECK (event_type IN ('STOVYKLA', 'SUEIGA', 'RENGINYS')),
+                                          event_type VARCHAR(100),
                                           created_by_user_id UUID REFERENCES users(id),
                                           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -562,9 +574,10 @@ CREATE TABLE inventory_list_templates (
 CREATE TABLE inventory_list_template_items (
                                                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                                                template_id UUID NOT NULL REFERENCES inventory_list_templates(id) ON DELETE CASCADE,
+                                               item_id UUID REFERENCES items(id),
                                                item_name VARCHAR(200) NOT NULL,
                                                quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
-                                               category VARCHAR(20),
+                                               category VARCHAR(100),
                                                notes TEXT
 );
 

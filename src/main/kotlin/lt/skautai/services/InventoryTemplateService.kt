@@ -1,21 +1,33 @@
 package lt.skautai.services
 
 import kotlinx.datetime.Clock
+import lt.skautai.database.tables.EventPurchaseItems
+import lt.skautai.database.tables.EventPurchases
 import lt.skautai.database.tables.EventInventoryItems
 import lt.skautai.database.tables.Events
 import lt.skautai.database.tables.InventoryListTemplateItems
 import lt.skautai.database.tables.InventoryListTemplates
+import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.Reservations
 import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateInventoryTemplateRequest
 import lt.skautai.models.requests.InventoryTemplateItemRequest
 import lt.skautai.models.requests.UpdateInventoryTemplateRequest
+import lt.skautai.models.responses.AppliedInventoryTemplateResponse
+import lt.skautai.models.responses.AppliedTemplatePurchaseItemResponse
+import lt.skautai.models.responses.AppliedTemplateReservedItemResponse
 import lt.skautai.models.responses.EventInventoryItemListResponse
 import lt.skautai.models.responses.EventInventoryItemResponse
 import lt.skautai.models.responses.InventoryTemplateItemResponse
 import lt.skautai.models.responses.InventoryTemplateListResponse
 import lt.skautai.models.responses.InventoryTemplateResponse
+import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.greaterEq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.lessEq
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.andWhere
@@ -129,11 +141,145 @@ class InventoryTemplateService {
         Result.success(EventInventoryItemListResponse(created, created.size))
     }
 
+    fun applyTemplateWithReservation(
+        eventId: UUID,
+        tuntasId: UUID,
+        createdByUserId: UUID,
+        templateId: UUID
+    ): Result<AppliedInventoryTemplateResponse> = transaction {
+        val event = Events.selectAll()
+            .where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }
+            .firstOrNull()
+            ?: return@transaction Result.failure(Exception("Event not found"))
+        loadTemplate(templateId, tuntasId)
+            ?: return@transaction Result.failure(Exception("Template not found"))
+
+        val now = Clock.System.now()
+        val reservationGroupId = UUID.randomUUID()
+        val purchaseId = UUID.randomUUID()
+        var hasPurchase = false
+        val reserved = mutableListOf<AppliedTemplateReservedItemResponse>()
+        val toPurchase = mutableListOf<AppliedTemplatePurchaseItemResponse>()
+
+        InventoryListTemplateItems.selectAll()
+            .where { InventoryListTemplateItems.templateId eq templateId }
+            .orderBy(InventoryListTemplateItems.itemName to SortOrder.ASC)
+            .forEach { templateItem ->
+                val requestedQuantity = templateItem[InventoryListTemplateItems.quantity]
+                val templateItemName = templateItem[InventoryListTemplateItems.itemName]
+                val sourceItem = templateItem[InventoryListTemplateItems.itemId]
+                    ?.let { findTemplateSourceItemById(tuntasId, it) }
+                    ?: findTemplateSourceItem(tuntasId, templateItemName)
+                val reservableQuantity = sourceItem
+                    ?.let {
+                        availableQuantityForEventItem(
+                            it[Items.id],
+                            event[Events.startDate],
+                            event[Events.endDate]
+                        ).coerceAtMost(requestedQuantity)
+                    }
+                    ?: 0
+                val shortage = (requestedQuantity - reservableQuantity).coerceAtLeast(0)
+
+                val eventInventoryItemId = EventInventoryItems.insert {
+                    it[this.eventId] = eventId
+                    it[itemId] = sourceItem?.get(Items.id)
+                    it[bucketId] = null
+                    it[this.reservationGroupId] = if (reservableQuantity > 0) reservationGroupId else null
+                    it[name] = sourceItem?.get(Items.name) ?: templateItemName
+                    it[plannedQuantity] = requestedQuantity
+                    it[availableQuantity] = reservableQuantity
+                    it[needsPurchase] = shortage > 0
+                    it[responsibleUserId] = null
+                    it[notes] = templateItem[InventoryListTemplateItems.notes]
+                    it[this.createdByUserId] = createdByUserId
+                    it[createdAt] = now
+                } get EventInventoryItems.id
+
+                if (sourceItem != null && reservableQuantity > 0) {
+                    Reservations.insert {
+                        it[this.groupId] = reservationGroupId
+                        it[title] = event[Events.name]
+                        it[itemId] = sourceItem[Items.id]
+                        it[this.tuntasId] = tuntasId
+                        it[reservedByUserId] = createdByUserId
+                        it[requestingUnitId] = null
+                        it[this.eventId] = eventId
+                        it[quantity] = reservableQuantity
+                        it[startDate] = event[Events.startDate]
+                        it[endDate] = event[Events.endDate]
+                        it[unitReviewStatus] = "NOT_REQUIRED"
+                        it[topLevelReviewStatus] = "APPROVED"
+                        it[topLevelReviewedByUserId] = createdByUserId
+                        it[topLevelReviewedAt] = now
+                        it[status] = "APPROVED"
+                        it[notes] = templateItem[InventoryListTemplateItems.notes]
+                        it[createdAt] = now
+                        it[updatedAt] = now
+                    }
+                    reserved += AppliedTemplateReservedItemResponse(
+                        templateItemName = templateItemName,
+                        itemId = sourceItem[Items.id].toString(),
+                        itemName = sourceItem[Items.name],
+                        eventInventoryItemId = eventInventoryItemId.toString(),
+                        reservationGroupId = reservationGroupId.toString(),
+                        quantity = reservableQuantity
+                    )
+                }
+
+                if (shortage > 0) {
+                    if (!hasPurchase) {
+                        EventPurchases.insert {
+                            it[id] = purchaseId
+                            it[this.eventId] = eventId
+                            it[purchasedByUserId] = null
+                            it[status] = "DRAFT"
+                            it[purchaseDate] = null
+                            it[totalAmount] = null
+                            it[invoiceFileUrl] = null
+                            it[notes] = "Automatiškai sukurta iš inventoriaus šablono"
+                            it[createdAt] = now
+                            it[updatedAt] = now
+                        }
+                        hasPurchase = true
+                    }
+                    val purchaseItemId = EventPurchaseItems.insert {
+                        it[this.purchaseId] = purchaseId
+                        it[this.eventInventoryItemId] = eventInventoryItemId
+                        it[purchasedQuantity] = shortage
+                        it[unitPrice] = null
+                        it[addedToInventoryItemId] = sourceItem?.get(Items.id)
+                        it[addedToInventory] = false
+                        it[notes] = templateItem[InventoryListTemplateItems.notes]
+                    } get EventPurchaseItems.id
+                    toPurchase += AppliedTemplatePurchaseItemResponse(
+                        templateItemName = templateItemName,
+                        eventInventoryItemId = eventInventoryItemId.toString(),
+                        purchaseId = purchaseId.toString(),
+                        purchaseItemId = purchaseItemId.toString(),
+                        quantity = shortage
+                    )
+                }
+            }
+
+        Result.success(
+            AppliedInventoryTemplateResponse(
+                reserved = reserved,
+                toPurchase = toPurchase,
+                reservedTotal = reserved.sumOf { it.quantity },
+                toPurchaseTotal = toPurchase.sumOf { it.quantity }
+            )
+        )
+    }
+
     private fun replaceItems(templateId: UUID, items: List<InventoryTemplateItemRequest>) {
         InventoryListTemplateItems.deleteWhere { InventoryListTemplateItems.templateId eq templateId }
         items.forEach { item ->
             InventoryListTemplateItems.insert {
                 it[this.templateId] = templateId
+                it[itemId] = item.itemId
+                    ?.takeIf { value -> value.isNotBlank() }
+                    ?.let { value -> UUID.fromString(value) }
                 it[itemName] = item.itemName.trim()
                 it[quantity] = item.quantity
                 it[category] = item.category?.takeIf { value -> value.isNotBlank() }
@@ -179,6 +325,7 @@ class InventoryTemplateService {
                     InventoryTemplateItemResponse(
                         id = it[InventoryListTemplateItems.id].toString(),
                         templateId = it[InventoryListTemplateItems.templateId].toString(),
+                        itemId = it[InventoryListTemplateItems.itemId]?.toString(),
                         itemName = it[InventoryListTemplateItems.itemName],
                         quantity = it[InventoryListTemplateItems.quantity],
                         category = it[InventoryListTemplateItems.category],
@@ -220,5 +367,52 @@ class InventoryTemplateService {
             .where { Users.id eq userId }
             .firstOrNull()
             ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+    }
+
+    private fun findTemplateSourceItem(tuntasId: UUID, itemName: String): ResultRow? {
+        val needle = itemName.trim().lowercase()
+        return Items.selectAll()
+            .where {
+                (Items.tuntasId eq tuntasId) and
+                    (Items.status eq "ACTIVE") and
+                    (Items.custodianId.isNull())
+            }
+            .toList()
+            .filter { it[Items.quantity] > 0 }
+            .filter { it[Items.name].lowercase().contains(needle) || needle.contains(it[Items.name].lowercase()) }
+            .sortedWith(
+                compareByDescending<ResultRow> { it[Items.name].equals(itemName, ignoreCase = true) }
+                    .thenByDescending { it[Items.quantity] }
+                    .thenBy { it[Items.name] }
+            )
+            .firstOrNull()
+    }
+
+    private fun findTemplateSourceItemById(tuntasId: UUID, itemId: UUID): ResultRow? =
+        Items.selectAll()
+            .where {
+                (Items.id eq itemId) and
+                    (Items.tuntasId eq tuntasId) and
+                    (Items.status eq "ACTIVE")
+            }
+            .firstOrNull()
+
+    private fun availableQuantityForEventItem(
+        itemId: UUID,
+        startDate: kotlinx.datetime.LocalDate,
+        endDate: kotlinx.datetime.LocalDate
+    ): Int {
+        val item = Items.selectAll()
+            .where { (Items.id eq itemId) and (Items.status eq "ACTIVE") }
+            .firstOrNull() ?: return 0
+        val reserved = Reservations.select(Reservations.quantity)
+            .where {
+                (Reservations.itemId eq itemId) and
+                    (Reservations.status inList listOf("APPROVED", "ACTIVE")) and
+                    (Reservations.startDate lessEq endDate) and
+                    (Reservations.endDate greaterEq startDate)
+            }
+            .sumOf { it[Reservations.quantity] }
+        return (item[Items.quantity] - reserved).coerceAtLeast(0)
     }
 }

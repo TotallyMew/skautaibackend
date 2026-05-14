@@ -41,7 +41,7 @@ fun Route.inventoryTemplateRoutes(service: InventoryTemplateService) {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
                 val tuntasUUID = call.tuntasIdOrRespond() ?: return@post
-                if (!checkPermission("items.create", tuntasUUID, null)) return@post
+                if (!checkPermission("events.create", tuntasUUID, null)) return@post
                 val request = call.receive<CreateInventoryTemplateRequest>()
                 service.createTemplate(tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -50,7 +50,7 @@ fun Route.inventoryTemplateRoutes(service: InventoryTemplateService) {
 
             put("{id}") {
                 val tuntasUUID = call.tuntasIdOrRespond() ?: return@put
-                if (!checkPermission("items.update", tuntasUUID, null)) return@put
+                if (!checkPermission("events.create", tuntasUUID, null)) return@put
                 val templateUUID = call.templateIdOrRespond() ?: return@put
                 val request = call.receive<UpdateInventoryTemplateRequest>()
                 service.updateTemplate(templateUUID, tuntasUUID, request)
@@ -60,7 +60,7 @@ fun Route.inventoryTemplateRoutes(service: InventoryTemplateService) {
 
             delete("{id}") {
                 val tuntasUUID = call.tuntasIdOrRespond() ?: return@delete
-                if (!checkPermission("items.delete", tuntasUUID, null)) return@delete
+                if (!checkPermission("events.create", tuntasUUID, null)) return@delete
                 val templateUUID = call.templateIdOrRespond() ?: return@delete
                 service.deleteTemplate(templateUUID, tuntasUUID)
                     .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Template deleted")) }
@@ -81,6 +81,23 @@ fun Route.inventoryTemplateRoutes(service: InventoryTemplateService) {
                 return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid template ID"))
             }
             service.applyTemplateToEvent(eventUUID, tuntasUUID, userId, templateUUID)
+                .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to apply template")) }
+        }
+
+        post("/api/events/{id}/apply-template-with-reservation") {
+            val principal = call.principal<JWTPrincipal>()!!
+            val userId = UUID.fromString(principal.getClaim("userId", String::class))
+            val tuntasUUID = call.tuntasIdOrRespond() ?: return@post
+            if (!checkPermission("events.manage", tuntasUUID, null)) return@post
+            val eventUUID = call.eventIdOrRespond() ?: return@post
+            val request = call.receive<ApplyInventoryTemplateRequest>()
+            val templateUUID = try {
+                UUID.fromString(request.templateId)
+            } catch (e: Exception) {
+                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid template ID"))
+            }
+            service.applyTemplateWithReservation(eventUUID, tuntasUUID, userId, templateUUID)
                 .onSuccess { call.respond(HttpStatusCode.Created, it) }
                 .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to apply template")) }
         }

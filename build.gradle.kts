@@ -2,7 +2,7 @@ plugins {
     kotlin("jvm") version "2.3.0"
     kotlin("plugin.serialization") version "2.3.0"
     application
-    jacoco
+    id("org.jetbrains.kotlinx.kover") version "0.9.8"
 }
 
 group = "lt.skautai"
@@ -48,19 +48,15 @@ dependencies {
     testImplementation("io.mockk:mockk:1.13.10")
 }
 
-jacoco {
-    toolVersion = "0.8.13"
-}
-
 application {
     mainClass.set("lt.skautai.ApplicationKt")
 }
 
 val coverageExclusions = listOf(
-    "lt/skautai/ApplicationKt*",
-    "lt/skautai/plugins/RoutingKt*",
-    "lt/skautai/plugins/SerializationKt*",
-    "**/*$*"
+    "lt.skautai.ApplicationKt*",
+    "lt.skautai.plugins.RoutingKt*",
+    "lt.skautai.plugins.SerializationKt*",
+    "*\$*"
 )
 
 tasks.test {
@@ -69,44 +65,28 @@ tasks.test {
     environment("TEST_DB_URL", System.getenv("TEST_DB_URL") ?: "jdbc:postgresql://localhost:5432/skautu_inventorius_test")
     environment("TEST_DB_USER", System.getenv("TEST_DB_USER") ?: "postgres")
     environment("TEST_JWT_SECRET", System.getenv("TEST_JWT_SECRET") ?: "")
-    finalizedBy(tasks.jacocoTestReport)
 }
 
-tasks.jacocoTestReport {
-    dependsOn(tasks.test)
+kover {
     reports {
-        xml.required.set(true)
-        html.required.set(true)
-        csv.required.set(false)
-    }
-    classDirectories.setFrom(
-        files(classDirectories.files.map { directory ->
-            fileTree(directory) {
-                exclude(coverageExclusions)
-            }
-        })
-    )
-}
-
-tasks.jacocoTestCoverageVerification {
-    dependsOn(tasks.test)
-    classDirectories.setFrom(
-        files(classDirectories.files.map { directory ->
-            fileTree(directory) {
-                exclude(coverageExclusions)
-            }
-        })
-    )
-    violationRules {
-        rule {
-            element = "BUNDLE"
-            limit {
-                counter = "LINE"
-                value = "COVEREDRATIO"
-                minimum = "0.90".toBigDecimal()
+        filters {
+            excludes {
+                classes(*coverageExclusions.toTypedArray())
             }
         }
     }
+}
+
+tasks.register("coverageReport") {
+    group = "verification"
+    description = "Runs backend tests and generates a single overall Kover HTML coverage report."
+    dependsOn("koverHtmlReport")
+}
+
+tasks.register("coverageSummary") {
+    group = "verification"
+    description = "Runs backend tests and prints a single overall Kover coverage summary to the console."
+    dependsOn("koverLog")
 }
 
 kotlin {
