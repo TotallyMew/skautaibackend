@@ -568,6 +568,7 @@ class ItemService {
             }
 
             val previousCondition = existing[Items.condition]
+            val previousQuantity = existing[Items.quantity]
             val previousResponsibleUserId = existing[Items.responsibleUserId]
             val now = Clock.System.now()
 
@@ -614,6 +615,16 @@ class ItemService {
                     it[this.reportedAt] = now
                     it[this.notes] = request.notes
                 }
+            }
+            request.quantity?.takeIf { it != previousQuantity }?.let { nextQuantity ->
+                recordItemHistory(
+                    itemId = itemId,
+                    eventType = "QUANTITY_ADJUSTED",
+                    quantityChange = nextQuantity - previousQuantity,
+                    performedByUserId = updatedByUserId,
+                    notes = request.notes ?: "Kiekis pakoreguotas rankiniu budu",
+                    createdAt = now
+                )
             }
             upsertResponsibleAssignment(
                 itemId = itemId,

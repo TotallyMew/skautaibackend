@@ -97,6 +97,7 @@ data class CreateStorageAuditSessionRequest(
 data class UpsertStorageAuditCheckRequest(
     val itemId: String,
     val result: String,
+    val actualQuantity: Int? = null,
     val actualLocationId: String? = null,
     val actualLocationNote: String? = null,
     val notes: String? = null

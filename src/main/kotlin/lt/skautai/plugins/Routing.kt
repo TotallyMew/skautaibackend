@@ -10,6 +10,7 @@ import lt.skautai.routes.itemRoutes
 import lt.skautai.routes.superAdminRoutes
 import lt.skautai.routes.locationRoutes
 import lt.skautai.routes.memberRoutes
+import lt.skautai.routes.myTaskRoutes
 import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.routes.requisitionRoutes
 import lt.skautai.services.AuthService
@@ -20,6 +21,7 @@ import lt.skautai.services.InventoryTemplateService
 import lt.skautai.services.LocationService
 import lt.skautai.services.OrganizationalUnitService
 import lt.skautai.services.MemberService
+import lt.skautai.services.MyTaskService
 import lt.skautai.routes.reservationRoutes
 import lt.skautai.services.ReservationService
 import lt.skautai.routes.eventRoutes
@@ -43,6 +45,7 @@ fun Application.configureRouting() {
     val bendrasInventoryRequestService = BendrasInventoryRequestService()
     val requisitionService = RequisitionService()
     val inventoryTemplateService = InventoryTemplateService()
+    val myTaskService = MyTaskService()
 
     routing {
         authRoutes(authService)
@@ -57,6 +60,7 @@ fun Application.configureRouting() {
         bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
         requisitionRoutes(requisitionService)
         inventoryTemplateRoutes(inventoryTemplateService)
+        myTaskRoutes(myTaskService)
         userRoutes()
         rolesRoutes()
         uploadRoutes()

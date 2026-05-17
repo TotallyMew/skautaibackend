@@ -164,6 +164,10 @@ data class ItemCheckResponse(
     val qrToken: String? = null,
     val result: String,
     val quantity: Int,
+    val expectedQuantity: Int,
+    val actualQuantity: Int,
+    val quantityDifference: Int,
+    val quantityChangeDirection: String,
     val actualLocationId: String? = null,
     val actualLocationPath: String? = null,
     val actualLocationNote: String? = null,
@@ -184,7 +188,14 @@ data class ItemCheckSummaryResponse(
     val misplaced: Int,
     val damaged: Int,
     val consumed: Int,
-    val returned: Int
+    val returned: Int,
+    val matched: Int,
+    val decreased: Int,
+    val increased: Int,
+    val expectedQuantityTotal: Int,
+    val actualQuantityTotal: Int,
+    val shortageQuantityTotal: Int,
+    val overageQuantityTotal: Int
 )
 
 @Serializable

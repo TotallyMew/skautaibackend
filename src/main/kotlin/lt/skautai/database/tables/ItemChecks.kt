@@ -11,6 +11,8 @@ object ItemChecks : Table("item_checks") {
     val custodyId = uuid("custody_id").references(EventInventoryCustody.id).nullable()
     val result = varchar("result", 20)
     val quantity = integer("quantity").default(1)
+    val expectedQuantity = integer("expected_quantity").default(1)
+    val actualQuantity = integer("actual_quantity").default(1)
     val actualLocationId = uuid("actual_location_id").references(Locations.id).nullable()
     val actualLocationNote = varchar("actual_location_note", 255).nullable()
     val conditionAtCheck = varchar("condition_at_check", 30).nullable()

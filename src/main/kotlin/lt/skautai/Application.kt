@@ -97,6 +97,7 @@ fun Application.configureDatabases() {
                 started_by_user_id UUID NOT NULL REFERENCES users(id),
                 completed_by_user_id UUID REFERENCES users(id),
                 status VARCHAR(20) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'COMPLETED')),
+                scope_item_count INTEGER NOT NULL DEFAULT 0,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 completed_at TIMESTAMP
@@ -113,6 +114,8 @@ fun Application.configureDatabases() {
                 custody_id UUID REFERENCES event_inventory_custody(id) ON DELETE SET NULL,
                 result VARCHAR(20) NOT NULL CHECK (result IN ('FOUND', 'MISSING', 'MISPLACED', 'DAMAGED', 'CONSUMED', 'RETURNED')),
                 quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+                expected_quantity INTEGER NOT NULL DEFAULT 1 CHECK (expected_quantity >= 0),
+                actual_quantity INTEGER NOT NULL DEFAULT 1 CHECK (actual_quantity >= 0),
                 actual_location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                 actual_location_note VARCHAR(255),
                 condition_at_check VARCHAR(30),
@@ -122,6 +125,9 @@ fun Application.configureDatabases() {
             )
             """.trimIndent()
         )
+        exec("ALTER TABLE IF EXISTS item_check_sessions ADD COLUMN IF NOT EXISTS scope_item_count INTEGER NOT NULL DEFAULT 0")
+        exec("ALTER TABLE IF EXISTS item_checks ADD COLUMN IF NOT EXISTS expected_quantity INTEGER NOT NULL DEFAULT 1")
+        exec("ALTER TABLE IF EXISTS item_checks ADD COLUMN IF NOT EXISTS actual_quantity INTEGER NOT NULL DEFAULT 1")
         exec("CREATE INDEX IF NOT EXISTS idx_item_check_sessions_tuntas_context ON item_check_sessions(tuntas_id, context_type)")
         exec("CREATE INDEX IF NOT EXISTS idx_item_check_sessions_event ON item_check_sessions(event_id)")
         exec("CREATE INDEX IF NOT EXISTS idx_item_checks_session ON item_checks(session_id)")

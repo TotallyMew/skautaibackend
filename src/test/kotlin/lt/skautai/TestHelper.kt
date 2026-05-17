@@ -28,6 +28,7 @@ import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.services.LocationService
 import lt.skautai.services.MemberService
 import lt.skautai.routes.memberRoutes
+import lt.skautai.routes.myTaskRoutes
 import lt.skautai.routes.rolesRoutes
 import lt.skautai.routes.requisitionRoutes
 import lt.skautai.routes.reservationRoutes
@@ -132,6 +133,7 @@ object TestHelper {
             val bendrasInventoryRequestService = BendrasInventoryRequestService()
             val requisitionService = RequisitionService()
             val inventoryTemplateService = InventoryTemplateService()
+            val myTaskService = MyTaskService()
             PermissionSeeder.seedPermissions()
             routing {
                 authRoutes(authService)
@@ -146,6 +148,7 @@ object TestHelper {
                 bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
                 requisitionRoutes(requisitionService)
                 inventoryTemplateRoutes(inventoryTemplateService)
+                myTaskRoutes(myTaskService)
                 userRoutes()
                 rolesRoutes()
                 uploadRoutes()

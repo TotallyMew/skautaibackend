@@ -3,6 +3,7 @@ package lt.skautai.services
 import kotlinx.datetime.Clock
 import lt.skautai.database.tables.ItemCheckSessions
 import lt.skautai.database.tables.ItemChecks
+import lt.skautai.database.tables.ItemHistory
 import lt.skautai.database.tables.Items
 import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
@@ -74,6 +75,14 @@ class ItemCheckService {
             it[startedByUserId] = userId
             it[completedByUserId] = null
             it[status] = "OPEN"
+            it[scopeItemCount] = countStorageAuditScopeItems(
+                tuntasId = tuntasId,
+                scopeCustodianId = scopeCustodianId,
+                scopeType = request.type,
+                scopeCategory = request.category,
+                scopeSharedOnly = request.sharedOnly,
+                scopePersonalOwnerUserId = personalOwnerUserId
+            )
             it[notes] = request.notes?.trim()?.takeIf { value -> value.isNotBlank() }
             it[createdAt] = now
             it[completedAt] = null
@@ -146,6 +155,11 @@ class ItemCheckService {
             val item = Items.selectAll()
                 .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Item not found"))
+            val expectedQuantity = item[Items.quantity]
+            val actualQuantity = check.actualQuantity ?: defaultActualQuantity(result, expectedQuantity)
+            if (actualQuantity < 0) {
+                return@transaction Result.failure(Exception("Actual quantity cannot be negative"))
+            }
 
             val existing = ItemChecks.selectAll()
                 .where {
@@ -163,7 +177,9 @@ class ItemCheckService {
                     it[eventInventoryItemId] = null
                     it[custodyId] = null
                     it[this.result] = result
-                    it[quantity] = 1
+                    it[quantity] = expectedQuantity
+                    it[this.expectedQuantity] = expectedQuantity
+                    it[this.actualQuantity] = actualQuantity
                     it[this.actualLocationId] = actualLocationId
                     it[actualLocationNote] = check.actualLocationNote?.trim()?.takeIf { value -> value.isNotBlank() }
                     it[conditionAtCheck] = when (result) {
@@ -177,6 +193,9 @@ class ItemCheckService {
             } else {
                 ItemChecks.update({ ItemChecks.id eq existing[ItemChecks.id] }) {
                     it[this.result] = result
+                    it[quantity] = expectedQuantity
+                    it[this.expectedQuantity] = expectedQuantity
+                    it[this.actualQuantity] = actualQuantity
                     it[this.actualLocationId] = actualLocationId
                     it[actualLocationNote] = check.actualLocationNote?.trim()?.takeIf { value -> value.isNotBlank() }
                     it[conditionAtCheck] = when (result) {
@@ -203,6 +222,7 @@ class ItemCheckService {
         if (session[ItemCheckSessions.status] == "COMPLETED") {
             return@transaction Result.success(toSessionResponse(session))
         }
+        recordStorageAuditHistory(sessionId, userId)
         val now = Clock.System.now()
         ItemCheckSessions.update({ ItemCheckSessions.id eq sessionId }) {
             it[status] = "COMPLETED"
@@ -232,7 +252,7 @@ class ItemCheckService {
         val sessionId = session[ItemCheckSessions.id]
         val checks = sessionChecks(sessionId)
         val total = if (session[ItemCheckSessions.contextType] == "STORAGE_AUDIT") {
-            storageAuditScopeTotal(session)
+            session[ItemCheckSessions.scopeItemCount]
         } else {
             checks.size
         }
@@ -255,7 +275,7 @@ class ItemCheckService {
             notes = session[ItemCheckSessions.notes],
             createdAt = session[ItemCheckSessions.createdAt].toString(),
             completedAt = session[ItemCheckSessions.completedAt]?.toString(),
-            summary = toSummary(total, checks.map { it.result }),
+            summary = toSummary(total, checks),
             checks = checks
         )
     }
@@ -279,6 +299,13 @@ class ItemCheckService {
                 qrToken = item?.get(Items.qrToken),
                 result = row[ItemChecks.result],
                 quantity = row[ItemChecks.quantity],
+                expectedQuantity = row[ItemChecks.expectedQuantity],
+                actualQuantity = row[ItemChecks.actualQuantity],
+                quantityDifference = row[ItemChecks.actualQuantity] - row[ItemChecks.expectedQuantity],
+                quantityChangeDirection = quantityChangeDirection(
+                    expectedQuantity = row[ItemChecks.expectedQuantity],
+                    actualQuantity = row[ItemChecks.actualQuantity]
+                ),
                 actualLocationId = row[ItemChecks.actualLocationId]?.toString(),
                 actualLocationPath = buildLocationPath(row[ItemChecks.actualLocationId], item?.get(Items.tuntasId)),
                 actualLocationNote = row[ItemChecks.actualLocationNote],
@@ -291,30 +318,17 @@ class ItemCheckService {
         }
     }
 
-    private fun storageAuditScopeTotal(session: ResultRow): Int {
-        return Items.selectAll().where {
-            (Items.tuntasId eq session[ItemCheckSessions.tuntasId]) and
-                (Items.status eq "ACTIVE")
-        }
-            .toList()
-            .count { row ->
-                val custodianMatches = session[ItemCheckSessions.scopeCustodianId]?.let { row[Items.custodianId] == it } ?: true
-                val typeMatches = session[ItemCheckSessions.scopeType]?.let { row[Items.type] == it } ?: true
-                val categoryMatches = session[ItemCheckSessions.scopeCategory]?.let { row[Items.category] == it } ?: true
-                val sharedOnlyMatches = !session[ItemCheckSessions.scopeSharedOnly] || row[Items.custodianId] == null
-                val ownerMatches = session[ItemCheckSessions.scopePersonalOwnerUserId]?.let { row[Items.createdByUserId] == it } ?: true
-                custodianMatches && typeMatches && categoryMatches && sharedOnlyMatches && ownerMatches
-            }
-    }
-
-    private fun toSummary(total: Int, results: List<String>): ItemCheckSummaryResponse {
-        val found = results.count { it == "FOUND" }
-        val missing = results.count { it == "MISSING" }
-        val misplaced = results.count { it == "MISPLACED" }
-        val damaged = results.count { it == "DAMAGED" }
-        val consumed = results.count { it == "CONSUMED" }
-        val returned = results.count { it == "RETURNED" }
-        val checked = results.size
+    private fun toSummary(total: Int, checks: List<ItemCheckResponse>): ItemCheckSummaryResponse {
+        val found = checks.count { it.result == "FOUND" }
+        val missing = checks.count { it.result == "MISSING" }
+        val misplaced = checks.count { it.result == "MISPLACED" }
+        val damaged = checks.count { it.result == "DAMAGED" }
+        val consumed = checks.count { it.result == "CONSUMED" }
+        val returned = checks.count { it.result == "RETURNED" }
+        val matched = checks.count { it.quantityDifference == 0 }
+        val decreased = checks.count { it.quantityDifference < 0 }
+        val increased = checks.count { it.quantityDifference > 0 }
+        val checked = checks.size
         return ItemCheckSummaryResponse(
             total = total,
             checked = checked,
@@ -324,8 +338,85 @@ class ItemCheckService {
             misplaced = misplaced,
             damaged = damaged,
             consumed = consumed,
-            returned = returned
+            returned = returned,
+            matched = matched,
+            decreased = decreased,
+            increased = increased,
+            expectedQuantityTotal = checks.sumOf { it.expectedQuantity },
+            actualQuantityTotal = checks.sumOf { it.actualQuantity },
+            shortageQuantityTotal = checks.sumOf { (it.expectedQuantity - it.actualQuantity).coerceAtLeast(0) },
+            overageQuantityTotal = checks.sumOf { (it.actualQuantity - it.expectedQuantity).coerceAtLeast(0) }
         )
+    }
+
+    private fun countStorageAuditScopeItems(
+        tuntasId: UUID,
+        scopeCustodianId: UUID?,
+        scopeType: String?,
+        scopeCategory: String?,
+        scopeSharedOnly: Boolean,
+        scopePersonalOwnerUserId: UUID?
+    ): Int {
+        return Items.selectAll().where {
+            (Items.tuntasId eq tuntasId) and
+                (Items.status eq "ACTIVE")
+        }
+            .toList()
+            .count { row ->
+                val custodianMatches = scopeCustodianId?.let { row[Items.custodianId] == it } ?: true
+                val typeMatches = scopeType?.trim()?.takeIf { it.isNotBlank() }?.let { row[Items.type] == it } ?: true
+                val categoryMatches = scopeCategory?.trim()?.takeIf { it.isNotBlank() }?.let { row[Items.category] == it } ?: true
+                val sharedOnlyMatches = !scopeSharedOnly || row[Items.custodianId] == null
+                val ownerMatches = scopePersonalOwnerUserId?.let { row[Items.createdByUserId] == it } ?: true
+                custodianMatches && typeMatches && categoryMatches && sharedOnlyMatches && ownerMatches
+            }
+    }
+
+    private fun defaultActualQuantity(result: String, expectedQuantity: Int): Int = when (result) {
+        "MISSING" -> 0
+        else -> expectedQuantity
+    }
+
+    private fun quantityChangeDirection(expectedQuantity: Int, actualQuantity: Int): String = when {
+        actualQuantity < expectedQuantity -> "DECREASED"
+        actualQuantity > expectedQuantity -> "INCREASED"
+        else -> "MATCHED"
+    }
+
+    private fun recordStorageAuditHistory(sessionId: UUID, userId: UUID) {
+        ItemChecks.selectAll()
+            .where { ItemChecks.sessionId eq sessionId }
+            .toList()
+            .forEach { row ->
+                val itemId = row[ItemChecks.itemId] ?: return@forEach
+                val expectedQuantity = row[ItemChecks.expectedQuantity]
+                val actualQuantity = row[ItemChecks.actualQuantity]
+                val quantityDifference = actualQuantity - expectedQuantity
+                val result = row[ItemChecks.result]
+                val eventType = when {
+                    result == "MISSING" -> "AUDIT_MISSING"
+                    quantityDifference < 0 -> "AUDIT_SHORTAGE"
+                    quantityDifference > 0 -> "AUDIT_OVERAGE"
+                    result == "MISPLACED" -> "AUDIT_MISPLACED"
+                    result == "DAMAGED" -> "AUDIT_DAMAGED"
+                    else -> "AUDIT_MATCHED"
+                }
+                val notes = buildList {
+                    add("Inventorizacija: tiketasi $expectedQuantity, rasta $actualQuantity")
+                    row[ItemChecks.actualLocationNote]?.takeIf { it.isNotBlank() }?.let { add("Vieta: $it") }
+                    row[ItemChecks.notes]?.takeIf { it.isNotBlank() }?.let { add(it) }
+                }.joinToString(". ")
+
+                ItemHistory.insert {
+                    it[this.itemId] = itemId
+                    it[this.eventType] = eventType
+                    it[this.quantityChange] = quantityDifference.takeIf { it != 0 }
+                    it[this.performedByUserId] = userId
+                    it[this.requisitionId] = null
+                    it[this.notes] = notes
+                    it[this.createdAt] = row[ItemChecks.checkedAt]
+                }
+            }
     }
 
     private fun userDisplayName(userId: UUID?): String? {

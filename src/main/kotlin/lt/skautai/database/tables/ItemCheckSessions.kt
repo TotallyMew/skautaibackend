@@ -16,6 +16,7 @@ object ItemCheckSessions : Table("item_check_sessions") {
     val startedByUserId = uuid("started_by_user_id").references(Users.id)
     val completedByUserId = uuid("completed_by_user_id").references(Users.id).nullable()
     val status = varchar("status", 20).default("OPEN")
+    val scopeItemCount = integer("scope_item_count").default(0)
     val notes = text("notes").nullable()
     val createdAt = timestamp("created_at")
     val completedAt = timestamp("completed_at").nullable()

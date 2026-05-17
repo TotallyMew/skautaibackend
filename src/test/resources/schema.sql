@@ -698,13 +698,14 @@ CREATE TABLE item_check_sessions (
                                      scope_type VARCHAR(100),
                                      scope_category VARCHAR(100),
                                      scope_shared_only BOOLEAN NOT NULL DEFAULT FALSE,
-                                     scope_personal_owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-                                     started_by_user_id UUID NOT NULL REFERENCES users(id),
-                                     completed_by_user_id UUID REFERENCES users(id),
-                                     status VARCHAR(20) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'COMPLETED')),
-                                     notes TEXT,
-                                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                     completed_at TIMESTAMP
+    scope_personal_owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    started_by_user_id UUID NOT NULL REFERENCES users(id),
+    completed_by_user_id UUID REFERENCES users(id),
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'COMPLETED')),
+    scope_item_count INTEGER NOT NULL DEFAULT 0,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
 );
 
 CREATE TABLE item_checks (
@@ -715,6 +716,8 @@ CREATE TABLE item_checks (
                              custody_id UUID REFERENCES event_inventory_custody(id) ON DELETE SET NULL,
                              result VARCHAR(20) NOT NULL CHECK (result IN ('FOUND', 'MISSING', 'MISPLACED', 'DAMAGED', 'CONSUMED', 'RETURNED')),
                              quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+                             expected_quantity INTEGER NOT NULL DEFAULT 1 CHECK (expected_quantity >= 0),
+                             actual_quantity INTEGER NOT NULL DEFAULT 1 CHECK (actual_quantity >= 0),
                              actual_location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                              actual_location_note VARCHAR(255),
                              condition_at_check VARCHAR(30),
