@@ -63,6 +63,7 @@ val coverageExclusions = listOf(
 
 tasks.test {
     useJUnitPlatform()
+    maxParallelForks = 1
     environment("TEST_DB_PASSWORD", System.getenv("TEST_DB_PASSWORD") ?: "")
     environment("TEST_DB_URL", System.getenv("TEST_DB_URL") ?: "jdbc:postgresql://localhost:5432/skautu_inventorius_test")
     environment("TEST_DB_USER", System.getenv("TEST_DB_USER") ?: "postgres")

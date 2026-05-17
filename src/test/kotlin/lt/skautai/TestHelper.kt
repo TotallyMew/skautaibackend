@@ -174,6 +174,9 @@ object TestHelper {
                 }
             """.trimIndent())
         }
+        check(response.status == HttpStatusCode.Created) {
+            "Failed to register tuntininkas: ${response.status} ${response.bodyAsText()}"
+        }
 
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         val token = body["token"]!!.jsonPrimitive.content
@@ -185,6 +188,9 @@ object TestHelper {
             }
             exec("UPDATE tuntai SET status = 'ACTIVE' WHERE name = '$tuntasName'")
             id
+        }
+        check(tuntasId.isNotBlank()) {
+            "Failed to resolve created tuntas id for '$tuntasName'"
         }
 
         return token to tuntasId
