@@ -6,18 +6,23 @@ import io.ktor.server.netty.*
 import io.ktor.server.plugins.defaultheaders.*
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
+import lt.skautai.database.tables.Tuntai
+import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.plugins.configureRouting
 import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
-import lt.skautai.database.tables.Tuntai
-import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.services.PermissionSeeder
 import lt.skautai.services.VadovasRankSupport
+import org.flywaydb.core.Flyway
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.io.path.Path
 
 fun main(args: Array<String>) {
+    loadDotEnvIntoSystemProperties()
     EngineMain.main(args)
 }
 
@@ -60,146 +65,55 @@ fun Application.configureDatabases() {
     )
 
     val logger = log
+    Flyway.configure()
+        .dataSource(url, user, password)
+        .locations("classpath:db/migration")
+        .baselineOnMigrate(true)
+        .baselineVersion("1")
+        .baselineDescription("Existing schema baseline")
+        .load()
+        .migrate()
+
     transaction {
         exec("SELECT 1")
-        exec("ALTER TABLE items ADD COLUMN IF NOT EXISTS qr_token VARCHAR(36)")
-        exec("ALTER TABLE items DROP CONSTRAINT IF EXISTS items_category_check")
-        exec("ALTER TABLE items DROP CONSTRAINT IF EXISTS items_condition_check")
-        exec("ALTER TABLE events DROP CONSTRAINT IF EXISTS events_type_check")
-        exec("ALTER TABLE events ALTER COLUMN type TYPE VARCHAR(100)")
-        exec("ALTER TABLE events ADD COLUMN IF NOT EXISTS custom_type_label VARCHAR(100)")
-        exec("ALTER TABLE inventory_list_templates DROP CONSTRAINT IF EXISTS inventory_list_templates_event_type_check")
-        exec("ALTER TABLE inventory_list_templates ALTER COLUMN event_type TYPE VARCHAR(100)")
-        exec("ALTER TABLE inventory_list_template_items ADD COLUMN IF NOT EXISTS item_id UUID REFERENCES items(id)")
-        exec("ALTER TABLE inventory_list_template_items ALTER COLUMN category TYPE VARCHAR(100)")
-        exec("ALTER TABLE items ALTER COLUMN condition TYPE VARCHAR(30)")
-        exec("ALTER TABLE IF EXISTS item_condition_log ALTER COLUMN previous_condition TYPE VARCHAR(30)")
-        exec("ALTER TABLE IF EXISTS item_condition_log ALTER COLUMN new_condition TYPE VARCHAR(30)")
-        exec("ALTER TABLE IF EXISTS event_inventory_items ADD COLUMN IF NOT EXISTS source_custodian_name VARCHAR(200)")
-        exec("ALTER TABLE IF EXISTS event_inventory_items ADD COLUMN IF NOT EXISTS source_location_path VARCHAR(500)")
-        exec("ALTER TABLE IF EXISTS event_inventory_items ADD COLUMN IF NOT EXISTS source_temporary_storage_label VARCHAR(255)")
-        exec("ALTER TABLE IF EXISTS event_inventory_items ADD COLUMN IF NOT EXISTS source_responsible_user_name VARCHAR(200)")
-        exec("UPDATE items SET qr_token = uuid_generate_v4()::text WHERE qr_token IS NULL")
-        exec("ALTER TABLE items ALTER COLUMN qr_token SET NOT NULL")
-        exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_qr_token ON items(qr_token)")
-        exec(
-            """
-            CREATE TABLE IF NOT EXISTS item_check_sessions (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
-                context_type VARCHAR(30) NOT NULL CHECK (context_type IN ('EVENT_RETURN', 'STORAGE_AUDIT')),
-                event_id UUID REFERENCES events(id) ON DELETE CASCADE,
-                scope_custodian_id UUID REFERENCES organizational_units(id) ON DELETE SET NULL,
-                scope_type VARCHAR(100),
-                scope_category VARCHAR(100),
-                scope_shared_only BOOLEAN NOT NULL DEFAULT FALSE,
-                scope_personal_owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-                started_by_user_id UUID NOT NULL REFERENCES users(id),
-                completed_by_user_id UUID REFERENCES users(id),
-                status VARCHAR(20) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'COMPLETED')),
-                scope_item_count INTEGER NOT NULL DEFAULT 0,
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                completed_at TIMESTAMP
-            )
-            """.trimIndent()
-        )
-        exec(
-            """
-            CREATE TABLE IF NOT EXISTS item_checks (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                session_id UUID NOT NULL REFERENCES item_check_sessions(id) ON DELETE CASCADE,
-                item_id UUID REFERENCES items(id) ON DELETE SET NULL,
-                event_inventory_item_id UUID REFERENCES event_inventory_items(id) ON DELETE SET NULL,
-                custody_id UUID REFERENCES event_inventory_custody(id) ON DELETE SET NULL,
-                result VARCHAR(20) NOT NULL CHECK (result IN ('FOUND', 'MISSING', 'MISPLACED', 'DAMAGED', 'CONSUMED', 'RETURNED')),
-                quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
-                expected_quantity INTEGER NOT NULL DEFAULT 1 CHECK (expected_quantity >= 0),
-                actual_quantity INTEGER NOT NULL DEFAULT 1 CHECK (actual_quantity >= 0),
-                actual_location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
-                actual_location_note VARCHAR(255),
-                condition_at_check VARCHAR(30),
-                checked_by_user_id UUID NOT NULL REFERENCES users(id),
-                notes TEXT,
-                checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """.trimIndent()
-        )
-        exec("ALTER TABLE IF EXISTS item_check_sessions ADD COLUMN IF NOT EXISTS scope_item_count INTEGER NOT NULL DEFAULT 0")
-        exec("ALTER TABLE IF EXISTS item_checks ADD COLUMN IF NOT EXISTS expected_quantity INTEGER NOT NULL DEFAULT 1")
-        exec("ALTER TABLE IF EXISTS item_checks ADD COLUMN IF NOT EXISTS actual_quantity INTEGER NOT NULL DEFAULT 1")
-        exec("CREATE INDEX IF NOT EXISTS idx_item_check_sessions_tuntas_context ON item_check_sessions(tuntas_id, context_type)")
-        exec("CREATE INDEX IF NOT EXISTS idx_item_check_sessions_event ON item_check_sessions(event_id)")
-        exec("CREATE INDEX IF NOT EXISTS idx_item_checks_session ON item_checks(session_id)")
-        exec("CREATE INDEX IF NOT EXISTS idx_item_checks_item ON item_checks(item_id)")
-        exec("CREATE INDEX IF NOT EXISTS idx_item_checks_custody ON item_checks(custody_id)")
-        exec("ALTER TABLE IF EXISTS draugove_requisitions DROP CONSTRAINT IF EXISTS draugove_requisitions_status_check")
-        exec("ALTER TABLE IF EXISTS draugove_requisitions DROP CONSTRAINT IF EXISTS draugove_requisitions_unit_review_status_check")
-        exec("ALTER TABLE IF EXISTS draugove_requisitions DROP CONSTRAINT IF EXISTS draugove_requisitions_top_level_review_status_check")
-        exec("ALTER TABLE IF EXISTS draugove_requisitions ADD COLUMN IF NOT EXISTS purchased_at TIMESTAMP")
-        exec("ALTER TABLE IF EXISTS draugove_requisitions ADD COLUMN IF NOT EXISTS purchased_by_user_id UUID REFERENCES users(id)")
-        exec("ALTER TABLE IF EXISTS draugove_requisitions ADD COLUMN IF NOT EXISTS added_to_inventory_at TIMESTAMP")
-        exec("ALTER TABLE IF EXISTS draugove_requisitions ADD COLUMN IF NOT EXISTS added_to_inventory_by_user_id UUID REFERENCES users(id)")
-        exec(
-            """
-            ALTER TABLE IF EXISTS draugove_requisitions
-            ADD CONSTRAINT draugove_requisitions_status_check
-            CHECK (status IN ('DRAFT', 'SUBMITTED', 'PARTIALLY_APPROVED', 'APPROVED', 'PURCHASED', 'INVENTORY_ADDED', 'REJECTED', 'CANCELLED'))
-            """.trimIndent()
-        )
-        exec(
-            """
-            ALTER TABLE IF EXISTS draugove_requisitions
-            ADD CONSTRAINT draugove_requisitions_unit_review_status_check
-            CHECK (unit_review_status IN ('PENDING', 'APPROVED', 'FORWARDED', 'REJECTED', 'SKIPPED', 'CANCELLED'))
-            """.trimIndent()
-        )
-        exec(
-            """
-            ALTER TABLE IF EXISTS draugove_requisitions
-            ADD CONSTRAINT draugove_requisitions_top_level_review_status_check
-            CHECK (top_level_review_status IN ('NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'))
-            """.trimIndent()
-        )
-        exec(
-            """
-            CREATE TABLE IF NOT EXISTS item_history (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-                event_type VARCHAR(40) NOT NULL,
-                quantity_change INTEGER,
-                performed_by_user_id UUID REFERENCES users(id),
-                requisition_id UUID REFERENCES draugove_requisitions(id),
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """.trimIndent()
-        )
-        exec(
-            """
-            CREATE TABLE IF NOT EXISTS event_purchase_item_reconciliations (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                purchase_item_id UUID NOT NULL REFERENCES event_purchase_items(id) ON DELETE CASCADE,
-                decision VARCHAR(40) NOT NULL CHECK (decision IN ('ADD_NEW_ITEM', 'INCREASE_EXISTING_ITEM', 'CONSUMED', 'IGNORE')),
-                quantity INTEGER NOT NULL CHECK (quantity > 0),
-                added_inventory_item_id UUID REFERENCES items(id),
-                performed_by_user_id UUID NOT NULL REFERENCES users(id),
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """.trimIndent()
-        )
-        exec("CREATE INDEX IF NOT EXISTS idx_event_purchase_item_reconciliations_item ON event_purchase_item_reconciliations(purchase_item_id)")
-        exec(
-            """
-            CREATE TABLE IF NOT EXISTS item_custom_fields (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-                field_name VARCHAR(100) NOT NULL,
-                field_value TEXT
-            )
-            """.trimIndent()
-        )
         logger.info("Database connected successfully")
+    }
+}
+
+private val supportedDotEnvKeys = setOf(
+    "DB_URL",
+    "DB_USER",
+    "DB_PASSWORD",
+    "JWT_SECRET",
+    "SETUP_BOOTSTRAP_TOKEN",
+    "PORT"
+)
+
+private fun loadDotEnvIntoSystemProperties(dotEnvPath: Path = Path(".env")) {
+    if (!Files.exists(dotEnvPath)) return
+
+    Files.readAllLines(dotEnvPath).forEach { rawLine ->
+        val line = rawLine.trim()
+        if (line.isBlank() || line.startsWith("#")) return@forEach
+
+        val normalizedLine = if (line.startsWith("export ")) {
+            line.removePrefix("export ").trim()
+        } else {
+            line
+        }
+
+        val separatorIndex = normalizedLine.indexOf('=')
+        if (separatorIndex <= 0) return@forEach
+
+        val key = normalizedLine.substring(0, separatorIndex).trim()
+        if (key !in supportedDotEnvKeys) return@forEach
+
+        val value = normalizedLine.substring(separatorIndex + 1).trim()
+            .removeSurrounding("\"")
+            .removeSurrounding("'")
+
+        if (System.getenv(key) == null && System.getProperty(key) == null) {
+            System.setProperty(key, value)
+        }
     }
 }

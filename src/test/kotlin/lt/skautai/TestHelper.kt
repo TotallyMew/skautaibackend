@@ -73,10 +73,10 @@ object TestHelper {
             CREATE SCHEMA public;
         """.trimIndent())
 
-            val schema = File("database/schema.sql")
+            val schema = File("src/main/resources/db/migration/V1__initial_schema.sql")
                 .takeIf { it.exists() }
                 ?.readText()
-                ?: error("database/schema.sql not found")
+                ?: error("src/main/resources/db/migration/V1__initial_schema.sql not found")
             exec(schema)
         }
     }
