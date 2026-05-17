@@ -20,6 +20,7 @@ data class EventResponse(
     val tuntasId: String,
     val name: String,
     val type: String,
+    val customTypeLabel: String? = null,
     val startDate: String,
     val endDate: String,
     val locationId: String? = null,
@@ -341,6 +342,7 @@ data class EventPurchaseReconciliationCandidateListResponse(
 @Serializable
 data class EventReconciliationResponse(
     val eventId: String,
+    val sessionId: String? = null,
     val status: String,
     val openReturns: List<EventReconciliationReturnLineResponse>,
     val returnedToEventStorage: List<EventReconciliationReturnLineResponse>,

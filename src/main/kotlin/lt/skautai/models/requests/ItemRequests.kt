@@ -82,3 +82,27 @@ data class ReviewItemAdditionRequest(
     val decision: String,
     val rejectionReason: String? = null
 )
+
+@Serializable
+data class CreateStorageAuditSessionRequest(
+    val custodianId: String? = null,
+    val type: String? = null,
+    val category: String? = null,
+    val sharedOnly: Boolean = false,
+    val personalOwnerUserId: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class UpsertStorageAuditCheckRequest(
+    val itemId: String,
+    val result: String,
+    val actualLocationId: String? = null,
+    val actualLocationNote: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class UpsertStorageAuditChecksRequest(
+    val checks: List<UpsertStorageAuditCheckRequest>
+)

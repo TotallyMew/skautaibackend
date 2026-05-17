@@ -295,7 +295,13 @@ class EventService {
                 return@transaction Result.failure(Exception("Name cannot be blank"))
             }
 
-            validateEventType(request.type)?.let {
+            val normalizedType = normalizeEventType(request.type)
+                ?: return@transaction Result.failure(Exception("Event type is required"))
+            validateEventType(normalizedType)?.let {
+                return@transaction Result.failure(it)
+            }
+            val normalizedCustomTypeLabel = normalizeCustomTypeLabel(request.customTypeLabel)
+            validateCustomTypeLabel(normalizedCustomTypeLabel)?.let {
                 return@transaction Result.failure(it)
             }
 
@@ -332,7 +338,8 @@ class EventService {
             val eventId = Events.insert {
                 it[this.tuntasId] = tuntasId
                 it[name] = request.name
-                it[type] = request.type
+                it[type] = normalizedType
+                it[this.customTypeLabel] = normalizedCustomTypeLabel
                 it[this.startDate] = startDate
                 it[this.endDate] = endDate
                 it[this.locationId] = locationUUID
@@ -387,6 +394,23 @@ class EventService {
                 }
             }
 
+            val normalizedType = request.type?.let {
+                normalizeEventType(it) ?: return@transaction Result.failure(Exception("Event type is required"))
+            }
+            normalizedType?.let {
+                validateEventType(it)?.let { error ->
+                    return@transaction Result.failure(error)
+                }
+            }
+            val normalizedCustomTypeLabel = request.customTypeLabel?.let {
+                normalizeCustomTypeLabel(it)
+            } ?: if (request.type != null) null else null
+            if (request.customTypeLabel != null || request.type != null) {
+                validateCustomTypeLabel(normalizedCustomTypeLabel)?.let { error ->
+                    return@transaction Result.failure(error)
+                }
+            }
+
             val startDate = request.startDate?.let {
                 try { kotlinx.datetime.LocalDate.parse(it) } catch (e: Exception) {
                     return@transaction Result.failure(Exception("Invalid start date format"))
@@ -418,6 +442,10 @@ class EventService {
                         (Events.tuntasId eq tuntasId)
             }) {
                 request.name?.let { v -> it[name] = v }
+                normalizedType?.let { v -> it[type] = v }
+                if (request.customTypeLabel != null || request.type != null) {
+                    it[Events.customTypeLabel] = normalizedCustomTypeLabel
+                }
                 request.status?.let { v -> it[status] = v }
                 request.notes?.let { v -> it[notes] = v }
                 startDate?.let { v -> it[Events.startDate] = v }
@@ -2391,6 +2419,7 @@ class EventService {
             if (event[Events.status] != "WRAP_UP") {
                 return@transaction Result.failure(Exception("Returns can be reconciled only during wrap-up"))
             }
+            val sessionId = getOrCreateEventReturnSession(eventId, tuntasId, userId)
 
             request.returns.forEach { line ->
                 val decision = line.decision.uppercase()
@@ -2466,6 +2495,31 @@ class EventService {
                             }
                         }
                     }
+                }
+
+                ItemChecks.insert {
+                    it[this.sessionId] = sessionId
+                    it[itemId] = sourceItemId
+                    it[eventInventoryItemId] = custody[EventInventoryCustody.eventInventoryItemId]
+                    it[this.custodyId] = custodyId
+                    it[result] = when (decision) {
+                        "RETURNED" -> "RETURNED"
+                        "DAMAGED" -> "DAMAGED"
+                        "MISSING" -> "MISSING"
+                        else -> "CONSUMED"
+                    }
+                    it[quantity] = line.quantity
+                    it[actualLocationId] = null
+                    it[actualLocationNote] = null
+                    it[conditionAtCheck] = when (decision) {
+                        "RETURNED" -> itemConditionLabel(sourceItemId)
+                        "DAMAGED" -> "DAMAGED"
+                        "MISSING" -> "MISSING"
+                        else -> "CONSUMED"
+                    }
+                    it[checkedByUserId] = userId
+                    it[notes] = line.notes
+                    it[checkedAt] = now
                 }
 
                 insertInventoryMovement(
@@ -2740,8 +2794,17 @@ class EventService {
             if (blocking.first > 0 || blocking.second > 0) {
                 return@transaction Result.failure(Exception("Event cannot be completed while reconciliation has unresolved returns or purchases"))
             }
+            val now = kotlinx.datetime.Clock.System.now()
             Events.update({ (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }) {
                 it[status] = "COMPLETED"
+            }
+            ItemCheckSessions.update({
+                (ItemCheckSessions.eventId eq eventId) and
+                    (ItemCheckSessions.contextType eq "EVENT_RETURN") and
+                    (ItemCheckSessions.status eq "OPEN")
+            }) {
+                it[status] = "COMPLETED"
+                it[completedAt] = now
             }
             Result.success(toEventResponse(Events.selectAll().where { Events.id eq eventId }.first()))
         }
@@ -3517,6 +3580,7 @@ class EventService {
             tuntasId = row[Events.tuntasId].toString(),
             name = row[Events.name],
             type = row[Events.type],
+            customTypeLabel = row[Events.customTypeLabel],
             startDate = row[Events.startDate].toString(),
             endDate = row[Events.endDate].toString(),
             locationId = row[Events.locationId]?.toString(),
@@ -3923,28 +3987,18 @@ class EventService {
 
     private fun toReconciliationResponse(event: ResultRow): EventReconciliationResponse {
         val eventId = event[Events.id]
+        val sessionId = latestEventReturnSessionId(eventId)
         val custodyRows = EventInventoryCustody
             .innerJoin(EventInventoryItems, { EventInventoryCustody.eventInventoryItemId }, { id })
             .selectAll()
             .where { EventInventoryItems.eventId eq eventId }
             .toList()
-        val reconciliationMovementsByCustodyId = EventInventoryMovements.selectAll()
-            .where {
-                (EventInventoryMovements.eventId eq eventId) and
-                    EventInventoryMovements.custodyId.isNotNull() and
-                    (EventInventoryMovements.movementType inList listOf(
-                        "RECONCILE_RETURNED",
-                        "RECONCILE_DAMAGED",
-                        "RECONCILE_MISSING",
-                        "RECONCILE_CONSUMED"
-                    ))
-            }
-            .groupBy { it[EventInventoryMovements.custodyId]!! }
+        val reconciliationChecksByCustodyId = latestReconciliationChecksByCustodyId(eventId)
 
         val openReturns = custodyRows
             .filter { it[EventInventoryCustody.status] == "OPEN" && openQuantity(it) > 0 }
             .map { row ->
-                toReconciliationReturnLineResponse(row, reconciliationMovementsByCustodyId[row[EventInventoryCustody.id]].orEmpty())
+                toReconciliationReturnLineResponse(row, reconciliationChecksByCustodyId[row[EventInventoryCustody.id]])
             }
         val returnedToEventStorage = custodyRows
             .filter {
@@ -3952,13 +4006,14 @@ class EventService {
                     (it[EventInventoryCustody.pastovykleId] == null && it[EventInventoryCustody.holderUserId] == null)
             }
             .map { row ->
-                toReconciliationReturnLineResponse(row, reconciliationMovementsByCustodyId[row[EventInventoryCustody.id]].orEmpty())
+                toReconciliationReturnLineResponse(row, reconciliationChecksByCustodyId[row[EventInventoryCustody.id]])
             }
         val unresolvedPurchases = reconciliationPurchaseRows(eventId)
             .map { toReconciliationPurchaseLineResponse(it) }
 
         return EventReconciliationResponse(
             eventId = eventId.toString(),
+            sessionId = sessionId?.toString(),
             status = event[Events.status],
             openReturns = openReturns,
             returnedToEventStorage = returnedToEventStorage,
@@ -3969,7 +4024,7 @@ class EventService {
 
     private fun toReconciliationReturnLineResponse(
         row: ResultRow,
-        reconciliationMovements: List<ResultRow>
+        reconciliationCheck: ResultRow?
     ): EventReconciliationReturnLineResponse {
         val pastovykle = row[EventInventoryCustody.pastovykleId]?.let { id ->
             Pastovykles.selectAll().where { Pastovykles.id eq id }.firstOrNull()
@@ -3987,15 +4042,8 @@ class EventService {
             row[EventInventoryItems.sourceTemporaryStorageLabel],
             row[EventInventoryItems.sourceResponsibleUserName]
         )
-        val latestDecision = reconciliationMovements.maxByOrNull { it[EventInventoryMovements.createdAt] }
-        val returnDecision = latestDecision?.get(EventInventoryMovements.movementType)?.removePrefix("RECONCILE_")
-        val returnCondition = when (returnDecision) {
-            "RETURNED" -> itemConditionLabel(row[EventInventoryItems.itemId])
-            "DAMAGED" -> "DAMAGED"
-            "MISSING" -> "MISSING"
-            "CONSUMED" -> "CONSUMED"
-            else -> null
-        }
+        val returnDecision = reconciliationCheck?.get(ItemChecks.result)
+        val returnCondition = reconciliationCheck?.get(ItemChecks.conditionAtCheck)
         val returnedToSummary = when (returnDecision) {
             "RETURNED", "DAMAGED" -> sourcePickupSummary ?: "Renginio sandėlis"
             "MISSING", "CONSUMED" -> "Negrįžo"
@@ -4020,7 +4068,7 @@ class EventService {
             returnDecision = returnDecision,
             returnedToSummary = returnedToSummary,
             returnCondition = returnCondition,
-            notes = row[EventInventoryCustody.notes]
+            notes = reconciliationCheck?.get(ItemChecks.notes) ?: row[EventInventoryCustody.notes]
         )
     }
 
@@ -4127,6 +4175,63 @@ class EventService {
             }
             .count { openQuantity(it) > 0 }
         return openReturnCount to reconciliationPurchaseRows(eventId).size
+    }
+
+    private fun getOrCreateEventReturnSession(eventId: UUID, tuntasId: UUID, userId: UUID): UUID {
+        val existing = ItemCheckSessions.selectAll()
+            .where {
+                (ItemCheckSessions.eventId eq eventId) and
+                    (ItemCheckSessions.tuntasId eq tuntasId) and
+                    (ItemCheckSessions.contextType eq "EVENT_RETURN") and
+                    (ItemCheckSessions.status eq "OPEN")
+            }
+            .orderBy(ItemCheckSessions.createdAt to SortOrder.DESC)
+            .firstOrNull()
+        if (existing != null) return existing[ItemCheckSessions.id]
+
+        val now = kotlinx.datetime.Clock.System.now()
+        return ItemCheckSessions.insert {
+            it[ItemCheckSessions.tuntasId] = tuntasId
+            it[contextType] = "EVENT_RETURN"
+            it[ItemCheckSessions.eventId] = eventId
+            it[scopeCustodianId] = null
+            it[scopeType] = null
+            it[scopeCategory] = null
+            it[scopeSharedOnly] = false
+            it[scopePersonalOwnerUserId] = null
+            it[startedByUserId] = userId
+            it[completedByUserId] = null
+            it[status] = "OPEN"
+            it[notes] = null
+            it[createdAt] = now
+            it[completedAt] = null
+        }[ItemCheckSessions.id]
+    }
+
+    private fun latestEventReturnSessionId(eventId: UUID): UUID? {
+        return ItemCheckSessions.selectAll()
+            .where {
+                (ItemCheckSessions.eventId eq eventId) and
+                    (ItemCheckSessions.contextType eq "EVENT_RETURN")
+            }
+            .orderBy(ItemCheckSessions.createdAt to SortOrder.DESC)
+            .firstOrNull()
+            ?.get(ItemCheckSessions.id)
+    }
+
+    private fun latestReconciliationChecksByCustodyId(eventId: UUID): Map<UUID, ResultRow> {
+        return ItemChecks
+            .innerJoin(ItemCheckSessions, { sessionId }, { ItemCheckSessions.id })
+            .selectAll()
+            .where {
+                (ItemCheckSessions.eventId eq eventId) and
+                    (ItemCheckSessions.contextType eq "EVENT_RETURN") and
+                    ItemChecks.custodyId.isNotNull()
+            }
+            .orderBy(ItemChecks.checkedAt to SortOrder.DESC)
+            .toList()
+            .groupBy { it[ItemChecks.custodyId]!! }
+            .mapValues { it.value.first() }
     }
 
     private fun recalculatePurchaseTotal(purchaseId: UUID) {
@@ -4308,11 +4413,21 @@ class EventService {
     }
 
     private fun validateEventType(type: String): Exception? {
-        val normalized = type.trim()
-        if (normalized.isBlank()) return Exception("Event type is required")
-        if (normalized.length > 100) return Exception("Event type must be at most 100 characters")
-        if (normalized !in validTypes) {
+        if (type !in validTypes) {
             return Exception("Invalid event type")
+        }
+        return null
+    }
+
+    private fun normalizeEventType(type: String): String? =
+        type.trim().uppercase().takeIf { it.isNotBlank() }
+
+    private fun normalizeCustomTypeLabel(label: String?): String? =
+        label?.trim()?.takeIf { it.isNotBlank() }
+
+    private fun validateCustomTypeLabel(label: String?): Exception? {
+        if (label != null && label.length > 100) {
+            return Exception("Custom event type label must be at most 100 characters")
         }
         return null
     }

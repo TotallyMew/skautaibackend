@@ -236,6 +236,7 @@ CREATE TABLE events (
                         tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
                         name VARCHAR(200) NOT NULL,
                         type VARCHAR(100) NOT NULL,
+                        custom_type_label VARCHAR(100),
                         start_date DATE NOT NULL,
                         end_date DATE NOT NULL,
                         location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
@@ -688,6 +689,40 @@ CREATE TABLE unit_assignments (
                                   left_at TIMESTAMP
 );
 
+CREATE TABLE item_check_sessions (
+                                     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                     tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                                     context_type VARCHAR(30) NOT NULL CHECK (context_type IN ('EVENT_RETURN', 'STORAGE_AUDIT')),
+                                     event_id UUID REFERENCES events(id) ON DELETE CASCADE,
+                                     scope_custodian_id UUID REFERENCES organizational_units(id) ON DELETE SET NULL,
+                                     scope_type VARCHAR(100),
+                                     scope_category VARCHAR(100),
+                                     scope_shared_only BOOLEAN NOT NULL DEFAULT FALSE,
+                                     scope_personal_owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                                     started_by_user_id UUID NOT NULL REFERENCES users(id),
+                                     completed_by_user_id UUID REFERENCES users(id),
+                                     status VARCHAR(20) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'COMPLETED')),
+                                     notes TEXT,
+                                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                     completed_at TIMESTAMP
+);
+
+CREATE TABLE item_checks (
+                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                             session_id UUID NOT NULL REFERENCES item_check_sessions(id) ON DELETE CASCADE,
+                             item_id UUID REFERENCES items(id) ON DELETE SET NULL,
+                             event_inventory_item_id UUID REFERENCES event_inventory_items(id) ON DELETE SET NULL,
+                             custody_id UUID REFERENCES event_inventory_custody(id) ON DELETE SET NULL,
+                             result VARCHAR(20) NOT NULL CHECK (result IN ('FOUND', 'MISSING', 'MISPLACED', 'DAMAGED', 'CONSUMED', 'RETURNED')),
+                             quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+                             actual_location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
+                             actual_location_note VARCHAR(255),
+                             condition_at_check VARCHAR(30),
+                             checked_by_user_id UUID NOT NULL REFERENCES users(id),
+                             notes TEXT,
+                             checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Legacy memberships table (kept for backward compatibility)
 -- Indexes
 CREATE INDEX idx_items_tuntas ON items(tuntas_id);
@@ -740,3 +775,8 @@ CREATE INDEX idx_bendras_inventory_request_items_request ON bendras_inventory_re
 CREATE INDEX idx_unit_assignments_user ON unit_assignments(user_id);
 CREATE INDEX idx_unit_assignments_tuntas ON unit_assignments(tuntas_id);
 CREATE INDEX idx_unit_assignments_unit ON unit_assignments(organizational_unit_id);
+CREATE INDEX idx_item_check_sessions_tuntas_context ON item_check_sessions(tuntas_id, context_type);
+CREATE INDEX idx_item_check_sessions_event ON item_check_sessions(event_id);
+CREATE INDEX idx_item_checks_session ON item_checks(session_id);
+CREATE INDEX idx_item_checks_item ON item_checks(item_id);
+CREATE INDEX idx_item_checks_custody ON item_checks(custody_id);

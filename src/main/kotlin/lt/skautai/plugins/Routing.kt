@@ -14,6 +14,7 @@ import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.routes.requisitionRoutes
 import lt.skautai.services.AuthService
 import lt.skautai.services.InvitationService
+import lt.skautai.services.ItemCheckService
 import lt.skautai.services.ItemService
 import lt.skautai.services.InventoryTemplateService
 import lt.skautai.services.LocationService
@@ -33,6 +34,7 @@ fun Application.configureRouting() {
     val authService = AuthService(environment)
     val invitationService = InvitationService()
     val itemService = ItemService()
+    val itemCheckService = ItemCheckService()
     val locationService = LocationService()
     val organizationalUnitService = OrganizationalUnitService()
     val memberService = MemberService()
@@ -46,7 +48,7 @@ fun Application.configureRouting() {
         authRoutes(authService)
         invitationRoutes(invitationService)
         superAdminRoutes(memberService, organizationalUnitService)
-        itemRoutes(itemService)
+        itemRoutes(itemService, itemCheckService)
         locationRoutes(locationService)
         organizationalUnitRoutes(organizationalUnitService)
         memberRoutes(memberService)

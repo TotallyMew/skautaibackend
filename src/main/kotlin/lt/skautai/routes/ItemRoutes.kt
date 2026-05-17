@@ -7,10 +7,12 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import lt.skautai.models.requests.CreateItemRequest
+import lt.skautai.models.requests.CreateStorageAuditSessionRequest
 import lt.skautai.models.requests.ReturnItemToSharedRequest
 import lt.skautai.models.requests.RestockItemRequest
 import lt.skautai.models.requests.ReviewItemAdditionRequest
 import lt.skautai.models.requests.TransferItemToUnitRequest
+import lt.skautai.models.requests.UpsertStorageAuditChecksRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.responses.DuplicateItemConflictResponse
 import lt.skautai.models.responses.ErrorResponse
@@ -19,12 +21,13 @@ import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.DuplicateItemConflictException
+import lt.skautai.services.ItemCheckService
 import lt.skautai.services.ItemScopeHelper
 import lt.skautai.services.ItemService
 import lt.skautai.services.PermissionContextService
 import java.util.*
 
-fun Route.itemRoutes(itemService: ItemService) {
+fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckService) {
     authenticate("auth-jwt") {
         route("/api/items") {
 
@@ -199,6 +202,106 @@ fun Route.itemRoutes(itemService: ItemService) {
                 itemService.resolveItemIdByQrToken(token, tuntasUUID, userId)
                     .onSuccess { call.respond(HttpStatusCode.OK, ItemQrResolveResponse(itemId = it.toString())) }
                     .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Item not found")) }
+            }
+
+            route("audit-sessions") {
+                get {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasId = call.request.headers["X-Tuntas-Id"]
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                    val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                    }
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                        return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                    }
+                    val status = call.request.queryParameters["status"]
+                    itemCheckService.listStorageAuditSessions(tuntasUUID, status)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to list audit sessions")) }
+                }
+
+                post {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasId = call.request.headers["X-Tuntas-Id"]
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                    val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                    }
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                        return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                    }
+                    val request = call.receive<CreateStorageAuditSessionRequest>()
+                    itemCheckService.createStorageAuditSession(tuntasUUID, userId, request)
+                        .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                        .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create audit session")) }
+                }
+
+                get("{sessionId}") {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasId = call.request.headers["X-Tuntas-Id"]
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                    val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                    }
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                        return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                    }
+                    val sessionId = call.parameters["sessionId"]
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Session ID required"))
+                    val sessionUUID = try { UUID.fromString(sessionId) } catch (e: Exception) {
+                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid session ID"))
+                    }
+                    itemCheckService.getStorageAuditSession(sessionUUID, tuntasUUID)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Audit session not found")) }
+                }
+
+                post("{sessionId}/checks") {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasId = call.request.headers["X-Tuntas-Id"]
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                    val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                    }
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                        return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                    }
+                    val sessionId = call.parameters["sessionId"]
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Session ID required"))
+                    val sessionUUID = try { UUID.fromString(sessionId) } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid session ID"))
+                    }
+                    val request = call.receive<UpsertStorageAuditChecksRequest>()
+                    itemCheckService.upsertStorageAuditChecks(sessionUUID, tuntasUUID, userId, request)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to save audit checks")) }
+                }
+
+                post("{sessionId}/complete") {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasId = call.request.headers["X-Tuntas-Id"]
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                    val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                    }
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                        return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                    }
+                    val sessionId = call.parameters["sessionId"]
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Session ID required"))
+                    val sessionUUID = try { UUID.fromString(sessionId) } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid session ID"))
+                    }
+                    itemCheckService.completeStorageAuditSession(sessionUUID, tuntasUUID, userId)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to complete audit session")) }
+                }
             }
 
             post {

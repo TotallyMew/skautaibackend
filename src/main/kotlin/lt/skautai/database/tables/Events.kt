@@ -9,6 +9,7 @@ object Events : Table("events") {
     val tuntasId = uuid("tuntas_id").references(Tuntai.id)
     val name = varchar("name", 200)
     val type = varchar("type", 100)
+    val customTypeLabel = varchar("custom_type_label", 100).nullable()
     val startDate = date("start_date")
     val endDate = date("end_date")
     val locationId = uuid("location_id").references(Locations.id).nullable()

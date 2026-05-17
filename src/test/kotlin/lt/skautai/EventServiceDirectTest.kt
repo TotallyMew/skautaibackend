@@ -402,6 +402,7 @@ class EventServiceDirectTest {
         )
         assertTrue(result.isSuccess)
         val reconciliation = result.getOrThrow()
+        assertTrue(reconciliation.sessionId != null)
         assertEquals(0, reconciliation.openReturns.size)
         assertTrue(reconciliation.returnedToEventStorage.isNotEmpty())
     }

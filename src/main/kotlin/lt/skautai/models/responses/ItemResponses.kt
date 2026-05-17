@@ -152,3 +152,67 @@ data class DuplicateItemConflictResponse(
     val error: String,
     val duplicateItem: ItemResponse
 )
+
+@Serializable
+data class ItemCheckResponse(
+    val id: String,
+    val sessionId: String,
+    val itemId: String? = null,
+    val eventInventoryItemId: String? = null,
+    val custodyId: String? = null,
+    val itemName: String? = null,
+    val qrToken: String? = null,
+    val result: String,
+    val quantity: Int,
+    val actualLocationId: String? = null,
+    val actualLocationPath: String? = null,
+    val actualLocationNote: String? = null,
+    val conditionAtCheck: String? = null,
+    val checkedByUserId: String,
+    val checkedByUserName: String? = null,
+    val checkedAt: String,
+    val notes: String? = null
+)
+
+@Serializable
+data class ItemCheckSummaryResponse(
+    val total: Int,
+    val checked: Int,
+    val unchecked: Int,
+    val found: Int,
+    val missing: Int,
+    val misplaced: Int,
+    val damaged: Int,
+    val consumed: Int,
+    val returned: Int
+)
+
+@Serializable
+data class ItemCheckSessionResponse(
+    val id: String,
+    val tuntasId: String,
+    val contextType: String,
+    val status: String,
+    val eventId: String? = null,
+    val scopeCustodianId: String? = null,
+    val scopeCustodianName: String? = null,
+    val scopeType: String? = null,
+    val scopeCategory: String? = null,
+    val scopeSharedOnly: Boolean,
+    val scopePersonalOwnerUserId: String? = null,
+    val startedByUserId: String,
+    val startedByUserName: String? = null,
+    val completedByUserId: String? = null,
+    val completedByUserName: String? = null,
+    val notes: String? = null,
+    val createdAt: String,
+    val completedAt: String? = null,
+    val summary: ItemCheckSummaryResponse,
+    val checks: List<ItemCheckResponse>
+)
+
+@Serializable
+data class ItemCheckSessionListResponse(
+    val sessions: List<ItemCheckSessionResponse>,
+    val total: Int
+)

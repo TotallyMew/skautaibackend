@@ -39,9 +39,13 @@ class EventRoutesTest {
         tuntasId: String,
         name: String = "Vasaros stovykla",
         type: String = "STOVYKLA",
-        organizationalUnitId: String? = null
+        organizationalUnitId: String? = null,
+        customTypeLabel: String? = null
     ): String {
-        val orgUnitField = organizationalUnitId?.let { """, "organizationalUnitId": "$it"""" }.orEmpty()
+        val orgUnitField = organizationalUnitId?.let { """,
+                    "organizationalUnitId": "$it"""" }.orEmpty()
+        val customTypeField = customTypeLabel?.let { """,
+                    "customTypeLabel": "$it"""" }.orEmpty()
         val response = post("/api/events") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
@@ -49,13 +53,15 @@ class EventRoutesTest {
             setBody("""
                 {
                     "name": "$name",
-                    "type": "$type",
+                    "type": "$type"$customTypeField,
                     "startDate": "2026-07-01",
                     "endDate": "2026-07-07"$orgUnitField
                 }
             """.trimIndent())
         }
-        return Json.parseToJsonElement(response.bodyAsText())
+        val responseBody = response.bodyAsText()
+        assertEquals(HttpStatusCode.Created, response.status, responseBody)
+        return Json.parseToJsonElement(responseBody)
             .jsonObject["id"]!!.jsonPrimitive.content
     }
 
@@ -646,6 +652,34 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(1, body["total"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun `create event accepts custom type label while preserving base type`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val response = client.post("/api/events") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "name": "Ziemos zygis",
+                    "type": "RENGINYS",
+                    "customTypeLabel": "Ziemos zygis",
+                    "startDate": "2026-12-12",
+                    "endDate": "2026-12-13"
+                }
+                """.trimIndent()
+            )
+        }
+
+        assertEquals(HttpStatusCode.Created, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("RENGINYS", body["type"]?.jsonPrimitive?.content)
+        assertEquals("Ziemos zygis", body["customTypeLabel"]?.jsonPrimitive?.content)
     }
 
     @Test

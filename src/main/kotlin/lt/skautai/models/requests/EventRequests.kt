@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 data class CreateEventRequest(
     val name: String,
     val type: String,
+    val customTypeLabel: String? = null,
     val startDate: String,
     val endDate: String,
     val locationId: String? = null,
@@ -16,6 +17,8 @@ data class CreateEventRequest(
 @Serializable
 data class UpdateEventRequest(
     val name: String? = null,
+    val type: String? = null,
+    val customTypeLabel: String? = null,
     val startDate: String? = null,
     val endDate: String? = null,
     val locationId: String? = null,

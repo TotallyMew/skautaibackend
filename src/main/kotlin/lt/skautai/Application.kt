@@ -67,6 +67,7 @@ fun Application.configureDatabases() {
         exec("ALTER TABLE items DROP CONSTRAINT IF EXISTS items_condition_check")
         exec("ALTER TABLE events DROP CONSTRAINT IF EXISTS events_type_check")
         exec("ALTER TABLE events ALTER COLUMN type TYPE VARCHAR(100)")
+        exec("ALTER TABLE events ADD COLUMN IF NOT EXISTS custom_type_label VARCHAR(100)")
         exec("ALTER TABLE inventory_list_templates DROP CONSTRAINT IF EXISTS inventory_list_templates_event_type_check")
         exec("ALTER TABLE inventory_list_templates ALTER COLUMN event_type TYPE VARCHAR(100)")
         exec("ALTER TABLE inventory_list_template_items ADD COLUMN IF NOT EXISTS item_id UUID REFERENCES items(id)")
@@ -81,6 +82,51 @@ fun Application.configureDatabases() {
         exec("UPDATE items SET qr_token = uuid_generate_v4()::text WHERE qr_token IS NULL")
         exec("ALTER TABLE items ALTER COLUMN qr_token SET NOT NULL")
         exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_qr_token ON items(qr_token)")
+        exec(
+            """
+            CREATE TABLE IF NOT EXISTS item_check_sessions (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                context_type VARCHAR(30) NOT NULL CHECK (context_type IN ('EVENT_RETURN', 'STORAGE_AUDIT')),
+                event_id UUID REFERENCES events(id) ON DELETE CASCADE,
+                scope_custodian_id UUID REFERENCES organizational_units(id) ON DELETE SET NULL,
+                scope_type VARCHAR(100),
+                scope_category VARCHAR(100),
+                scope_shared_only BOOLEAN NOT NULL DEFAULT FALSE,
+                scope_personal_owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                started_by_user_id UUID NOT NULL REFERENCES users(id),
+                completed_by_user_id UUID REFERENCES users(id),
+                status VARCHAR(20) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'COMPLETED')),
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+            """.trimIndent()
+        )
+        exec(
+            """
+            CREATE TABLE IF NOT EXISTS item_checks (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                session_id UUID NOT NULL REFERENCES item_check_sessions(id) ON DELETE CASCADE,
+                item_id UUID REFERENCES items(id) ON DELETE SET NULL,
+                event_inventory_item_id UUID REFERENCES event_inventory_items(id) ON DELETE SET NULL,
+                custody_id UUID REFERENCES event_inventory_custody(id) ON DELETE SET NULL,
+                result VARCHAR(20) NOT NULL CHECK (result IN ('FOUND', 'MISSING', 'MISPLACED', 'DAMAGED', 'CONSUMED', 'RETURNED')),
+                quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+                actual_location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
+                actual_location_note VARCHAR(255),
+                condition_at_check VARCHAR(30),
+                checked_by_user_id UUID NOT NULL REFERENCES users(id),
+                notes TEXT,
+                checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """.trimIndent()
+        )
+        exec("CREATE INDEX IF NOT EXISTS idx_item_check_sessions_tuntas_context ON item_check_sessions(tuntas_id, context_type)")
+        exec("CREATE INDEX IF NOT EXISTS idx_item_check_sessions_event ON item_check_sessions(event_id)")
+        exec("CREATE INDEX IF NOT EXISTS idx_item_checks_session ON item_checks(session_id)")
+        exec("CREATE INDEX IF NOT EXISTS idx_item_checks_item ON item_checks(item_id)")
+        exec("CREATE INDEX IF NOT EXISTS idx_item_checks_custody ON item_checks(custody_id)")
         exec("ALTER TABLE IF EXISTS draugove_requisitions DROP CONSTRAINT IF EXISTS draugove_requisitions_status_check")
         exec("ALTER TABLE IF EXISTS draugove_requisitions DROP CONSTRAINT IF EXISTS draugove_requisitions_unit_review_status_check")
         exec("ALTER TABLE IF EXISTS draugove_requisitions DROP CONSTRAINT IF EXISTS draugove_requisitions_top_level_review_status_check")

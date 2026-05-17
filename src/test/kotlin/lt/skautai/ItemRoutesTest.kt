@@ -1143,4 +1143,136 @@ class ItemRoutesTest {
         val transfersBody = Json.parseToJsonElement(transfersResponse.bodyAsText()).jsonObject
         assertEquals(2, transfersBody["total"]!!.jsonPrimitive.content.toInt())
     }
+
+    @Test
+    fun `storage audit session can be created updated and completed`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val createItemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Kirvis", "type": "COLLECTIVE", "category": "TOOLS", "quantity": 1 }""")
+        }
+        val itemId = Json.parseToJsonElement(createItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val createSessionResponse = client.post("/api/items/audit-sessions") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "type": "COLLECTIVE", "category": "TOOLS", "sharedOnly": true }""")
+        }
+        assertEquals(HttpStatusCode.Created, createSessionResponse.status)
+        val sessionBody = Json.parseToJsonElement(createSessionResponse.bodyAsText()).jsonObject
+        val sessionId = sessionBody["id"]!!.jsonPrimitive.content
+        assertEquals("STORAGE_AUDIT", sessionBody["contextType"]!!.jsonPrimitive.content)
+
+        val saveChecksResponse = client.post("/api/items/audit-sessions/$sessionId/checks") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "checks": [
+                        { "itemId": "$itemId", "result": "FOUND" }
+                    ]
+                }
+                """.trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.OK, saveChecksResponse.status)
+        val savedBody = Json.parseToJsonElement(saveChecksResponse.bodyAsText()).jsonObject
+        assertEquals(1, savedBody["checks"]!!.jsonArray.size)
+        assertEquals(1, savedBody["summary"]!!.jsonObject["checked"]!!.jsonPrimitive.content.toInt())
+
+        val fetchSessionResponse = client.get("/api/items/audit-sessions/$sessionId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, fetchSessionResponse.status)
+        val fetchedBody = Json.parseToJsonElement(fetchSessionResponse.bodyAsText()).jsonObject
+        assertEquals(sessionId, fetchedBody["id"]!!.jsonPrimitive.content)
+        assertEquals(1, fetchedBody["checks"]!!.jsonArray.size)
+
+        val completeResponse = client.post("/api/items/audit-sessions/$sessionId/complete") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, completeResponse.status)
+        val completedBody = Json.parseToJsonElement(completeResponse.bodyAsText()).jsonObject
+        assertEquals("COMPLETED", completedBody["status"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `storage audit sessions can be resumed listed and locked after completion`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val createItemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Puodas", "type": "COLLECTIVE", "category": "COOKING", "quantity": 1 }""")
+        }
+        val itemId = Json.parseToJsonElement(createItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val firstSessionResponse = client.post("/api/items/audit-sessions") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "type": "COLLECTIVE", "category": "COOKING", "sharedOnly": true }""")
+        }
+        assertEquals(HttpStatusCode.Created, firstSessionResponse.status)
+        val firstSessionId = Json.parseToJsonElement(firstSessionResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val resumedSessionResponse = client.post("/api/items/audit-sessions") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "type": "COLLECTIVE", "category": "COOKING", "sharedOnly": true }""")
+        }
+        assertEquals(HttpStatusCode.Created, resumedSessionResponse.status)
+        val resumedSessionId = Json.parseToJsonElement(resumedSessionResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        assertEquals(firstSessionId, resumedSessionId)
+
+        val openSessionsResponse = client.get("/api/items/audit-sessions?status=OPEN") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, openSessionsResponse.status)
+        val openSessionsBody = Json.parseToJsonElement(openSessionsResponse.bodyAsText()).jsonObject
+        assertEquals(1, openSessionsBody["total"]!!.jsonPrimitive.content.toInt())
+
+        client.post("/api/items/audit-sessions/$firstSessionId/checks") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "checks": [{ "itemId": "$itemId", "result": "DAMAGED" }] }""")
+        }
+        val completeResponse = client.post("/api/items/audit-sessions/$firstSessionId/complete") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, completeResponse.status)
+
+        val completedSessionsResponse = client.get("/api/items/audit-sessions?status=COMPLETED") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, completedSessionsResponse.status)
+        val completedSessionsBody = Json.parseToJsonElement(completedSessionsResponse.bodyAsText()).jsonObject
+        assertEquals(1, completedSessionsBody["total"]!!.jsonPrimitive.content.toInt())
+        val completedSession = completedSessionsBody["sessions"]!!.jsonArray.first().jsonObject
+        assertEquals(1, completedSession["summary"]!!.jsonObject["damaged"]!!.jsonPrimitive.content.toInt())
+
+        val rejectedCheckResponse = client.post("/api/items/audit-sessions/$firstSessionId/checks") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "checks": [{ "itemId": "$itemId", "result": "FOUND" }] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, rejectedCheckResponse.status)
+    }
 }
