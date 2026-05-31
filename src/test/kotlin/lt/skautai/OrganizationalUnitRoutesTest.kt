@@ -218,7 +218,7 @@ class OrganizationalUnitRoutesTest {
     }
 
     @Test
-    fun `former unit leader with vadovas rank sees all units and members after step down`() = testApplication {
+    fun `former deputy with vadovas rank sees all units and members after step down`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val unitId = createUnit(token, tuntasId, "Skautai", "SKAUTU_DRAUGOVE")
@@ -226,7 +226,7 @@ class OrganizationalUnitRoutesTest {
         val (leaderToken, leaderUserId) = registerSecondUser(
             token = token,
             tuntasId = tuntasId,
-            roleName = "Draugininkas",
+            roleName = "Draugininko pavaduotojas",
             email = "former-leader@test.com",
             organizationalUnitId = unitId
         )

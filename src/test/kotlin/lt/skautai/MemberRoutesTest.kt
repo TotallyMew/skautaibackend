@@ -346,7 +346,7 @@ class MemberRoutesTest {
     }
 
     @Test
-    fun `principal unit leader is unique and step down frees slot`() = testApplication {
+    fun `principal unit leader is unique and change request transfers slot`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
 
@@ -400,15 +400,40 @@ class MemberRoutesTest {
             header("Authorization", "Bearer $firstToken")
             header("X-Tuntas-Id", tuntasId)
         }
-        assertEquals(HttpStatusCode.OK, stepDown.status)
+        assertEquals(HttpStatusCode.BadRequest, stepDown.status)
 
-        val secondAssign = client.post("/api/members/$secondUserId/leadership-roles") {
+        val addSuccessorToUnit = client.post("/api/organizational-units/$unitId/members") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "userId": "$secondUserId", "assignmentType": "MEMBER" }""")
+        }
+        assertEquals(HttpStatusCode.Created, addSuccessorToUnit.status)
+
+        val resignationRequest = client.post("/api/members/me/leadership-roles/$assignmentId/resignation-request") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $firstToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "reason": "Perduodu pareigas" }""")
+        }
+        assertEquals(HttpStatusCode.Created, resignationRequest.status)
+        val requestId = Json.parseToJsonElement(resignationRequest.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val review = client.post("/api/leadership-change-requests/$requestId/review") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "action": "APPROVE", "successorUserId": "$secondUserId" }""")
+        }
+        assertEquals(HttpStatusCode.OK, review.status)
+
+        val firstReassign = client.post("/api/members/$firstUserId/leadership-roles") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
             setBody("""{ "roleId": "$draugininkasRoleId", "organizationalUnitId": "$unitId" }""")
         }
-        assertEquals(HttpStatusCode.Created, secondAssign.status)
+        assertEquals(HttpStatusCode.BadRequest, firstReassign.status)
     }
 
     @Test
@@ -423,13 +448,13 @@ class MemberRoutesTest {
             setBody("""{ "name": "Skautai", "type": "SKAUTU_DRAUGOVE" }""")
         }
         val unitId = Json.parseToJsonElement(unitResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
-        val draugininkasRoleId = TestHelper.getRoleId(tuntasId, "Draugininkas")
+        val deputyRoleId = TestHelper.getRoleId(tuntasId, "Draugininko pavaduotojas")
 
         val inviteResponse = client.post("/api/invitations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "roleId": "$draugininkasRoleId", "organizationalUnitId": "$unitId" }""")
+            setBody("""{ "roleId": "$deputyRoleId", "organizationalUnitId": "$unitId" }""")
         }
         val inviteCode = Json.parseToJsonElement(inviteResponse.bodyAsText()).jsonObject["code"]!!.jsonPrimitive.content
         val registerResponse = client.post("/api/auth/register/invite") {
@@ -509,7 +534,7 @@ class MemberRoutesTest {
         val (leaderToken, leaderUserId) = registerUserWithRole(
             token,
             tuntasId,
-            "Draugininkas",
+            "Draugininko pavaduotojas",
             "leader-stepdown@test.com",
             unitId
         )
