@@ -42,6 +42,26 @@ data class AppliedTemplateReservedItemResponse(
 )
 
 @Serializable
+data class AppliedTemplateSourceResponse(
+    val templateItemName: String,
+    val eventInventoryItemId: String,
+    val sourceId: String,
+    val itemId: String? = null,
+    val itemName: String? = null,
+    val reservedQuantity: Int,
+    val plannedQuantity: Int,
+    val pickupSummary: String? = null,
+    val sourceStatus: String
+)
+
+@Serializable
+data class AppliedTemplateShortageResponse(
+    val templateItemName: String,
+    val eventInventoryItemId: String,
+    val shortageQuantity: Int
+)
+
+@Serializable
 data class AppliedTemplatePurchaseItemResponse(
     val templateItemName: String,
     val eventInventoryItemId: String,
@@ -54,6 +74,8 @@ data class AppliedTemplatePurchaseItemResponse(
 data class AppliedInventoryTemplateResponse(
     val reserved: List<AppliedTemplateReservedItemResponse>,
     val toPurchase: List<AppliedTemplatePurchaseItemResponse>,
+    val sources: List<AppliedTemplateSourceResponse> = emptyList(),
+    val shortages: List<AppliedTemplateShortageResponse> = emptyList(),
     val reservedTotal: Int,
     val toPurchaseTotal: Int
 )

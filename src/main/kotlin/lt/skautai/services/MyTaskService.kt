@@ -15,6 +15,7 @@ import lt.skautai.database.tables.EventRoles
 import lt.skautai.database.tables.Events
 import lt.skautai.database.tables.ItemCheckSessions
 import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.LeadershipChangeRequests
 import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.ReservationMovements
 import lt.skautai.database.tables.Reservations
@@ -35,6 +36,8 @@ import java.util.UUID
 
 class MyTaskService {
 
+    private val eventInventoryTaskRoles = setOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS")
+
     fun getMyTasks(tuntasId: UUID, userId: UUID): Result<MyTaskListResponse> = transaction {
         val permissionContext = PermissionContextService.resolve(userId, tuntasId)
         val today = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
@@ -46,8 +49,9 @@ class MyTaskService {
             addReservationMovementTask(this, tuntasId, permissionContext, today, now)
             addRequisitionReviewTask(this, tuntasId, userId, permissionContext, now)
             addSharedPickupReviewTask(this, tuntasId, userId, permissionContext, now)
-            addEventLogisticsTask(this, tuntasId, userId, permissionContext, now)
-            addEventReconciliationTask(this, tuntasId, userId, permissionContext, now)
+            addLeadershipChangeReviewTask(this, tuntasId, userId, now)
+            addEventLogisticsTask(this, tuntasId, userId, now)
+            addEventReconciliationTask(this, tuntasId, userId, now)
             addAuditSessionTask(this, tuntasId, userId, permissionContext, now)
         }
 
@@ -296,15 +300,40 @@ class MyTaskService {
         )
     }
 
+    private fun addLeadershipChangeReviewTask(
+        tasks: MutableList<MyTaskResponse>,
+        tuntasId: UUID,
+        userId: UUID,
+        now: Instant
+    ) {
+        if (!isTopLevelLeader(userId, tuntasId)) return
+        val count = LeadershipChangeRequests.selectAll()
+            .where {
+                (LeadershipChangeRequests.tuntasId eq tuntasId) and
+                    (LeadershipChangeRequests.status eq "PENDING")
+            }
+            .count { it[LeadershipChangeRequests.requesterUserId] != userId }
+        if (count == 0) return
+        tasks += task(
+            type = "LEADERSHIP_CHANGE_REVIEW_PENDING",
+            title = "Perziurek vadovu pasikeitimus",
+            subtitle = "Vienetu vadovu atsistatydinimo prasymai laukia sprendimo.",
+            count = count,
+            priority = 65,
+            urgency = "HIGH",
+            bucket = "NEXT",
+            routeTarget = "my_tasks",
+            createdAt = now
+        )
+    }
+
     private fun addEventLogisticsTask(
         tasks: MutableList<MyTaskResponse>,
         tuntasId: UUID,
         userId: UUID,
-        permissionContext: PermissionContext,
         now: Instant
     ) {
-        if (!permissionContext.has("events.view")) return
-        val eventRows = visibleEventRows(tuntasId, userId, permissionContext)
+        val eventRows = actionableEventRows(tuntasId, userId, eventInventoryTaskRoles)
         val relevant = eventRows.filter { event ->
             event[Events.status] in listOf("PLANNING", "ACTIVE", "WRAP_UP") &&
                 eventHasOpenLogistics(event[Events.id])
@@ -329,11 +358,9 @@ class MyTaskService {
         tasks: MutableList<MyTaskResponse>,
         tuntasId: UUID,
         userId: UUID,
-        permissionContext: PermissionContext,
         now: Instant
     ) {
-        if (!permissionContext.has("events.view")) return
-        val eventRows = visibleEventRows(tuntasId, userId, permissionContext)
+        val eventRows = actionableEventRows(tuntasId, userId, eventInventoryTaskRoles)
         val relevant = eventRows.filter { event ->
             event[Events.status] in listOf("WRAP_UP", "COMPLETED") &&
                 eventHasOpenReconciliation(event[Events.id])
@@ -527,27 +554,39 @@ class MyTaskService {
             .toSet()
     }
 
-    private fun visibleEventRows(
+    private fun isTopLevelLeader(userId: UUID, tuntasId: UUID): Boolean =
+        UserLeadershipRoles
+            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.leftAt.isNull()
+            }
+            .any { it[Roles.name] in setOf("Tuntininkas", "Tuntininko pavaduotojas") }
+
+    private fun actionableEventRows(
         tuntasId: UUID,
         userId: UUID,
-        permissionContext: PermissionContext
+        roles: Set<String>
     ): List<ResultRow> {
-        val allRows = Events.selectAll()
-            .where { Events.tuntasId eq tuntasId }
-            .toList()
-        if (permissionContext.hasAll("events.manage")) return allRows
-
-        val scopedUnitIds = permissionContext.scopedUnitIds("events.manage")
         val eventRoleEventIds = EventRoles
             .select(EventRoles.eventId)
-            .where { EventRoles.userId eq userId }
+            .where {
+                (EventRoles.userId eq userId) and
+                    (EventRoles.role inList roles)
+            }
             .map { it[EventRoles.eventId] }
             .toSet()
+        if (eventRoleEventIds.isEmpty()) return emptyList()
 
-        return allRows.filter { row ->
-            row[Events.id] in eventRoleEventIds ||
-                row[Events.organizationalUnitId] in scopedUnitIds
-        }
+        return Events.selectAll()
+            .where {
+                (Events.tuntasId eq tuntasId) and
+                    (Events.id inList eventRoleEventIds)
+            }
+            .toList()
     }
 
     private fun eventHasOpenLogistics(eventId: UUID): Boolean =

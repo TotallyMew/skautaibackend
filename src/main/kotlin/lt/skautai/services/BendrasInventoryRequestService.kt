@@ -458,6 +458,7 @@ class BendrasInventoryRequestService {
                         it[quantity] = remaining
                         it[status] = if (remaining == 0) "INACTIVE" else "ACTIVE"
                     }
+                    InventoryKitService.syncMembershipAfterItemQuantityChange(sharedItem[Items.id], remaining)
 
                     val existingUnitItem = Items.selectAll()
                         .where {

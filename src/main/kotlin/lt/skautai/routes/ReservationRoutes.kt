@@ -39,6 +39,7 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                     try { UUID.fromString(it) } catch (e: Exception) { null }
                 }
                 val status = call.request.queryParameters["status"]
+                val updatedAfter = call.request.queryParameters["updatedAfter"]?.let(::parseInstantOrNull)
 
                 val userPerms = resolveUserPermissions(userId, tuntasUUID)
                 val canViewAll = userPerms.any {
@@ -49,7 +50,7 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                     .flatMap { it.userOrgUnitIds }
                     .distinct()
 
-                reservationService.getReservations(tuntasUUID, userId, canViewAll, approvableUnitIds, itemId, status)
+                reservationService.getReservations(tuntasUUID, userId, canViewAll, approvableUnitIds, itemId, status, updatedAfter)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch reservations")) }
             }
@@ -441,4 +442,10 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
             }
         }
     }
+}
+
+private fun parseInstantOrNull(value: String): kotlinx.datetime.Instant? = try {
+    kotlinx.datetime.Instant.parse(value)
+} catch (_: Exception) {
+    null
 }

@@ -128,9 +128,28 @@ data class EventInventoryItemResponse(
     val sourceTemporaryStorageLabel: String? = null,
     val sourceResponsibleUserName: String? = null,
     val sourcePickupSummary: String? = null,
+    val sources: List<EventInventorySourceResponse> = emptyList(),
     val responsibleUserId: String? = null,
     val responsibleUserName: String? = null,
     val createdByUserId: String? = null,
+    val createdAt: String
+)
+
+@Serializable
+data class EventInventorySourceResponse(
+    val id: String,
+    val eventInventoryItemId: String,
+    val itemId: String? = null,
+    val reservationGroupId: String? = null,
+    val plannedQuantity: Int,
+    val reservedQuantity: Int,
+    val pickupCustodianName: String? = null,
+    val pickupLocationPath: String? = null,
+    val pickupTemporaryStorageLabel: String? = null,
+    val pickupResponsibleUserName: String? = null,
+    val pickupSummary: String? = null,
+    val sourceStatus: String,
+    val notes: String? = null,
     val createdAt: String
 )
 
@@ -300,6 +319,8 @@ data class EventReconciliationReturnLineResponse(
     val quantity: Int,
     val returnedQuantity: Int,
     val remainingQuantity: Int,
+    val reconciledQuantity: Int = returnedQuantity,
+    val pendingQuantity: Int = remainingQuantity,
     val status: String,
     val isReturned: Boolean,
     val currentHolderSummary: String? = null,
@@ -307,6 +328,22 @@ data class EventReconciliationReturnLineResponse(
     val returnDecision: String? = null,
     val returnedToSummary: String? = null,
     val returnCondition: String? = null,
+    val auditLog: List<EventReconciliationAuditResponse> = emptyList(),
+    val notes: String? = null
+)
+
+@Serializable
+data class EventReconciliationAuditResponse(
+    val id: String,
+    val quantity: Int,
+    val expectedQuantity: Int,
+    val actualQuantity: Int,
+    val result: String,
+    val actualLocationId: String? = null,
+    val actualLocationNote: String? = null,
+    val conditionAtCheck: String? = null,
+    val checkedByUserId: String,
+    val checkedAt: String,
     val notes: String? = null
 )
 

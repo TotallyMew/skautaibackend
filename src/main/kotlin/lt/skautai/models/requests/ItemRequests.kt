@@ -78,6 +78,11 @@ data class RestockItemRequest(
 )
 
 @Serializable
+data class WriteOffItemRequest(
+    val reason: String
+)
+
+@Serializable
 data class ReviewItemAdditionRequest(
     val decision: String,
     val rejectionReason: String? = null

@@ -2,6 +2,7 @@ package lt.skautai.services
 
 import lt.skautai.database.tables.EventInventoryBuckets
 import lt.skautai.database.tables.Events
+import lt.skautai.database.tables.InventoryKits
 import lt.skautai.database.tables.Items
 import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
@@ -250,6 +251,12 @@ class LocationService {
                 .count()
             if (activeItems > 0) {
                 return@transaction Result.failure(Exception("Cannot delete location that has active items assigned to it"))
+            }
+            val activeKits = InventoryKits.selectAll()
+                .where { (InventoryKits.locationId eq locationId) and (InventoryKits.status neq "INACTIVE") }
+                .count()
+            if (activeKits > 0) {
+                return@transaction Result.failure(Exception("Cannot delete location that has active inventory kits assigned to it"))
             }
             val reservationsUsingPickup = Reservations.selectAll()
                 .where { Reservations.pickupLocationId eq locationId }

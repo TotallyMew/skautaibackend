@@ -11,6 +11,7 @@ object OrganizationalUnits : Table("organizational_units") {
     val subtype = varchar("subtype", 20).nullable()
     val acceptedRankId = uuid("accepted_rank_id").references(Roles.id).nullable()
     val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
 
     override val primaryKey = PrimaryKey(id)
 }

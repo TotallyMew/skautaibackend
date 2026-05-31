@@ -24,6 +24,7 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import lt.skautai.plugins.configureSerialization
 import lt.skautai.routes.bendrasInventoryRequestRoutes
 import lt.skautai.routes.locationRoutes
+import lt.skautai.routes.leadershipChangeRequestRoutes
 import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.services.LocationService
 import lt.skautai.services.MemberService
@@ -73,11 +74,13 @@ object TestHelper {
             CREATE SCHEMA public;
         """.trimIndent())
 
-            val schema = File("src/main/resources/db/migration/V1__initial_schema.sql")
-                .takeIf { it.exists() }
-                ?.readText()
-                ?: error("src/main/resources/db/migration/V1__initial_schema.sql not found")
-            exec(schema)
+            val migrations = File("src/main/resources/db/migration")
+                .listFiles { file -> file.isFile && file.name.matches(Regex("""V\d+__.*\.sql""")) }
+                ?.sortedBy { file -> file.name.substringAfter('V').substringBefore("__").toInt() }
+                ?: error("src/main/resources/db/migration not found")
+            migrations.forEach { migration ->
+                exec(migration.readText())
+            }
         }
     }
 
@@ -95,6 +98,7 @@ object TestHelper {
             exec("""
                 TRUNCATE TABLE
                     users, tuntai, bendras_inventory_requests, super_admins,
+                    leadership_change_requests,
                     user_leadership_roles, user_ranks, role_permissions,
                     roles, permissions, locations, organizational_units,
                     user_tuntas_memberships, unit_assignments,
@@ -134,6 +138,7 @@ object TestHelper {
             val requisitionService = RequisitionService()
             val inventoryTemplateService = InventoryTemplateService()
             val myTaskService = MyTaskService()
+            val leadershipChangeRequestService = LeadershipChangeRequestService()
             PermissionSeeder.seedPermissions()
             routing {
                 authRoutes(authService)
@@ -143,6 +148,7 @@ object TestHelper {
                 locationRoutes(locationService)
                 organizationalUnitRoutes(organizationalUnitService)
                 memberRoutes(memberService)
+                leadershipChangeRequestRoutes(leadershipChangeRequestService)
                 reservationRoutes(reservationService)
                 eventRoutes(eventService, memberService)
                 bendrasInventoryRequestRoutes(bendrasInventoryRequestService)

@@ -16,6 +16,7 @@ object Locations : Table("locations") {
     val latitude = decimal("latitude", 9, 6).nullable()
     val longitude = decimal("longitude", 9, 6).nullable()
     val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
 
     override val primaryKey = PrimaryKey(id)
 }

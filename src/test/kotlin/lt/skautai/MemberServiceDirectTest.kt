@@ -8,11 +8,17 @@ import lt.skautai.TestHelper.randomEmail
 import lt.skautai.TestHelper.registerAndActivateTuntininkas
 import lt.skautai.TestHelper.registerInvitedUser
 import lt.skautai.models.requests.AssignLeadershipRoleRequest
+import lt.skautai.models.requests.CreateLeadershipChangeRequest
+import lt.skautai.models.requests.ReviewLeadershipChangeRequest
 import lt.skautai.models.requests.UpdateLeadershipRoleRequest
+import lt.skautai.services.LeadershipChangeRequestService
 import lt.skautai.services.MemberService
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import lt.skautai.database.tables.LeadershipChangeRequests
+import lt.skautai.database.tables.Users
 import lt.skautai.database.tables.UserLeadershipRoles
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -27,6 +33,7 @@ import kotlin.test.assertTrue
 class MemberServiceDirectTest {
 
     private val service = MemberService()
+    private val leadershipChangeRequestService = LeadershipChangeRequestService()
 
     @BeforeAll
     fun setup() {
@@ -228,5 +235,114 @@ class MemberServiceDirectTest {
                 .first()[UserLeadershipRoles.termStatus]
         }
         assertEquals("ACTIVE", activeRow)
+    }
+
+    @Test
+    fun `principal unit leader resignation requires request approval and successor`() = testApplication {
+        configureFullApp()
+        val tuntininkasEmail = randomEmail("change-reviewer")
+        val (token, tuntasIdText) = client.registerAndActivateTuntininkas(email = tuntininkasEmail)
+        val tuntasId = UUID.fromString(tuntasIdText)
+        val unitIdText = createUnit(token, tuntasIdText, "Leadership Change Unit")
+        val unitId = UUID.fromString(unitIdText)
+        val (_, leaderIdText) = client.registerInvitedUser(
+            token,
+            tuntasIdText,
+            "Draugininkas",
+            randomEmail("current-leader"),
+            unitIdText
+        )
+        val (_, successorIdText) = client.registerInvitedUser(
+            token,
+            tuntasIdText,
+            "Skautas",
+            randomEmail("successor"),
+            unitIdText
+        )
+        val (_, outsideMemberIdText) = client.registerInvitedUser(
+            token,
+            tuntasIdText,
+            "Skautas",
+            randomEmail("outside-successor")
+        )
+        val reviewerUserId = transaction {
+            Users.selectAll().where { Users.email eq tuntininkasEmail }.first()[Users.id]
+        }
+        val leaderId = UUID.fromString(leaderIdText)
+        val successorId = UUID.fromString(successorIdText)
+        val outsideMemberId = UUID.fromString(outsideMemberIdText)
+        val assignmentId = transaction {
+            UserLeadershipRoles.selectAll()
+                .where {
+                    (UserLeadershipRoles.userId eq leaderId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.organizationalUnitId eq unitId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE")
+                }
+                .first()[UserLeadershipRoles.id]
+        }
+
+        val directStepDown = service.stepDownLeadershipRole(leaderId, assignmentId, tuntasId)
+        assertEquals(
+            "Vieneto vadovas negali atsistatydinti ar buti nuimtas be pakeitejo. Sukurkite atsistatydinimo prasyma ir patvirtindami paskirkite nauja vadova.",
+            directStepDown.exceptionOrNull()?.message
+        )
+
+        val resignationRequest = leadershipChangeRequestService.createResignationRequest(
+            callerUserId = leaderId,
+            assignmentId = assignmentId,
+            tuntasId = tuntasId,
+            request = CreateLeadershipChangeRequest(reason = "Noriu perduoti pareigas")
+        ).getOrThrow()
+        assertEquals("PENDING", resignationRequest.status)
+
+        val missingSuccessor = leadershipChangeRequestService.reviewRequest(
+            requestId = UUID.fromString(resignationRequest.id),
+            tuntasId = tuntasId,
+            reviewerUserId = reviewerUserId,
+            request = ReviewLeadershipChangeRequest(action = "APPROVE")
+        )
+        assertEquals("Successor user ID required", missingSuccessor.exceptionOrNull()?.message)
+
+        val outsideSuccessor = leadershipChangeRequestService.reviewRequest(
+            requestId = UUID.fromString(resignationRequest.id),
+            tuntasId = tuntasId,
+            reviewerUserId = reviewerUserId,
+            request = ReviewLeadershipChangeRequest(action = "APPROVE", successorUserId = outsideMemberId.toString())
+        )
+        assertEquals(
+            "Successor must be an active member of this unit before taking over",
+            outsideSuccessor.exceptionOrNull()?.message
+        )
+
+        val approved = leadershipChangeRequestService.reviewRequest(
+            requestId = UUID.fromString(resignationRequest.id),
+            tuntasId = tuntasId,
+            reviewerUserId = reviewerUserId,
+            request = ReviewLeadershipChangeRequest(action = "APPROVE", successorUserId = successorId.toString())
+        ).getOrThrow()
+        assertEquals("APPROVED", approved.status)
+        assertEquals(successorIdText, approved.successorUserId)
+
+        val roleStates = transaction {
+            val oldStatus = UserLeadershipRoles.selectAll()
+                .where { UserLeadershipRoles.id eq assignmentId }
+                .first()[UserLeadershipRoles.termStatus]
+            val successorActive = UserLeadershipRoles.selectAll()
+                .where {
+                    (UserLeadershipRoles.userId eq successorId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.organizationalUnitId eq unitId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE")
+                }
+                .count()
+            val requestStatus = LeadershipChangeRequests.selectAll()
+                .where { LeadershipChangeRequests.id eq UUID.fromString(resignationRequest.id) }
+                .first()[LeadershipChangeRequests.status]
+            Triple(oldStatus, successorActive, requestStatus)
+        }
+        assertEquals("RESIGNED", roleStates.first)
+        assertEquals(1, roleStates.second)
+        assertEquals("APPROVED", roleStates.third)
     }
 }

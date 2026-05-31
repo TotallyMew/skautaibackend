@@ -121,6 +121,20 @@ data class UpdateEventInventoryItemRequest(
 )
 
 @Serializable
+data class CreateEventInventorySourceRequest(
+    val itemId: String? = null,
+    val plannedQuantity: Int,
+    val notes: String? = null
+)
+
+@Serializable
+data class UpdateEventInventorySourceRequest(
+    val plannedQuantity: Int? = null,
+    val notes: String? = null,
+    val sourceStatus: String? = null
+)
+
+@Serializable
 data class CreateEventInventoryAllocationRequest(
     val eventInventoryItemId: String,
     val bucketId: String,
@@ -212,6 +226,9 @@ data class ReconcileEventReturnLineRequest(
     val custodyId: String,
     val decision: String,
     val quantity: Int,
+    val returnToMode: String? = null,
+    val returnLocationId: String? = null,
+    val returnLocationNote: String? = null,
     val notes: String? = null
 )
 

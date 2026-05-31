@@ -55,3 +55,32 @@ data class MemberListResponse(
     val members: List<MemberResponse>,
     val total: Int
 )
+
+@Serializable
+data class LeadershipChangeRequestResponse(
+    val id: String,
+    val tuntasId: String,
+    val requesterUserId: String,
+    val requesterName: String,
+    val roleAssignmentId: String,
+    val roleId: String,
+    val roleName: String,
+    val organizationalUnitId: String,
+    val organizationalUnitName: String,
+    val status: String,
+    val reason: String? = null,
+    val reviewedByUserId: String? = null,
+    val successorUserId: String? = null,
+    val successorName: String? = null,
+    val reviewNote: String? = null,
+    val createdAt: String,
+    val updatedAt: String,
+    val reviewedAt: String? = null,
+    val resolvedAssignmentId: String? = null
+)
+
+@Serializable
+data class LeadershipChangeRequestListResponse(
+    val requests: List<LeadershipChangeRequestResponse>,
+    val total: Int
+)

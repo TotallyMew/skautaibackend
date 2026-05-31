@@ -39,7 +39,8 @@ class ReservationService {
         canViewAll: Boolean,
         approvableUnitIds: List<UUID>,
         itemId: UUID? = null,
-        status: String? = null
+        status: String? = null,
+        updatedAfter: Instant? = null
     ): Result<ReservationListResponse> {
         return transaction {
             var query = Reservations.selectAll()
@@ -54,8 +55,11 @@ class ReservationService {
                 else -> query = query.andWhere { Reservations.reservedByUserId eq userId }
             }
 
-            itemId?.let { query = query.andWhere { Reservations.itemId eq it } }
-            status?.let { query = query.andWhere { Reservations.status eq it } }
+            if (updatedAfter == null) {
+                itemId?.let { query = query.andWhere { Reservations.itemId eq it } }
+                status?.let { query = query.andWhere { Reservations.status eq it } }
+            }
+            updatedAfter?.let { since -> query = query.andWhere { Reservations.updatedAt greater since } }
 
             val reservationRows = query
                 .orderBy(Reservations.createdAt, SortOrder.DESC)

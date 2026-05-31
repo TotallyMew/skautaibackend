@@ -4,12 +4,17 @@ import kotlinx.datetime.Clock
 import lt.skautai.database.tables.EventPurchaseItems
 import lt.skautai.database.tables.EventPurchases
 import lt.skautai.database.tables.EventInventoryItems
+import lt.skautai.database.tables.EventInventorySources
 import lt.skautai.database.tables.Events
 import lt.skautai.database.tables.InventoryListTemplateItems
 import lt.skautai.database.tables.InventoryListTemplates
 import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.Locations
+import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.Reservations
 import lt.skautai.database.tables.Users
+import lt.skautai.models.responses.AppliedTemplateShortageResponse
+import lt.skautai.models.responses.AppliedTemplateSourceResponse
 import lt.skautai.models.requests.CreateInventoryTemplateRequest
 import lt.skautai.models.requests.InventoryTemplateItemRequest
 import lt.skautai.models.requests.UpdateInventoryTemplateRequest
@@ -160,6 +165,8 @@ class InventoryTemplateService {
         var hasPurchase = false
         val reserved = mutableListOf<AppliedTemplateReservedItemResponse>()
         val toPurchase = mutableListOf<AppliedTemplatePurchaseItemResponse>()
+        val createdSources = mutableListOf<AppliedTemplateSourceResponse>()
+        val shortages = mutableListOf<AppliedTemplateShortageResponse>()
 
         InventoryListTemplateItems.selectAll()
             .where { InventoryListTemplateItems.templateId eq templateId }
@@ -167,26 +174,36 @@ class InventoryTemplateService {
             .forEach { templateItem ->
                 val requestedQuantity = templateItem[InventoryListTemplateItems.quantity]
                 val templateItemName = templateItem[InventoryListTemplateItems.itemName]
-                val sourceItem = templateItem[InventoryListTemplateItems.itemId]
-                    ?.let { findTemplateSourceItemById(tuntasId, it) }
-                    ?: findTemplateSourceItem(tuntasId, templateItemName)
-                val reservableQuantity = sourceItem
-                    ?.let {
-                        availableQuantityForEventItem(
-                            it[Items.id],
-                            event[Events.startDate],
-                            event[Events.endDate]
-                        ).coerceAtMost(requestedQuantity)
+                val candidates = findTemplateSourceItems(
+                    tuntasId = tuntasId,
+                    itemId = templateItem[InventoryListTemplateItems.itemId],
+                    itemName = templateItemName
+                )
+                val sourceAllocations = mutableListOf<Pair<ResultRow, Int>>()
+                var remainingToReserve = requestedQuantity
+                candidates.forEach { candidate ->
+                    if (remainingToReserve <= 0) return@forEach
+                    val available = availableQuantityForEventItem(
+                        candidate[Items.id],
+                        event[Events.startDate],
+                        event[Events.endDate]
+                    )
+                    val quantity = available.coerceAtMost(remainingToReserve)
+                    if (quantity > 0) {
+                        sourceAllocations += candidate to quantity
+                        remainingToReserve -= quantity
                     }
-                    ?: 0
+                }
+                val reservableQuantity = sourceAllocations.sumOf { it.second }
                 val shortage = (requestedQuantity - reservableQuantity).coerceAtLeast(0)
+                val primarySource = sourceAllocations.firstOrNull()?.first
 
                 val eventInventoryItemId = EventInventoryItems.insert {
                     it[this.eventId] = eventId
-                    it[itemId] = sourceItem?.get(Items.id)
+                    it[itemId] = primarySource?.get(Items.id)
                     it[bucketId] = null
                     it[this.reservationGroupId] = if (reservableQuantity > 0) reservationGroupId else null
-                    it[name] = sourceItem?.get(Items.name) ?: templateItemName
+                    it[name] = primarySource?.get(Items.name) ?: templateItemName
                     it[plannedQuantity] = requestedQuantity
                     it[availableQuantity] = reservableQuantity
                     it[needsPurchase] = shortage > 0
@@ -196,7 +213,7 @@ class InventoryTemplateService {
                     it[createdAt] = now
                 } get EventInventoryItems.id
 
-                if (sourceItem != null && reservableQuantity > 0) {
+                sourceAllocations.forEach { (sourceItem, quantity) ->
                     Reservations.insert {
                         it[this.groupId] = reservationGroupId
                         it[title] = event[Events.name]
@@ -205,7 +222,7 @@ class InventoryTemplateService {
                         it[reservedByUserId] = createdByUserId
                         it[requestingUnitId] = null
                         it[this.eventId] = eventId
-                        it[quantity] = reservableQuantity
+                        it[Reservations.quantity] = quantity
                         it[startDate] = event[Events.startDate]
                         it[endDate] = event[Events.endDate]
                         it[unitReviewStatus] = "NOT_REQUIRED"
@@ -217,17 +234,55 @@ class InventoryTemplateService {
                         it[createdAt] = now
                         it[updatedAt] = now
                     }
+                    val snapshot = buildSourceSnapshot(sourceItem)
+                    val pickupSummary = buildSourcePickupSummary(
+                        snapshot.custodianName,
+                        snapshot.locationPath,
+                        snapshot.temporaryStorageLabel,
+                        snapshot.responsibleUserName
+                    )
+                    val sourceId = EventInventorySources.insert {
+                        it[this.eventInventoryItemId] = eventInventoryItemId
+                        it[itemId] = sourceItem[Items.id]
+                        it[this.reservationGroupId] = reservationGroupId
+                        it[plannedQuantity] = quantity
+                        it[reservedQuantity] = quantity
+                        it[pickupCustodianName] = snapshot.custodianName
+                        it[pickupLocationPath] = snapshot.locationPath
+                        it[pickupTemporaryStorageLabel] = snapshot.temporaryStorageLabel
+                        it[pickupResponsibleUserName] = snapshot.responsibleUserName
+                        it[this.pickupSummary] = pickupSummary
+                        it[sourceStatus] = "RESERVED"
+                        it[notes] = templateItem[InventoryListTemplateItems.notes]
+                        it[createdAt] = now
+                    } get EventInventorySources.id
                     reserved += AppliedTemplateReservedItemResponse(
                         templateItemName = templateItemName,
                         itemId = sourceItem[Items.id].toString(),
                         itemName = sourceItem[Items.name],
                         eventInventoryItemId = eventInventoryItemId.toString(),
                         reservationGroupId = reservationGroupId.toString(),
-                        quantity = reservableQuantity
+                        quantity = quantity
+                    )
+                    createdSources += AppliedTemplateSourceResponse(
+                        templateItemName = templateItemName,
+                        eventInventoryItemId = eventInventoryItemId.toString(),
+                        sourceId = sourceId.toString(),
+                        itemId = sourceItem[Items.id].toString(),
+                        itemName = sourceItem[Items.name],
+                        reservedQuantity = quantity,
+                        plannedQuantity = quantity,
+                        pickupSummary = pickupSummary,
+                        sourceStatus = "RESERVED"
                     )
                 }
 
                 if (shortage > 0) {
+                    shortages += AppliedTemplateShortageResponse(
+                        templateItemName = templateItemName,
+                        eventInventoryItemId = eventInventoryItemId.toString(),
+                        shortageQuantity = shortage
+                    )
                     if (!hasPurchase) {
                         EventPurchases.insert {
                             it[id] = purchaseId
@@ -248,7 +303,7 @@ class InventoryTemplateService {
                         it[this.eventInventoryItemId] = eventInventoryItemId
                         it[purchasedQuantity] = shortage
                         it[unitPrice] = null
-                        it[addedToInventoryItemId] = sourceItem?.get(Items.id)
+                        it[addedToInventoryItemId] = primarySource?.get(Items.id)
                         it[addedToInventory] = false
                         it[notes] = templateItem[InventoryListTemplateItems.notes]
                     } get EventPurchaseItems.id
@@ -266,6 +321,8 @@ class InventoryTemplateService {
             AppliedInventoryTemplateResponse(
                 reserved = reserved,
                 toPurchase = toPurchase,
+                sources = createdSources,
+                shortages = shortages,
                 reservedTotal = reserved.sumOf { it.quantity },
                 toPurchaseTotal = toPurchase.sumOf { it.quantity }
             )
@@ -386,6 +443,73 @@ class InventoryTemplateService {
                     .thenBy { it[Items.name] }
             )
             .firstOrNull()
+    }
+
+    private fun findTemplateSourceItems(tuntasId: UUID, itemId: UUID?, itemName: String): List<ResultRow> {
+        val needle = itemName.trim().lowercase()
+        val items = Items.selectAll()
+            .where {
+                (Items.tuntasId eq tuntasId) and
+                    (Items.status eq "ACTIVE")
+            }
+            .toList()
+            .filter { it[Items.quantity] > 0 }
+        return items
+            .filter {
+                itemId == null ||
+                    it[Items.id] == itemId ||
+                    it[Items.name].equals(itemName, ignoreCase = true) ||
+                    it[Items.name].lowercase().contains(needle) ||
+                    needle.contains(it[Items.name].lowercase())
+            }
+            .sortedWith(
+                compareByDescending<ResultRow> { itemId != null && it[Items.id] == itemId }
+                    .thenByDescending { it[Items.name].equals(itemName, ignoreCase = true) }
+                    .thenByDescending { it[Items.quantity] }
+                    .thenBy { it[Items.name] }
+            )
+    }
+
+    private data class SourceSnapshot(
+        val custodianName: String?,
+        val locationPath: String?,
+        val temporaryStorageLabel: String?,
+        val responsibleUserName: String?
+    )
+
+    private fun buildSourceSnapshot(sourceItem: ResultRow): SourceSnapshot {
+        val custodianName = sourceItem[Items.custodianId]?.let { custodianId ->
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id eq custodianId }
+                .firstOrNull()
+                ?.get(OrganizationalUnits.name)
+        }
+        val locationPath = sourceItem[Items.locationId]?.let { locationId ->
+            Locations.selectAll()
+                .where { Locations.tuntasId eq sourceItem[Items.tuntasId] }
+                .associate { it[Locations.id] to it[Locations.name] }[locationId]
+        }
+        val responsibleUserName = sourceItem[Items.responsibleUserId]?.let(::userDisplayName)
+        return SourceSnapshot(
+            custodianName = custodianName,
+            locationPath = locationPath,
+            temporaryStorageLabel = sourceItem[Items.temporaryStorageLabel],
+            responsibleUserName = responsibleUserName
+        )
+    }
+
+    private fun buildSourcePickupSummary(
+        custodianName: String?,
+        locationPath: String?,
+        temporaryStorageLabel: String?,
+        responsibleUserName: String?
+    ): String? {
+        return listOfNotNull(
+            custodianName?.takeIf { it.isNotBlank() },
+            locationPath?.takeIf { it.isNotBlank() },
+            temporaryStorageLabel?.takeIf { it.isNotBlank() },
+            responsibleUserName?.takeIf { it.isNotBlank() }?.let { "Pas $it" }
+        ).joinToString(" / ").takeIf { it.isNotBlank() }
     }
 
     private fun findTemplateSourceItemById(tuntasId: UUID, itemId: UUID): ResultRow? =

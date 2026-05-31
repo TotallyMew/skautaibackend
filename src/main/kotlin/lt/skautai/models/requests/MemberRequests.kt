@@ -25,6 +25,18 @@ data class TransferTuntininkasRequest(
 )
 
 @Serializable
+data class CreateLeadershipChangeRequest(
+    val reason: String? = null
+)
+
+@Serializable
+data class ReviewLeadershipChangeRequest(
+    val action: String,
+    val successorUserId: String? = null,
+    val reviewNote: String? = null
+)
+
+@Serializable
 data class AssignRankRequest(
     val roleId: String
 )

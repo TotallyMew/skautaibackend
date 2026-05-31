@@ -6,10 +6,13 @@ import lt.skautai.routes.authRoutes
 import lt.skautai.routes.bendrasInventoryRequestRoutes
 import lt.skautai.routes.invitationRoutes
 import lt.skautai.routes.inventoryTemplateRoutes
+import lt.skautai.routes.inventoryKitRoutes
 import lt.skautai.routes.itemRoutes
 import lt.skautai.routes.superAdminRoutes
 import lt.skautai.routes.locationRoutes
+import lt.skautai.routes.leadershipChangeRequestRoutes
 import lt.skautai.routes.memberRoutes
+import lt.skautai.routes.mobileRoutes
 import lt.skautai.routes.myTaskRoutes
 import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.routes.requisitionRoutes
@@ -18,7 +21,9 @@ import lt.skautai.services.InvitationService
 import lt.skautai.services.ItemCheckService
 import lt.skautai.services.ItemService
 import lt.skautai.services.InventoryTemplateService
+import lt.skautai.services.InventoryKitService
 import lt.skautai.services.LocationService
+import lt.skautai.services.LeadershipChangeRequestService
 import lt.skautai.services.OrganizationalUnitService
 import lt.skautai.services.MemberService
 import lt.skautai.services.MyTaskService
@@ -45,7 +50,9 @@ fun Application.configureRouting() {
     val bendrasInventoryRequestService = BendrasInventoryRequestService()
     val requisitionService = RequisitionService()
     val inventoryTemplateService = InventoryTemplateService()
+    val inventoryKitService = InventoryKitService()
     val myTaskService = MyTaskService()
+    val leadershipChangeRequestService = LeadershipChangeRequestService()
 
     routing {
         authRoutes(authService)
@@ -55,12 +62,23 @@ fun Application.configureRouting() {
         locationRoutes(locationService)
         organizationalUnitRoutes(organizationalUnitService)
         memberRoutes(memberService)
+        leadershipChangeRequestRoutes(leadershipChangeRequestService)
         reservationRoutes(reservationService)
         eventRoutes(eventService, memberService)
         bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
         requisitionRoutes(requisitionService)
         inventoryTemplateRoutes(inventoryTemplateService)
+        inventoryKitRoutes(inventoryKitService)
         myTaskRoutes(myTaskService)
+        mobileRoutes(
+            itemService,
+            reservationService,
+            bendrasInventoryRequestService,
+            requisitionService,
+            eventService,
+            organizationalUnitService,
+            myTaskService
+        )
         userRoutes()
         rolesRoutes()
         uploadRoutes()

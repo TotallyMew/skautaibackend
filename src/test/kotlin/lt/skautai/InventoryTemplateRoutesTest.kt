@@ -358,4 +358,46 @@ class InventoryTemplateRoutesTest {
         assertTrue(body["reserved"]!!.jsonArray.isNotEmpty())
         assertTrue(body["toPurchase"]!!.jsonArray.isNotEmpty())
     }
+
+    @Test
+    fun `apply template with reservation splits one need across multiple source items`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val eventId = createEvent(token, tuntasId, "Split Source Event")
+        createSharedItem(token, tuntasId, "Palapine A", 6)
+        createSharedItem(token, tuntasId, "Palapine B", 4)
+
+        val templateResponse = client.post("/api/inventory-templates") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "name": "Palapiniu rinkinys",
+                    "items": [
+                        { "itemName": "Palapine", "quantity": 10, "category": "CAMPING" }
+                    ]
+                }
+                """.trimIndent()
+            )
+        }
+        val templateId = Json.parseToJsonElement(templateResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
+        val applyResponse = client.post("/api/events/$eventId/apply-template-with-reservation") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "templateId": "$templateId" }""")
+        }
+
+        assertEquals(HttpStatusCode.Created, applyResponse.status)
+        val body = Json.parseToJsonElement(applyResponse.bodyAsText()).jsonObject
+        val sourceQuantities = body["sources"]!!.jsonArray
+            .map { it.jsonObject["reservedQuantity"]!!.jsonPrimitive.content.toInt() }
+            .sortedDescending()
+        assertEquals(10, body["reservedTotal"]!!.jsonPrimitive.content.toInt())
+        assertEquals(0, body["toPurchaseTotal"]!!.jsonPrimitive.content.toInt())
+        assertEquals(listOf(6, 4), sourceQuantities)
+    }
 }

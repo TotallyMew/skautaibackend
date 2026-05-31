@@ -14,6 +14,7 @@ import lt.skautai.models.requests.ReviewItemAdditionRequest
 import lt.skautai.models.requests.TransferItemToUnitRequest
 import lt.skautai.models.requests.UpsertStorageAuditChecksRequest
 import lt.skautai.models.requests.UpdateItemRequest
+import lt.skautai.models.requests.WriteOffItemRequest
 import lt.skautai.models.responses.DuplicateItemConflictResponse
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.ItemQrResolveResponse
@@ -50,8 +51,10 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 val category = call.request.queryParameters["category"]
                 val status = call.request.queryParameters["status"]
                 val sharedOnly = call.request.queryParameters["sharedOnly"]?.toBooleanStrictOrNull() ?: false
+                val createdByUserId = call.request.queryParameters["createdByUserId"]
+                val updatedAfter = call.request.queryParameters["updatedAfter"]?.let(::parseInstantOrNull)
 
-                itemService.getItems(tuntasUUID, userId, custodianId, type, category, status, sharedOnly)
+                itemService.getItems(tuntasUUID, userId, custodianId, type, category, status, sharedOnly, createdByUserId, updatedAfter)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch items")) }
             }
@@ -384,9 +387,8 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     }
                 }
 
-                // TRANSFERRED_FROM_TUNTAS items require ALL scope; pass null to block OWN_UNIT users
                 val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
-                val targetOrgUnitId = if (scopeInfo?.origin == "TRANSFERRED_FROM_TUNTAS") null else scopeInfo?.custodianId
+                val targetOrgUnitId = scopeInfo?.custodianId
 
                 if (!checkPermission("items.update", tuntasUUID, targetOrgUnitId)) return@put
                 if (newCustodianId != null && newCustodianId != targetOrgUnitId) {
@@ -416,8 +418,14 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
 
                 val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
                     ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
-                val targetOrgUnitId = if (scopeInfo.origin == "TRANSFERRED_FROM_TUNTAS") null else scopeInfo.custodianId
+                val targetOrgUnitId = scopeInfo.custodianId
                 if (!checkPermission("items.update", tuntasUUID, targetOrgUnitId)) return@post
+                if (
+                    scopeInfo.origin in listOf("TRANSFERRED_FROM_TUNTAS", "from_shared") &&
+                    !PermissionContextService.resolve(userId, tuntasUUID).hasAll("items.update")
+                ) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 val request = call.receive<RestockItemRequest>()
                 itemService.restockItem(itemUUID, tuntasUUID, userId, request)
@@ -511,6 +519,33 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to return item")) }
             }
 
+            post("{id}/write-off") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
+                    ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                val targetOrgUnitId = if (scopeInfo.origin == "TRANSFERRED_FROM_TUNTAS") null else scopeInfo.custodianId
+                if (!checkPermission("items.delete", tuntasUUID, targetOrgUnitId)) return@post
+
+                val request = call.receive<WriteOffItemRequest>()
+                itemService.writeOffItem(itemUUID, tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to write off item")) }
+            }
+
             delete("{id}") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
@@ -537,5 +572,11 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
             }
         }
     }
+}
+
+private fun parseInstantOrNull(value: String): kotlinx.datetime.Instant? = try {
+    kotlinx.datetime.Instant.parse(value)
+} catch (_: Exception) {
+    null
 }
 

@@ -30,10 +30,11 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
 
                 val type = call.request.queryParameters["type"]
                 val status = call.request.queryParameters["status"]
+                val updatedAfter = call.request.queryParameters["updatedAfter"]?.let(::parseInstantOrNull)
 
                 val result = when {
-                    eventService.canViewEvents(userId, tuntasUUID) -> eventService.getVisibleEvents(tuntasUUID, userId, type, status)
-                    eventService.hasResponsiblePastovykle(userId, tuntasUUID) -> eventService.getResponsibleEvents(tuntasUUID, userId, type, status)
+                    eventService.canViewEvents(userId, tuntasUUID) -> eventService.getVisibleEvents(tuntasUUID, userId, type, status, updatedAfter)
+                    eventService.hasResponsiblePastovykle(userId, tuntasUUID) -> eventService.getResponsibleEvents(tuntasUUID, userId, type, status, updatedAfter)
                     else -> {
                         call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                         return@get
@@ -327,6 +328,40 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                     eventService.deleteInventoryItem(eventUUID, inventoryItemUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Inventory item deleted")) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to delete inventory item")) }
+                }
+
+                post("{inventoryItemId}/sources") {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+                    val inventoryItemUUID = parseUuidParameter("inventoryItemId", "Invalid inventory item ID") ?: return@post
+                    val request = call.receive<CreateEventInventorySourceRequest>()
+                    eventService.createInventorySource(eventUUID, inventoryItemUUID, tuntasUUID, userId, request)
+                        .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create inventory source")) }
+                }
+
+                put("sources/{sourceId}") {
+                    val tuntasUUID = parseTuntasId() ?: return@put
+                    val eventUUID = parseEventId() ?: return@put
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
+                    val sourceUUID = parseUuidParameter("sourceId", "Invalid inventory source ID") ?: return@put
+                    val request = call.receive<UpdateEventInventorySourceRequest>()
+                    eventService.updateInventorySource(eventUUID, sourceUUID, tuntasUUID, request)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update inventory source")) }
+                }
+
+                delete("sources/{sourceId}") {
+                    val tuntasUUID = parseTuntasId() ?: return@delete
+                    val eventUUID = parseEventId() ?: return@delete
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@delete
+                    val sourceUUID = parseUuidParameter("sourceId", "Invalid inventory source ID") ?: return@delete
+                    eventService.deleteInventorySource(eventUUID, sourceUUID, tuntasUUID)
+                        .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Inventory source deleted")) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to delete inventory source")) }
                 }
             }
 
@@ -1215,4 +1250,10 @@ private suspend fun RoutingContext.parseUuidParameter(name: String, invalidMessa
         call.respond(HttpStatusCode.BadRequest, ErrorResponse(invalidMessage))
         null
     }
+}
+
+private fun parseInstantOrNull(value: String): kotlinx.datetime.Instant? = try {
+    kotlinx.datetime.Instant.parse(value)
+} catch (_: Exception) {
+    null
 }

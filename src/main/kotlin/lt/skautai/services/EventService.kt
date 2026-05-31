@@ -190,14 +190,18 @@ class EventService {
     fun getEvents(
         tuntasId: UUID,
         type: String? = null,
-        status: String? = null
+        status: String? = null,
+        updatedAfter: kotlinx.datetime.Instant? = null
     ): Result<EventListResponse> {
         return transaction {
             var query = Events.selectAll()
                 .where { Events.tuntasId eq tuntasId }
 
-            type?.let { query = query.andWhere { Events.type eq it } }
-            status?.let { query = query.andWhere { Events.status eq it } }
+            if (updatedAfter == null) {
+                type?.let { query = query.andWhere { Events.type eq it } }
+                status?.let { query = query.andWhere { Events.status eq it } }
+            }
+            updatedAfter?.let { since -> query = query.andWhere { Events.updatedAt greater since } }
 
             val events = query.map { toEventResponse(it) }
             Result.success(EventListResponse(events = events, total = events.size))
@@ -208,14 +212,18 @@ class EventService {
         tuntasId: UUID,
         userId: UUID,
         type: String? = null,
-        status: String? = null
+        status: String? = null,
+        updatedAfter: kotlinx.datetime.Instant? = null
     ): Result<EventListResponse> {
         return transaction {
             var query = Events.selectAll()
                 .where { Events.tuntasId eq tuntasId }
 
-            type?.let { query = query.andWhere { Events.type eq it } }
-            status?.let { query = query.andWhere { Events.status eq it } }
+            if (updatedAfter == null) {
+                type?.let { query = query.andWhere { Events.type eq it } }
+                status?.let { query = query.andWhere { Events.status eq it } }
+            }
+            updatedAfter?.let { since -> query = query.andWhere { Events.updatedAt greater since } }
 
             val access = resolveEventAccess(userId, tuntasId)
             val events = query
@@ -229,7 +237,8 @@ class EventService {
         tuntasId: UUID,
         userId: UUID,
         type: String? = null,
-        status: String? = null
+        status: String? = null,
+        updatedAfter: kotlinx.datetime.Instant? = null
     ): Result<EventListResponse> {
         return transaction {
             var query = Events
@@ -240,8 +249,11 @@ class EventService {
                         (Pastovykles.responsibleUserId eq userId)
                 }
 
-            type?.let { query = query.andWhere { Events.type eq it } }
-            status?.let { query = query.andWhere { Events.status eq it } }
+            if (updatedAfter == null) {
+                type?.let { query = query.andWhere { Events.type eq it } }
+                status?.let { query = query.andWhere { Events.status eq it } }
+            }
+            updatedAfter?.let { since -> query = query.andWhere { Events.updatedAt greater since } }
 
             val events = query.map { toEventResponse(it) }.distinctBy { it.id }
             Result.success(EventListResponse(events = events, total = events.size))
@@ -2178,6 +2190,18 @@ class EventService {
                 it[createdAt] = kotlinx.datetime.Clock.System.now()
             } get EventInventoryItems.id
 
+            if (itemUUID != null) {
+                insertInventorySource(
+                    eventInventoryItemId = id,
+                    itemId = itemUUID,
+                    reservationGroupId = reservationGroupId,
+                    plannedQuantity = request.plannedQuantity,
+                    reservedQuantity = reservableQuantity,
+                    snapshot = sourceSnapshot,
+                    notes = request.notes
+                )
+            }
+
             Result.success(toInventoryItemResponse(EventInventoryItems.selectAll().where { EventInventoryItems.id eq id }.first()))
         }
     }
@@ -2280,6 +2304,17 @@ class EventService {
                 }
                 it[needsPurchase] = nextPlanned > nextAvailable
             }
+            EventInventorySources.selectAll()
+                .where { EventInventorySources.eventInventoryItemId eq inventoryItemId }
+                .singleOrNull()
+                ?.let { source ->
+                    EventInventorySources.update({ EventInventorySources.id eq source[EventInventorySources.id] }) {
+                        it[plannedQuantity] = nextPlanned
+                        it[reservedQuantity] = nextAvailable
+                        it[sourceStatus] = if (nextAvailable > 0) "RESERVED" else "SHORTAGE"
+                        request.notes?.let { note -> it[notes] = note }
+                    }
+                }
 
             Result.success(toInventoryItemResponse(EventInventoryItems.selectAll().where { EventInventoryItems.id eq inventoryItemId }.first()))
         }
@@ -2297,7 +2332,106 @@ class EventService {
                     ?: cancelReservationGroup(groupId)
             }
             EventInventoryAllocations.deleteWhere { EventInventoryAllocations.eventInventoryItemId eq inventoryItemId }
+            EventInventorySources.deleteWhere { EventInventorySources.eventInventoryItemId eq inventoryItemId }
             EventInventoryItems.deleteWhere { (EventInventoryItems.id eq inventoryItemId) and (EventInventoryItems.eventId eq eventId) }
+            Result.success(Unit)
+        }
+    }
+
+    fun createInventorySource(
+        eventId: UUID,
+        inventoryItemId: UUID,
+        tuntasId: UUID,
+        createdByUserId: UUID,
+        request: CreateEventInventorySourceRequest
+    ): Result<EventInventorySourceResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            val need = EventInventoryItems.selectAll()
+                .where { (EventInventoryItems.id eq inventoryItemId) and (EventInventoryItems.eventId eq eventId) }
+                .firstOrNull() ?: return@transaction Result.failure(Exception("Inventory item not found"))
+            if (request.plannedQuantity < 1) return@transaction Result.failure(Exception("Planned quantity must be at least 1"))
+            val sourceItemId = request.itemId?.let {
+                try { UUID.fromString(it) } catch (e: Exception) {
+                    return@transaction Result.failure(Exception("Invalid item ID"))
+                }
+            }
+            val sourceItem = sourceItemId?.let {
+                Items.selectAll()
+                    .where { (Items.id eq it) and (Items.tuntasId eq tuntasId) and (Items.status eq "ACTIVE") }
+                    .firstOrNull() ?: return@transaction Result.failure(Exception("Item not found or not active"))
+            }
+            val reserved = sourceItem?.let {
+                availableQuantityForEventItem(it[Items.id], event[Events.startDate], event[Events.endDate])
+                    .coerceAtMost(request.plannedQuantity)
+            } ?: 0
+            val reservationGroupId = sourceItem?.takeIf { reserved > 0 }?.let {
+                val groupId = getOrCreateEventReservationGroup(event, createdByUserId)
+                syncEventReservationItem(groupId, event, it[Items.id], createdByUserId, reserved, request.notes)
+                    ?.let { error -> return@transaction Result.failure(error) }
+                groupId
+            }
+            val id = insertInventorySource(
+                eventInventoryItemId = inventoryItemId,
+                itemId = sourceItemId,
+                reservationGroupId = reservationGroupId,
+                plannedQuantity = request.plannedQuantity,
+                reservedQuantity = reserved,
+                snapshot = sourceItem?.let { buildEventItemSourceSnapshot(it) },
+                notes = request.notes
+            )
+            refreshInventoryItemCoverage(need)
+            Result.success(toInventorySourceResponse(EventInventorySources.selectAll().where { EventInventorySources.id eq id }.first()))
+        }
+    }
+
+    fun updateInventorySource(
+        eventId: UUID,
+        sourceId: UUID,
+        tuntasId: UUID,
+        request: UpdateEventInventorySourceRequest
+    ): Result<EventInventorySourceResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            val source = EventInventorySources
+                .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
+                .selectAll()
+                .where { (EventInventorySources.id eq sourceId) and (EventInventoryItems.eventId eq eventId) }
+                .firstOrNull() ?: return@transaction Result.failure(Exception("Inventory source not found"))
+            request.plannedQuantity?.let {
+                if (it < 1) return@transaction Result.failure(Exception("Planned quantity must be at least 1"))
+            }
+            request.sourceStatus?.let {
+                if (it !in listOf("PLANNED", "RESERVED", "PARTIAL", "SHORTAGE", "CANCELLED")) {
+                    return@transaction Result.failure(Exception("Invalid source status"))
+                }
+            }
+            EventInventorySources.update({ EventInventorySources.id eq sourceId }) {
+                request.plannedQuantity?.let { v -> it[plannedQuantity] = v }
+                request.notes?.let { v -> it[notes] = v }
+                request.sourceStatus?.let { v -> it[sourceStatus] = v }
+            }
+            refreshInventoryItemCoverage(source)
+            Result.success(toInventorySourceResponse(EventInventorySources.selectAll().where { EventInventorySources.id eq sourceId }.first()))
+        }
+    }
+
+    fun deleteInventorySource(eventId: UUID, sourceId: UUID, tuntasId: UUID): Result<Unit> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            val source = EventInventorySources
+                .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
+                .selectAll()
+                .where { (EventInventorySources.id eq sourceId) and (EventInventoryItems.eventId eq eventId) }
+                .firstOrNull() ?: return@transaction Result.failure(Exception("Inventory source not found"))
+            source[EventInventorySources.reservationGroupId]?.let { groupId ->
+                source[EventInventorySources.itemId]?.let { itemId -> cancelEventReservationItem(groupId, itemId) }
+            }
+            EventInventorySources.deleteWhere { EventInventorySources.id eq sourceId }
+            refreshInventoryItemCoverage(source)
             Result.success(Unit)
         }
     }
@@ -2446,6 +2580,23 @@ class EventService {
                 if (line.quantity > remaining) {
                     return@transaction Result.failure(Exception("Return decision quantity exceeds remaining quantity"))
                 }
+                val returnToMode = line.returnToMode?.uppercase()
+                if (returnToMode != null && returnToMode !in listOf("ORIGINAL_SOURCE", "EVENT_STORAGE", "OTHER_LOCATION")) {
+                    return@transaction Result.failure(Exception("Invalid return destination"))
+                }
+                if (decision in listOf("MISSING", "CONSUMED") && (line.returnLocationId != null || line.returnLocationNote != null || returnToMode != null)) {
+                    return@transaction Result.failure(Exception("Missing or consumed items cannot have a return destination"))
+                }
+                val returnLocationId = line.returnLocationId?.let {
+                    try { UUID.fromString(it) } catch (e: Exception) {
+                        return@transaction Result.failure(Exception("Invalid return location ID"))
+                    }
+                }
+                returnLocationId?.let {
+                    Locations.selectAll()
+                        .where { (Locations.id eq it) and (Locations.tuntasId eq tuntasId) }
+                        .firstOrNull() ?: return@transaction Result.failure(Exception("Return location not found"))
+                }
 
                 val now = kotlinx.datetime.Clock.System.now()
                 val nextReturned = custody[EventInventoryCustody.returnedQuantity] + line.quantity
@@ -2509,8 +2660,12 @@ class EventService {
                         else -> "CONSUMED"
                     }
                     it[quantity] = line.quantity
-                    it[actualLocationId] = null
-                    it[actualLocationNote] = null
+                    it[expectedQuantity] = custody[EventInventoryCustody.quantity]
+                    it[actualQuantity] = line.quantity
+                    it[actualLocationId] = if (decision in listOf("RETURNED", "DAMAGED")) returnLocationId else null
+                    it[actualLocationNote] = if (decision in listOf("RETURNED", "DAMAGED")) {
+                        buildReturnLocationNote(returnToMode, line.returnLocationNote)
+                    } else null
                     it[conditionAtCheck] = when (decision) {
                         "RETURNED" -> itemConditionLabel(sourceItemId)
                         "DAMAGED" -> "DAMAGED"
@@ -2535,7 +2690,7 @@ class EventService {
                     toUserId = null,
                     performedByUserId = userId,
                     clientRequestId = null,
-                    notes = line.notes,
+                    notes = buildMovementNote(line.notes, returnToMode, line.returnLocationNote),
                     createdAt = now
                 )
                 sourceItemId?.let { itemId ->
@@ -3685,7 +3840,10 @@ class EventService {
             .where { EventInventoryAllocations.eventInventoryItemId eq row[EventInventoryItems.id] }
             .sumOf { it[EventInventoryAllocations.quantity] }
         val planned = row[EventInventoryItems.plannedQuantity]
-        val available = row[EventInventoryItems.availableQuantity]
+        val sources = inventorySourcesForItem(row)
+        val available = sources.takeIf { it.isNotEmpty() }
+            ?.sumOf { it.reservedQuantity }
+            ?: row[EventInventoryItems.availableQuantity]
         val bucket = row[EventInventoryItems.bucketId]?.let { bucketId ->
             EventInventoryBuckets.selectAll()
                 .where { EventInventoryBuckets.id eq bucketId }
@@ -3721,11 +3879,118 @@ class EventService {
                 row[EventInventoryItems.sourceTemporaryStorageLabel],
                 row[EventInventoryItems.sourceResponsibleUserName]
             ),
+            sources = sources,
             responsibleUserId = row[EventInventoryItems.responsibleUserId]?.toString(),
             responsibleUserName = responsible?.let { "${it[Users.name]} ${it[Users.surname]}".trim() },
             createdByUserId = row[EventInventoryItems.createdByUserId]?.toString(),
             createdAt = row[EventInventoryItems.createdAt].toString()
         )
+    }
+
+    private fun inventorySourcesForItem(row: ResultRow): List<EventInventorySourceResponse> {
+        val sourceRows = EventInventorySources.selectAll()
+            .where { EventInventorySources.eventInventoryItemId eq row[EventInventoryItems.id] }
+            .orderBy(EventInventorySources.createdAt to SortOrder.ASC)
+            .map { toInventorySourceResponse(it) }
+        if (sourceRows.isNotEmpty()) return sourceRows
+
+        val legacyReserved = row[EventInventoryItems.availableQuantity]
+        val hasLegacySource = row[EventInventoryItems.itemId] != null ||
+            row[EventInventoryItems.sourceCustodianName] != null ||
+            row[EventInventoryItems.sourceLocationPath] != null ||
+            row[EventInventoryItems.sourceTemporaryStorageLabel] != null ||
+            row[EventInventoryItems.sourceResponsibleUserName] != null
+        if (!hasLegacySource) return emptyList()
+        return listOf(
+            EventInventorySourceResponse(
+                id = "legacy-${row[EventInventoryItems.id]}",
+                eventInventoryItemId = row[EventInventoryItems.id].toString(),
+                itemId = row[EventInventoryItems.itemId]?.toString(),
+                reservationGroupId = row[EventInventoryItems.reservationGroupId]?.toString(),
+                plannedQuantity = row[EventInventoryItems.plannedQuantity],
+                reservedQuantity = legacyReserved,
+                pickupCustodianName = row[EventInventoryItems.sourceCustodianName],
+                pickupLocationPath = row[EventInventoryItems.sourceLocationPath],
+                pickupTemporaryStorageLabel = row[EventInventoryItems.sourceTemporaryStorageLabel],
+                pickupResponsibleUserName = row[EventInventoryItems.sourceResponsibleUserName],
+                pickupSummary = buildSourcePickupSummary(
+                    row[EventInventoryItems.sourceCustodianName],
+                    row[EventInventoryItems.sourceLocationPath],
+                    row[EventInventoryItems.sourceTemporaryStorageLabel],
+                    row[EventInventoryItems.sourceResponsibleUserName]
+                ),
+                sourceStatus = if (legacyReserved > 0) "RESERVED" else "SHORTAGE",
+                notes = row[EventInventoryItems.notes],
+                createdAt = row[EventInventoryItems.createdAt].toString()
+            )
+        )
+    }
+
+    private fun toInventorySourceResponse(row: ResultRow): EventInventorySourceResponse {
+        return EventInventorySourceResponse(
+            id = row[EventInventorySources.id].toString(),
+            eventInventoryItemId = row[EventInventorySources.eventInventoryItemId].toString(),
+            itemId = row[EventInventorySources.itemId]?.toString(),
+            reservationGroupId = row[EventInventorySources.reservationGroupId]?.toString(),
+            plannedQuantity = row[EventInventorySources.plannedQuantity],
+            reservedQuantity = row[EventInventorySources.reservedQuantity],
+            pickupCustodianName = row[EventInventorySources.pickupCustodianName],
+            pickupLocationPath = row[EventInventorySources.pickupLocationPath],
+            pickupTemporaryStorageLabel = row[EventInventorySources.pickupTemporaryStorageLabel],
+            pickupResponsibleUserName = row[EventInventorySources.pickupResponsibleUserName],
+            pickupSummary = row[EventInventorySources.pickupSummary],
+            sourceStatus = row[EventInventorySources.sourceStatus],
+            notes = row[EventInventorySources.notes],
+            createdAt = row[EventInventorySources.createdAt].toString()
+        )
+    }
+
+    private fun insertInventorySource(
+        eventInventoryItemId: UUID,
+        itemId: UUID?,
+        reservationGroupId: UUID?,
+        plannedQuantity: Int,
+        reservedQuantity: Int,
+        snapshot: EventItemSourceSnapshot?,
+        notes: String?
+    ): UUID {
+        val pickupSummary = buildSourcePickupSummary(
+            snapshot?.custodianName,
+            snapshot?.locationPath,
+            snapshot?.temporaryStorageLabel,
+            snapshot?.responsibleUserName
+        )
+        return EventInventorySources.insert {
+            it[this.eventInventoryItemId] = eventInventoryItemId
+            it[this.itemId] = itemId
+            it[this.reservationGroupId] = reservationGroupId
+            it[this.plannedQuantity] = plannedQuantity
+            it[this.reservedQuantity] = reservedQuantity
+            it[pickupCustodianName] = snapshot?.custodianName
+            it[pickupLocationPath] = snapshot?.locationPath
+            it[pickupTemporaryStorageLabel] = snapshot?.temporaryStorageLabel
+            it[pickupResponsibleUserName] = snapshot?.responsibleUserName
+            it[this.pickupSummary] = pickupSummary
+            it[sourceStatus] = when {
+                reservedQuantity >= plannedQuantity -> "RESERVED"
+                reservedQuantity > 0 -> "PARTIAL"
+                else -> "SHORTAGE"
+            }
+            it[this.notes] = notes
+            it[createdAt] = kotlinx.datetime.Clock.System.now()
+        } get EventInventorySources.id
+    }
+
+    private fun refreshInventoryItemCoverage(row: ResultRow) {
+        val inventoryItemId = row[EventInventoryItems.id]
+        val planned = row[EventInventoryItems.plannedQuantity]
+        val reserved = EventInventorySources.selectAll()
+            .where { (EventInventorySources.eventInventoryItemId eq inventoryItemId) and (EventInventorySources.sourceStatus neq "CANCELLED") }
+            .sumOf { it[EventInventorySources.reservedQuantity] }
+        EventInventoryItems.update({ EventInventoryItems.id eq inventoryItemId }) {
+            it[availableQuantity] = reserved
+            it[needsPurchase] = planned > reserved
+        }
     }
 
     private fun availableQuantityForEventItem(
@@ -3993,12 +4258,12 @@ class EventService {
             .selectAll()
             .where { EventInventoryItems.eventId eq eventId }
             .toList()
-        val reconciliationChecksByCustodyId = latestReconciliationChecksByCustodyId(eventId)
+        val reconciliationChecksByCustodyId = reconciliationChecksByCustodyId(eventId)
 
         val openReturns = custodyRows
             .filter { it[EventInventoryCustody.status] == "OPEN" && openQuantity(it) > 0 }
             .map { row ->
-                toReconciliationReturnLineResponse(row, reconciliationChecksByCustodyId[row[EventInventoryCustody.id]])
+                toReconciliationReturnLineResponse(row, reconciliationChecksByCustodyId[row[EventInventoryCustody.id]].orEmpty())
             }
         val returnedToEventStorage = custodyRows
             .filter {
@@ -4006,7 +4271,7 @@ class EventService {
                     (it[EventInventoryCustody.pastovykleId] == null && it[EventInventoryCustody.holderUserId] == null)
             }
             .map { row ->
-                toReconciliationReturnLineResponse(row, reconciliationChecksByCustodyId[row[EventInventoryCustody.id]])
+                toReconciliationReturnLineResponse(row, reconciliationChecksByCustodyId[row[EventInventoryCustody.id]].orEmpty())
             }
         val unresolvedPurchases = reconciliationPurchaseRows(eventId)
             .map { toReconciliationPurchaseLineResponse(it) }
@@ -4024,7 +4289,7 @@ class EventService {
 
     private fun toReconciliationReturnLineResponse(
         row: ResultRow,
-        reconciliationCheck: ResultRow?
+        reconciliationChecks: List<ResultRow>
     ): EventReconciliationReturnLineResponse {
         val pastovykle = row[EventInventoryCustody.pastovykleId]?.let { id ->
             Pastovykles.selectAll().where { Pastovykles.id eq id }.firstOrNull()
@@ -4042,6 +4307,9 @@ class EventService {
             row[EventInventoryItems.sourceTemporaryStorageLabel],
             row[EventInventoryItems.sourceResponsibleUserName]
         )
+        val reconciliationCheck = reconciliationChecks.firstOrNull()
+        val auditLog = reconciliationChecks.map { toReconciliationAuditResponse(it) }
+        val reconciledQuantity = auditLog.sumOf { it.quantity }
         val returnDecision = reconciliationCheck?.get(ItemChecks.result)
         val returnCondition = reconciliationCheck?.get(ItemChecks.conditionAtCheck)
         val returnedToSummary = when (returnDecision) {
@@ -4061,6 +4329,8 @@ class EventService {
             quantity = row[EventInventoryCustody.quantity],
             returnedQuantity = row[EventInventoryCustody.returnedQuantity],
             remainingQuantity = openQuantity(row),
+            reconciledQuantity = reconciledQuantity,
+            pendingQuantity = (row[EventInventoryCustody.quantity] - reconciledQuantity).coerceAtLeast(0),
             status = row[EventInventoryCustody.status],
             isReturned = row[EventInventoryCustody.status] != "OPEN" || openQuantity(row) == 0,
             currentHolderSummary = currentHolderSummary,
@@ -4068,7 +4338,24 @@ class EventService {
             returnDecision = returnDecision,
             returnedToSummary = returnedToSummary,
             returnCondition = returnCondition,
+            auditLog = auditLog,
             notes = reconciliationCheck?.get(ItemChecks.notes) ?: row[EventInventoryCustody.notes]
+        )
+    }
+
+    private fun toReconciliationAuditResponse(row: ResultRow): EventReconciliationAuditResponse {
+        return EventReconciliationAuditResponse(
+            id = row[ItemChecks.id].toString(),
+            quantity = row[ItemChecks.quantity],
+            expectedQuantity = row[ItemChecks.expectedQuantity],
+            actualQuantity = row[ItemChecks.actualQuantity],
+            result = row[ItemChecks.result],
+            actualLocationId = row[ItemChecks.actualLocationId]?.toString(),
+            actualLocationNote = row[ItemChecks.actualLocationNote],
+            conditionAtCheck = row[ItemChecks.conditionAtCheck],
+            checkedByUserId = row[ItemChecks.checkedByUserId].toString(),
+            checkedAt = row[ItemChecks.checkedAt].toString(),
+            notes = row[ItemChecks.notes]
         )
     }
 
@@ -4136,6 +4423,25 @@ class EventService {
             responsibleUserName?.takeIf { it.isNotBlank() }?.let { "Pas $it" }
         )
         return parts.joinToString(" / ").takeIf { it.isNotBlank() }
+    }
+
+    private fun buildReturnLocationNote(returnToMode: String?, returnLocationNote: String?): String? {
+        val modeLabel = when (returnToMode) {
+            "ORIGINAL_SOURCE" -> "Original source"
+            "EVENT_STORAGE" -> "Event storage"
+            "OTHER_LOCATION" -> "Other location"
+            else -> null
+        }
+        return listOfNotNull(modeLabel, returnLocationNote?.takeIf { it.isNotBlank() })
+            .joinToString(" / ")
+            .takeIf { it.isNotBlank() }
+    }
+
+    private fun buildMovementNote(notes: String?, returnToMode: String?, returnLocationNote: String?): String? {
+        val destination = buildReturnLocationNote(returnToMode, returnLocationNote)
+        return listOfNotNull(notes?.takeIf { it.isNotBlank() }, destination?.let { "Returned to: $it" })
+            .joinToString(" | ")
+            .takeIf { it.isNotBlank() }
     }
 
     private fun itemConditionLabel(itemId: UUID?): String? {
@@ -4219,7 +4525,7 @@ class EventService {
             ?.get(ItemCheckSessions.id)
     }
 
-    private fun latestReconciliationChecksByCustodyId(eventId: UUID): Map<UUID, ResultRow> {
+    private fun reconciliationChecksByCustodyId(eventId: UUID): Map<UUID, List<ResultRow>> {
         return ItemChecks
             .innerJoin(ItemCheckSessions, { sessionId }, { ItemCheckSessions.id })
             .selectAll()
@@ -4231,7 +4537,6 @@ class EventService {
             .orderBy(ItemChecks.checkedAt to SortOrder.DESC)
             .toList()
             .groupBy { it[ItemChecks.custodyId]!! }
-            .mapValues { it.value.first() }
     }
 
     private fun recalculatePurchaseTotal(purchaseId: UUID) {

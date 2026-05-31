@@ -6,6 +6,7 @@ import lt.skautai.database.tables.ItemConditionLog
 import lt.skautai.database.tables.ItemHistory
 import lt.skautai.database.tables.ItemCustomFields
 import lt.skautai.database.tables.ItemTransfers
+import lt.skautai.database.tables.InventoryKits
 import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.Reservations
@@ -22,6 +23,7 @@ import lt.skautai.models.requests.ReturnItemToSharedRequest
 import lt.skautai.models.requests.RestockItemRequest
 import lt.skautai.models.requests.TransferItemToUnitRequest
 import lt.skautai.models.requests.UpdateItemRequest
+import lt.skautai.models.requests.WriteOffItemRequest
 import lt.skautai.models.responses.ItemCustomFieldResponse
 import lt.skautai.models.responses.ItemAssignmentListResponse
 import lt.skautai.models.responses.ItemAssignmentResponse
@@ -34,6 +36,7 @@ import lt.skautai.models.responses.ItemResponse
 import lt.skautai.models.responses.ItemTransferListResponse
 import lt.skautai.models.responses.ItemTransferResponse
 import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -53,7 +56,9 @@ class ItemService {
         type: String? = null,
         category: String? = null,
         status: String? = null,
-        sharedOnly: Boolean = false
+        sharedOnly: Boolean = false,
+        createdByUserId: String? = null,
+        updatedAfter: Instant? = null
     ): Result<ItemListResponse> {
         return transaction {
             val canSeeAll = userCanSeeAllStatuses(requestingUserId, tuntasId)
@@ -89,25 +94,34 @@ class ItemService {
                 }
             }
 
-            if (custodianId != null) {
-                val uuid = try { UUID.fromString(custodianId) } catch (e: Exception) { null }
-                if (!canSeeAllInventory && uuid != null && uuid !in visibleUnitIds) {
-                    return@transaction Result.success(ItemListResponse(items = emptyList(), total = 0))
+            if (updatedAfter == null) {
+                if (custodianId != null) {
+                    val uuid = try { UUID.fromString(custodianId) } catch (e: Exception) { null }
+                    if (!canSeeAllInventory && uuid != null && uuid !in visibleUnitIds) {
+                        return@transaction Result.success(ItemListResponse(items = emptyList(), total = 0))
+                    }
+                    if (uuid != null) query = query.andWhere { Items.custodianId eq uuid }
+                } else if (sharedOnly) {
+                    query = query.andWhere {
+                        Items.custodianId.isNull() and (Items.type neq "INDIVIDUAL")
+                    }
                 }
-                if (uuid != null) query = query.andWhere { Items.custodianId eq uuid }
-            } else if (sharedOnly) {
-                query = query.andWhere {
-                    Items.custodianId.isNull() and (Items.type neq "INDIVIDUAL")
+                type?.let { query = query.andWhere { Items.type eq it } }
+                category?.let { query = query.andWhere { Items.category eq it } }
+                createdByUserId?.let {
+                    val uuid = try { UUID.fromString(it) } catch (e: Exception) { null }
+                    if (uuid != null) query = query.andWhere { Items.createdByUserId eq uuid }
+                }
+                status?.let {
+                    if (canSeeAll) {
+                        query = query.andWhere { Items.status eq it }
+                    } else if (it != "ACTIVE") {
+                        return@transaction Result.success(ItemListResponse(items = emptyList(), total = 0))
+                    }
                 }
             }
-            type?.let { query = query.andWhere { Items.type eq it } }
-            category?.let { query = query.andWhere { Items.category eq it } }
-            status?.let {
-                if (canSeeAll) {
-                    query = query.andWhere { Items.status eq it }
-                } else if (it != "ACTIVE") {
-                    return@transaction Result.success(ItemListResponse(items = emptyList(), total = 0))
-                }
+            updatedAfter?.let { since ->
+                query = query.andWhere { Items.updatedAt greater since }
             }
 
             val items = query.map { toItemResponse(it) }
@@ -440,6 +454,7 @@ class ItemService {
                 if (!request.notes.isNullOrBlank()) it[notes] = request.notes
                 it[updatedAt] = now
             }
+            InventoryKitService.syncMembershipAfterItemQuantityChange(itemId, item[Items.quantity] + request.quantity)
             recordItemHistory(
                 itemId = itemId,
                 eventType = "MANUAL_RESTOCKED",
@@ -526,6 +541,18 @@ class ItemService {
                 request.clearLocationId -> null
                 request.locationId != null -> locationUUID
                 else -> existing[Items.locationId]
+            }
+            val activeKit = InventoryKitService.activeKitForItem(itemId)
+            if (activeKit != null) {
+                val changesKitManagedLocation = request.clearLocationId ||
+                    request.locationId != null ||
+                    request.temporaryStorageLabel != null
+                val changesKitScope = request.clearCustodianId || request.custodianId != null
+                if (changesKitManagedLocation || changesKitScope) {
+                    return@transaction Result.failure(
+                        Exception("Item is inside an inventory kit. Update the kit location or remove the item from the kit first.")
+                    )
+                }
             }
             validateItemLocation(
                 locationId = effectiveLocationId,
@@ -617,6 +644,7 @@ class ItemService {
                 }
             }
             request.quantity?.takeIf { it != previousQuantity }?.let { nextQuantity ->
+                InventoryKitService.syncMembershipAfterItemQuantityChange(itemId, nextQuantity)
                 recordItemHistory(
                     itemId = itemId,
                     eventType = "QUANTITY_ADJUSTED",
@@ -625,6 +653,9 @@ class ItemService {
                     notes = request.notes ?: "Kiekis pakoreguotas rankiniu budu",
                     createdAt = now
                 )
+            }
+            if (request.status == "INACTIVE") {
+                InventoryKitService.syncMembershipAfterItemQuantityChange(itemId, 0)
             }
             upsertResponsibleAssignment(
                 itemId = itemId,
@@ -691,6 +722,7 @@ class ItemService {
                 it[status] = if (remaining == 0) "INACTIVE" else "ACTIVE"
                 it[updatedAt] = now
             }
+            InventoryKitService.syncMembershipAfterItemQuantityChange(sharedItem[Items.id], remaining)
 
             val existingUnitItem = Items.selectAll()
                 .where {
@@ -821,6 +853,7 @@ class ItemService {
                 it[status] = if (remaining == 0) "INACTIVE" else "ACTIVE"
                 it[updatedAt] = now
             }
+            InventoryKitService.syncMembershipAfterItemQuantityChange(unitItem[Items.id], remaining)
 
             ItemTransfers.insert {
                 it[ItemTransfers.itemId] = sharedItem[Items.id]
@@ -1068,6 +1101,69 @@ class ItemService {
         }
     }
 
+    fun writeOffItem(
+        itemId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        request: WriteOffItemRequest
+    ): Result<ItemResponse> {
+        return transaction {
+            val reason = request.reason.trim()
+            if (reason.isBlank()) {
+                return@transaction Result.failure(Exception("Write-off reason is required"))
+            }
+
+            val existing = Items.selectAll()
+                .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Item not found"))
+
+            if (existing[Items.status] == "INACTIVE") {
+                return@transaction Result.failure(Exception("Item is already inactive"))
+            }
+
+            val hasActiveReservations = Reservations.selectAll()
+                .where {
+                    (Reservations.itemId eq itemId) and
+                        (Reservations.tuntasId eq tuntasId) and
+                        (Reservations.status inList listOf("PENDING", "APPROVED", "ACTIVE"))
+                }
+                .firstOrNull() != null
+
+            if (hasActiveReservations) {
+                return@transaction Result.failure(Exception("Item cannot be written off while it has active reservations"))
+            }
+
+            val previousCondition = existing[Items.condition]
+            val now = Clock.System.now()
+            Items.update({ (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }) {
+                it[condition] = "WRITTEN_OFF"
+                it[status] = "INACTIVE"
+                it[updatedAt] = now
+            }
+            if (previousCondition != "WRITTEN_OFF") {
+                ItemConditionLog.insert {
+                    it[this.itemId] = itemId
+                    it[this.previousCondition] = previousCondition
+                    it[this.newCondition] = "WRITTEN_OFF"
+                    it[this.reportedByUserId] = userId
+                    it[this.reportedAt] = now
+                    it[this.notes] = reason
+                }
+            }
+            recordItemHistory(
+                itemId = itemId,
+                eventType = "WRITTEN_OFF",
+                quantityChange = null,
+                performedByUserId = userId,
+                notes = reason,
+                createdAt = now
+            )
+
+            Result.success(toItemResponse(Items.selectAll().where { Items.id eq itemId }.first()))
+        }
+    }
+
     fun reviewItemAddition(
         itemId: UUID,
         tuntasId: UUID,
@@ -1246,6 +1342,7 @@ class ItemService {
         val locationNodes = locationRows.associate { it[Locations.id] to it.toLocationNodeData() }
         val locationName = locationId?.let { id -> locationNodes[id]?.name }
         val locationPath = locationId?.let { id -> buildLocationPath(id, locationNodes) }
+        val activeKit = InventoryKitService.activeKitForItem(row[Items.id])
         val customFields = ItemCustomFields.selectAll()
             .where { ItemCustomFields.itemId eq row[Items.id] }
             .orderBy(ItemCustomFields.fieldName to SortOrder.ASC)
@@ -1274,6 +1371,8 @@ class ItemService {
             locationName = locationName,
             locationPath = locationPath,
               temporaryStorageLabel = row[Items.temporaryStorageLabel],
+            kitId = activeKit?.get(InventoryKits.id)?.toString(),
+            kitName = activeKit?.get(InventoryKits.name),
               sourceSharedItemId = row[Items.sourceSharedItemId]?.toString(),
               responsibleUserId = row[Items.responsibleUserId]?.toString(),
               responsibleUserName = responsibleUserName,

@@ -112,6 +112,24 @@ CREATE TABLE user_leadership_roles (
                                        term_status VARCHAR(20) DEFAULT 'ACTIVE' CHECK (term_status IN ('ACTIVE', 'COMPLETED', 'RESIGNED'))
 );
 
+CREATE TABLE leadership_change_requests (
+                                            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                            tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                                            requester_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                                            role_assignment_id UUID NOT NULL REFERENCES user_leadership_roles(id),
+                                            role_id UUID NOT NULL REFERENCES roles(id),
+                                            organizational_unit_id UUID NOT NULL REFERENCES organizational_units(id),
+                                            status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')),
+                                            reason TEXT,
+                                            reviewed_by_user_id UUID REFERENCES users(id),
+                                            successor_user_id UUID REFERENCES users(id),
+                                            review_note TEXT,
+                                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                            reviewed_at TIMESTAMP,
+                                            resolved_assignment_id UUID REFERENCES user_leadership_roles(id)
+);
+
 -- User ranks
 CREATE TABLE user_ranks (
                             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -333,9 +351,31 @@ CREATE TABLE event_inventory_items (
                                        available_quantity INTEGER NOT NULL DEFAULT 0 CHECK (available_quantity >= 0),
                                        needs_purchase BOOLEAN NOT NULL DEFAULT FALSE,
                                        notes TEXT,
+                                       source_custodian_name VARCHAR(200),
+                                       source_location_path VARCHAR(500),
+                                       source_temporary_storage_label VARCHAR(255),
+                                       source_responsible_user_name VARCHAR(200),
                                        responsible_user_id UUID REFERENCES users(id),
                                        created_by_user_id UUID REFERENCES users(id),
                                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE event_inventory_sources (
+                                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                         event_inventory_item_id UUID NOT NULL REFERENCES event_inventory_items(id) ON DELETE CASCADE,
+                                         item_id UUID REFERENCES items(id),
+                                         reservation_group_id UUID,
+                                         planned_quantity INTEGER NOT NULL CHECK (planned_quantity > 0),
+                                         reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0),
+                                         pickup_custodian_name VARCHAR(200),
+                                         pickup_location_path VARCHAR(500),
+                                         pickup_temporary_storage_label VARCHAR(255),
+                                         pickup_responsible_user_name VARCHAR(200),
+                                         pickup_summary VARCHAR(700),
+                                         source_status VARCHAR(30) NOT NULL DEFAULT 'PLANNED' CHECK (source_status IN ('PLANNED', 'RESERVED', 'PARTIAL', 'SHORTAGE', 'CANCELLED')),
+                                         notes TEXT,
+                                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                         CHECK (reserved_quantity <= planned_quantity)
 );
 
 -- Event inventory allocation to program, kitchen, administration, medical, pastovykle or another bucket
@@ -582,6 +622,37 @@ CREATE TABLE inventory_list_template_items (
                                                notes TEXT
 );
 
+-- Inventory kits
+CREATE TABLE inventory_kits (
+                                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                                custodian_id UUID REFERENCES organizational_units(id),
+                                name VARCHAR(200) NOT NULL,
+                                description TEXT,
+                                location_id UUID REFERENCES locations(id),
+                                temporary_storage_label VARCHAR(255),
+                                responsible_user_id UUID REFERENCES users(id),
+                                created_by_user_id UUID REFERENCES users(id),
+                                status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE inventory_kit_items (
+                                     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                     kit_id UUID NOT NULL REFERENCES inventory_kits(id) ON DELETE CASCADE,
+                                     item_id UUID NOT NULL REFERENCES items(id),
+                                     quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+                                     notes TEXT
+);
+
+CREATE INDEX idx_inventory_kits_tuntas_status ON inventory_kits(tuntas_id, status);
+CREATE INDEX idx_inventory_kits_custodian ON inventory_kits(custodian_id);
+CREATE INDEX idx_inventory_kits_location ON inventory_kits(location_id);
+CREATE INDEX idx_inventory_kits_responsible_user ON inventory_kits(responsible_user_id);
+CREATE INDEX idx_inventory_kit_items_kit ON inventory_kit_items(kit_id);
+CREATE UNIQUE INDEX idx_inventory_kit_items_item ON inventory_kit_items(item_id);
+
 -- Import column mappings
 CREATE TABLE import_column_mappings (
                                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -747,12 +818,15 @@ CREATE INDEX idx_sync_operations_status ON sync_operations(status);
 CREATE INDEX idx_sync_operations_device ON sync_operations(device_id);
 CREATE INDEX idx_user_leadership_roles_user ON user_leadership_roles(user_id);
 CREATE INDEX idx_user_leadership_roles_tuntas ON user_leadership_roles(tuntas_id);
+CREATE INDEX idx_leadership_change_requests_tuntas_status ON leadership_change_requests(tuntas_id, status);
+CREATE INDEX idx_leadership_change_requests_assignment_pending ON leadership_change_requests(role_assignment_id) WHERE status = 'PENDING';
 CREATE INDEX idx_user_ranks_user ON user_ranks(user_id);
 CREATE INDEX idx_user_ranks_tuntas ON user_ranks(tuntas_id);
 CREATE INDEX idx_events_tuntas ON events(tuntas_id);
 CREATE INDEX idx_events_dates ON events(start_date, end_date);
 CREATE INDEX idx_event_inventory_buckets_event ON event_inventory_buckets(event_id);
 CREATE INDEX idx_event_inventory_items_event ON event_inventory_items(event_id);
+CREATE INDEX idx_event_inventory_sources_item ON event_inventory_sources(event_inventory_item_id);
 CREATE INDEX idx_event_inventory_allocations_item ON event_inventory_allocations(event_inventory_item_id);
 CREATE INDEX idx_event_inventory_allocations_bucket ON event_inventory_allocations(bucket_id);
 CREATE INDEX idx_event_inventory_custody_parent ON event_inventory_custody(parent_custody_id);

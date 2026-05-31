@@ -33,6 +33,8 @@ data class ItemResponse(
     val locationName: String? = null,
     val locationPath: String? = null,
     val temporaryStorageLabel: String? = null,
+    val kitId: String? = null,
+    val kitName: String? = null,
     val sourceSharedItemId: String? = null,
     val responsibleUserId: String? = null,
     val responsibleUserName: String? = null,

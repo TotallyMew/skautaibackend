@@ -269,6 +269,10 @@ class MemberService {
             if (!bypassHierarchyValidation && request.termStatus in listOf("COMPLETED", "RESIGNED")) {
                 val effectiveCallerUserId = callerUserId
                     ?: return@transaction Result.failure(Exception("Caller user is required"))
+                validateCanClosePrincipalUnitLeaderDirectly(
+                    roleId = assignment[UserLeadershipRoles.roleId],
+                    organizationalUnitId = assignment[UserLeadershipRoles.organizationalUnitId]
+                )?.let { return@transaction Result.failure(Exception(it)) }
                 validateCanChangeTargetLeadership(
                     callerUserId = effectiveCallerUserId,
                     targetUserId = targetUserId,
@@ -343,6 +347,10 @@ class MemberService {
             if (!bypassHierarchyValidation) {
                 val effectiveCallerUserId = callerUserId
                     ?: return@transaction Result.failure(Exception("Caller user is required"))
+                validateCanClosePrincipalUnitLeaderDirectly(
+                    roleId = assignment[UserLeadershipRoles.roleId],
+                    organizationalUnitId = assignment[UserLeadershipRoles.organizationalUnitId]
+                )?.let { return@transaction Result.failure(Exception(it)) }
                 validateCanChangeTargetLeadership(
                     callerUserId = effectiveCallerUserId,
                     targetUserId = targetUserId,
@@ -919,6 +927,9 @@ class MemberService {
         assignmentId: UUID,
         roleId: UUID
     ): String? {
+        validateCanClosePrincipalUnitLeaderDirectly(roleId, null)
+            ?.let { return it }
+
         if (!isTuntininkasRole(roleId)) {
             return null
         }
@@ -930,6 +941,23 @@ class MemberService {
             null
         } else {
             "Negalite atsistatydinti is tuntininko pareigu, kol ju neperleidote kitam nariui"
+        }
+    }
+
+    private fun validateCanClosePrincipalUnitLeaderDirectly(
+        roleId: UUID,
+        organizationalUnitId: UUID?
+    ): String? {
+        val roleName = Roles.selectAll()
+            .where { Roles.id eq roleId }
+            .firstOrNull()
+            ?.get(Roles.name)
+            ?: return null
+
+        return if (LeadershipRoleRules.isPrincipalUnitLeader(roleName)) {
+            "Vieneto vadovas negali atsistatydinti ar buti nuimtas be pakeitejo. Sukurkite atsistatydinimo prasyma ir patvirtindami paskirkite nauja vadova."
+        } else {
+            null
         }
     }
 
