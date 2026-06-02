@@ -1,50 +1,59 @@
-# Skautų inventoriaus valdymas backend
+# Skautu inventoriaus valdymas backend
 
-Backend projektas, skirtas skautų inventoriaus valdymo sistemos REST API. Naudojamos technologijos: Ktor, Kotlin, PostgreSQL.
+Backend projektas, skirtas skautu inventoriaus valdymo sistemos REST API. Naudojamos technologijos: Ktor 3, Kotlin, PostgreSQL, Exposed ORM, Flyway ir JWT autentikacija.
 
-## Apie sistemą
+## Apie sistema
 
-Skautų inventoriaus valdymo sistema skirta tuntų ir jų padalinių inventoriui administruoti. Sistema apima bendrą tuntui priklausantį inventorių, atskirų vienetų inventorių ir su tuo susijusius procesus.
+Skautu inventoriaus valdymo sistema skirta tuntams ir ju padaliniams administruoti bendra, vienetu ir asmenini inventoriu. Backend saugo pagrindine verslo logika, autorizacija, leidimu tikrinima, duomenu bazes prieiga ir failu ikelima Android programai.
 
-Pagrindinės sritys:
+Pagrindines sritys:
 
-- inventoriaus apskaita ir daiktų būsenos valdymas
-- rezervacijos ir daiktų išdavimas
-- narių, vaidmenų ir organizacinių vienetų valdymas
-- prašymai bendram inventoriui ir vidaus tvirtinimo eiga
-- renginių inventoriaus planavimas ir paskirstymas
-- superadmin funkcijos tuntų priežiūrai
-
-Šis backend pateikia REST API Android programėlei ir saugo pagrindinę sistemos verslo logiką, autorizaciją, leidimų tikrinimą ir duomenų bazės prieigą.
+- inventoriaus apskaita, lokacijos, QR kodai, rinkiniai ir inventorizacijos patikros
+- bendras tunto inventorius ir vienetu inventorius pagal `custodianId`
+- inventoriaus kilme pagal `origin`, iskaitant vieneto isigyta ir is bendro sandelio perduota inventoriu
+- rezervacijos, isdavimas, grazinimas ir perziuros eiga
+- pirkimo / papildymo prasymu bei bendro inventoriaus paemimo eiga
+- nariu, vaidmenu, kvietimu, pareigu perleidimo ir organizaciniu vienetu valdymas
+- renginiu planavimas, inventoriaus poreikiai, pirkimai, pastovykles ir suderinimas
+- superadmin funkcijos tuntams tvirtinti ir administruoti
+- mobiliam klientui skirti santraukos, uzduociu ir cache busenos endpoint'ai
 
 ## Reikalavimai
 
 - JDK 21
 - PostgreSQL
-- IntelliJ IDEA arba galimybė paleisti Gradle iš komandinės eilutės
+- IntelliJ IDEA rekomenduojamam paleidimui
+- Gradle wrapper yra projekte testams ir build uzduotims
 
 ## Greitas startas
 
-1. Susikurkite tuščią PostgreSQL duomenų bazę, pvz. `skautu_inventorius`.
-2. Nukopijuokite `.env.example` į `.env`.
-3. Užpildykite `.env` reikšmes.
-4. Paleiskite backend per IntelliJ arba CLI.
-5. Pirmo paleidimo metu bus pritaikytos duomenų bazės migracijos.
+1. Susikurkite PostgreSQL duomenu baze, pvz. `skautu_inventorius`.
+2. Jei reikia svarios lokalios DB, pgAdmin'e istrinkite ir sukurkite DB is naujo, tada rankiniu budu paleiskite `database/schema.sql`.
+3. Nukopijuokite `.env.example` i `.env`.
+4. Uzpildykite `.env` reiksmes.
+5. Atidarykite backend projekta IntelliJ IDEA.
+6. Paleiskite Ktor per `lt.skautai.ApplicationKt` / EngineMain.
 
-## Architektūros santrauka
+Run config gali likti be jautriu reiksmiu, nes `main()` pries paleisdamas EngineMain ikelia palaikomus raktus is lokalaus `.env` failo i system properties.
 
-Projekte naudojama kelių sluoksnių struktūra:
+## Architekturos santrauka
 
-- `routes/` - HTTP endpoint'ai
-- `services/` - verslo logika
-- `database/tables/` - Exposed lentelių aprašai
-- `models/requests` ir `models/responses` - API DTO modeliai
+Projekte naudojama keliu sluoksniu struktura:
 
-Autorizacija pagrįsta JWT. Dauguma resursų yra susieti su konkrečiu tuntu, o prieigos teisės priklauso nuo vartotojo vaidmens ir jo scope.
+- `src/main/kotlin/lt/skautai/Application.kt` - entry point, `.env` ikelimas, DB prijungimas, Flyway migracijos ir bendri Ktor plugin'ai
+- `src/main/kotlin/lt/skautai/plugins/` - routing, serialization, JWT security ir leidimu kontekstas
+- `src/main/kotlin/lt/skautai/routes/` - ploni HTTP endpoint'ai
+- `src/main/kotlin/lt/skautai/services/` - verslo logika
+- `src/main/kotlin/lt/skautai/database/tables/` - Exposed lenteliu aprasai
+- `src/main/kotlin/lt/skautai/models/requests` ir `models/responses` - API DTO modeliai
+- `src/main/resources/db/migration/` - Flyway migracijos
+- `database/schema.sql` - pilna schema svariam rankiniam DB atkurimui
 
-## `.env` konfigūracija
+Autorizacija pagrista JWT. Dauguma resursu yra susieti su konkreciu `tuntasId`; uzklausos naudoja `X-Tuntas-Id` header'i, o prieigos teises priklauso nuo vartotojo vaidmens ir scope (`ALL` arba konkretus organizaciniai vienetai).
 
-Backend skaito konfigūraciją iš lokalaus `.env` failo projekto šaknyje. Šis failas nėra commitinamas.
+## `.env` konfiguracija
+
+Backend skaito konfiguracija is lokalaus `.env` failo projekto saknyje. Sis failas nera commitinamas.
 
 Palaikomi raktai:
 
@@ -53,72 +62,74 @@ DB_URL=jdbc:postgresql://localhost:5432/skautu_inventorius
 DB_USER=postgres
 DB_PASSWORD=change-me
 JWT_SECRET=change-me-to-a-long-random-secret
-SETUP_BOOTSTRAP_TOKEN=
+SETUP_BOOTSTRAP_TOKEN=change-me-bootstrap-token
 PORT=8080
 ```
 
 Trumpai:
 
 - `DB_URL`, `DB_USER`, `DB_PASSWORD` naudojami prisijungimui prie PostgreSQL.
-- `JWT_SECRET` naudojamas JWT pasirašymui.
-- `SETUP_BOOTSTRAP_TOKEN` įjungia vienkartinį superadmin setup endpoint'ą.
-- `PORT` leidžia pakeisti backend portą, numatytoji reikšmė yra `8080`.
+- `JWT_SECRET` naudojamas JWT pasirasymui.
+- `SETUP_BOOTSTRAP_TOKEN` ijungia vienkartini superadmin setup endpoint'a.
+- `PORT` leidzia pakeisti backend porta, numatytoji reiksme yra `8080`.
 
-## Duomenų bazė ir migracijos
+`application.conf` ima sias reiksmes is env/system properties, todel IntelliJ run config'e pakanka tureti `.env` backend projekto saknyje.
 
-Paleidimo metu pritaikomos migracijos iš `src/main/resources/db/migration/`.
+## Duomenu baze ir migracijos
 
-### Nauja tuščia DB
+Projekte yra du DB palaikymo keliai:
 
-Jei duomenų bazė tuščia:
+- `database/schema.sql` - pilna aktuali schema svariam rankiniam DB sukurimui.
+- `src/main/resources/db/migration/` - Flyway migracijos, kurias backend bando pritaikyti paleidimo metu.
 
-1. Užtenka ją sukurti PostgreSQL serveryje.
-2. Paleidus backend, bus pritaikyta pradinė schema ir visos vėlesnės migracijos.
-3. Vėlesni schema pakeitimai bus uždedami iš `V2+` migracijų.
+Dabartines migracijos:
 
-### Jau egzistuojanti DB
+- `V1__initial_schema.sql`
+- `V2__leadership_change_requests.sql`
+- `V3__inventory_kits.sql`
+- `V4__inventory_kits_physical_groups.sql`
+- `V5__mobile_cache_support.sql`
 
-Jei jau turite ankstesnę DB be `flyway_schema_history` lentelės:
+Svariai lokalioje aplinkoje paprasciausias kelias yra istrinti ir sukurti DB is naujo, tada paleisti `database/schema.sql` rankiniu budu. Paleidus backend, Flyway su `baselineOnMigrate(true)` gali pazymeti egzistuojancia schema kaip bazine busena ir toliau taikyti naujesnes migracijas.
 
-1. Pirmiausia pasidarykite atsarginę kopiją.
-2. Paleiskite backend su atnaujintu kodu.
-3. Esama schema bus pažymėta kaip bazinė būsena, jei ji atitinka dabartinę projekto schemą.
+Jei DB jau turi duomenu:
 
-Tai reiškia:
+1. Pirmiausia pasidarykite atsargine kopija.
+2. Patikrinkite, ar schema atitinka dabartini `database/schema.sql`.
+3. Tik tada paleiskite backend su atnaujintu kodu.
 
-- pradinė migracija nebus leidžiama ant jau egzistuojančių lentelių
-- esami duomenys neturi būti perrašyti
-- toliau bus leidžiamos tik naujesnės migracijos
-
-Svarbi sąlyga: ši schema turi realiai atitikti dabartinę projekto bazinę schemą. Jei DB buvo keista rankiniu būdu ir neatitinka projekto, pirmiausia reikėtų tai įvertinti atskirai.
+Toliau keiciant DB struktura reikia prideti nauja migracijos faila, pvz. kita versija po esamu failu butu `V6__add_example.sql`. Nepildykite pakeitimu i senas migracijas. Jei pakeitimas keicia schema, atsakyme visada pateikite ir raw SQL uzklausas, kad DB butu galima atnaujinti rankiniu budu.
 
 ## Paleidimas per IntelliJ
 
-1. Atidarykite šį backend projektą IntelliJ IDEA.
-2. Paleiskite `lt.skautai.ApplicationKt`.
+1. Atidarykite `skautu-inventoriaus-valdymas-backend` kaip projekta IntelliJ IDEA.
+2. Isitikinkite, kad backend projekto saknyje yra `.env`.
+3. Paleiskite `lt.skautai.ApplicationKt`.
 
-Run config gali likti be jautrių reikšmių, nes jos nuskaitomos iš `.env`.
+Backend naudoja Ktor EngineMain. Paleidus sekmingai API pasiekiamas per `http://localhost:8080`, nebent pakeistas `PORT`.
 
-## Paleidimas per CLI
+## Naudingos Gradle uzduotys
 
-Windows:
+Backend iprastai paleidziamas per IntelliJ, bet Gradle wrapper naudojamas kompiliavimui, testams ir coverage:
 
 ```powershell
-.\gradlew.bat run
+.\gradlew.bat test --console=plain
+.\gradlew.bat compileKotlin --console=plain
+.\gradlew.bat coverageSummary --console=plain
 ```
 
-Svarbu, kad `.env` būtų backend projekto šaknyje.
+Testai naudoja `TEST_DB_URL`, `TEST_DB_USER`, `TEST_DB_PASSWORD` ir `TEST_JWT_SECRET`, jei jie nustatyti aplinkoje.
 
 ## Superadmin setup
 
-Jei norite susikurti pirmą superadmin:
+Jei norite susikurti pirma superadmin:
 
 1. `.env` faile nustatykite `SETUP_BOOTSTRAP_TOKEN`.
 2. Paleiskite backend.
-3. Iškvieskite `POST /api/setup/super-admin`.
-4. Pridėkite `X-Bootstrap-Token` header'į su tokia pačia reikšme kaip `.env`.
+3. Iskvieskite `POST /api/setup/super-admin`.
+4. Pridekite `X-Bootstrap-Token` header'i su tokia pacia reiksme kaip `.env`.
 
-Jei `SETUP_BOOTSTRAP_TOKEN` tuščias, šis endpoint'as bus neaktyvus.
+Jei `SETUP_BOOTSTRAP_TOKEN` tuscias, sis endpoint'as bus neaktyvus.
 
 Pavyzdys su `curl`:
 
@@ -132,13 +143,13 @@ curl -X POST http://localhost:8080/api/setup/super-admin \
   }'
 ```
 
-Po to tuo pačiu el. paštu ir slaptažodžiu galima jungtis per Android superadmin prisijungimo ekraną.
+Po to tuo paciu el. pastu ir slaptazodziu galima jungtis per Android superadmin prisijungimo ekrana.
 
-## Tolimesni schema pakeitimai
+## Aktualus API / DTO terminai
 
-Kai keičiate DB struktūrą:
-
-1. Sukurkite naują migracijos failą `src/main/resources/db/migration/`, pvz. `V2__add_example_table.sql`.
-2. Įrašykite tik tą pokytį, kuris reikalingas nuo esamos versijos.
-3. Nepildykite pakeitimų į `V1`.
-4. Duomenų bazės pakeitimus atlikite per migracijas.
+- `GET /api/items` filtruoja pagal `custodianId`, `type`, `category`, `status`, `sharedOnly`, `createdByUserId` ir `updatedAfter`; seno `ownerType` filtro nebenaudojama.
+- `items.custodian_id = NULL` reiskia bendra tunto sandeli, o ne konkretu vieneta.
+- `items.custodian_id != NULL` reiskia vieneto saugoma inventoriu.
+- `items.origin` skiria vieneto isigyta inventoriu nuo is tunto perduoto inventoriaus; kode naudojamos reiksmes, pvz. `UNIT_ACQUIRED` ir `TRANSFERRED_FROM_TUNTAS`.
+- `item_transfers` naudoja `from_custodian_id` ir `to_custodian_id`; senu `from_owner_type`, `from_owner_id`, `to_owner_type`, `to_owner_id` lauku nera.
+- Requisitions, bendro inventoriaus prasymai ir rezervacijos naudoja `requestingUnitId` / `requestingUnitName`.

@@ -1005,7 +1005,6 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.Unauthorized, response.status)
     }
 
-    // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private suspend fun HttpClient.createTestPastovykle(
         token: String,
@@ -1047,7 +1046,6 @@ class EventRoutesTest {
             .jsonObject["id"]!!.jsonPrimitive.content
     }
 
-    // â”€â”€ Removed stovyklaDetails API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `stovykla details endpoint is removed`() = testApplication {
@@ -1065,7 +1063,6 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.NotFound, response.status)
     }
 
-    // â”€â”€ PastovyklÄ—s CRUD tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `create pastovykle returns 201`() = testApplication {
@@ -1465,7 +1462,6 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.NotFound, response.status)
     }
 
-    // â”€â”€ PastovyklÄ— Inventory tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `assign inventory to pastovykle returns 201`() = testApplication {
@@ -1695,7 +1691,6 @@ class EventRoutesTest {
         assertEquals(HttpStatusCode.NotFound, response.status)
     }
 
-    // â”€â”€ Auth tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `create pastovykle without token returns 401`() = testApplication {

@@ -31,7 +31,6 @@ class OrganizationalUnitRoutesTest {
         TestHelper.cleanTables()
     }
 
-    // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private suspend fun ApplicationTestBuilder.createUnit(
         token: String,
@@ -83,7 +82,6 @@ class OrganizationalUnitRoutesTest {
         return body["token"]!!.jsonPrimitive.content to body["userId"]!!.jsonPrimitive.content
     }
 
-    // â”€â”€ Unit CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `create unit returns 201`() = testApplication {
@@ -405,7 +403,6 @@ class OrganizationalUnitRoutesTest {
         assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
-    // â”€â”€ Unit membership â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @Test
     fun `assign member returns 201 with assignmentType MEMBER`() = testApplication {
