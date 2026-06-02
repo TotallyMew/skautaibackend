@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import lt.skautai.plugins.configureSecurity
 import lt.skautai.routes.authRoutes
 import lt.skautai.routes.invitationRoutes
+import lt.skautai.routes.inventoryKitRoutes
 import lt.skautai.routes.inventoryTemplateRoutes
 import lt.skautai.routes.itemRoutes
 import lt.skautai.routes.superAdminRoutes
@@ -98,11 +99,15 @@ object TestHelper {
             exec("""
                 TRUNCATE TABLE
                     users, tuntai, bendras_inventory_requests, super_admins,
-                    leadership_change_requests,
+                    leadership_change_requests, item_check_sessions,
+                    reservation_movements,
+                    event_purchase_items, event_purchases,
+                    event_inventory_custody, event_inventory_items, event_roles,
                     user_leadership_roles, user_ranks, role_permissions,
                     roles, permissions, locations, organizational_units,
                     user_tuntas_memberships, unit_assignments,
-                    invitations, items, reservations, events, draugove_requisitions,
+                    invitations, inventory_kit_items, inventory_kits,
+                    items, reservations, events, draugove_requisitions,
                     draugove_requisition_items
                 CASCADE
             """.trimIndent())
@@ -137,6 +142,7 @@ object TestHelper {
             val bendrasInventoryRequestService = BendrasInventoryRequestService()
             val requisitionService = RequisitionService()
             val inventoryTemplateService = InventoryTemplateService()
+            val inventoryKitService = InventoryKitService()
             val myTaskService = MyTaskService()
             val leadershipChangeRequestService = LeadershipChangeRequestService()
             PermissionSeeder.seedPermissions()
@@ -154,6 +160,7 @@ object TestHelper {
                 bendrasInventoryRequestRoutes(bendrasInventoryRequestService)
                 requisitionRoutes(requisitionService)
                 inventoryTemplateRoutes(inventoryTemplateService)
+                inventoryKitRoutes(inventoryKitService)
                 myTaskRoutes(myTaskService)
                 userRoutes()
                 rolesRoutes()

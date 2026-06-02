@@ -362,6 +362,41 @@ class AuthRoutesTest {
     }
 
     @Test
+    fun `seed super admin fails with invalid bootstrap token`() = testApplication {
+        configureFullApp()
+
+        val response = client.post("/api/setup/super-admin") {
+            contentType(ContentType.Application.Json)
+            header("X-Bootstrap-Token", "wrong-token")
+            setBody("""
+                {
+                    "email": "admin@test.com",
+                    "password": "admin123"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+    }
+
+    @Test
+    fun `seed super admin fails without bootstrap token`() = testApplication {
+        configureFullApp()
+
+        val response = client.post("/api/setup/super-admin") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "email": "admin@test.com",
+                    "password": "admin123"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+    }
+
+    @Test
     fun `seed super admin fails when one already exists`() = testApplication {
         configureFullApp()
 
