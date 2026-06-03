@@ -83,7 +83,7 @@ class UploadRoutesTest {
             header("Authorization", "Bearer $token")
         }
         assertEquals(HttpStatusCode.NotFound, missingFile.status)
-        assertEquals("File not found", parseError(missingFile.bodyAsText()))
+        assertEquals("Failas nerastas.", parseError(missingFile.bodyAsText()))
     }
 
     @Test
@@ -96,28 +96,28 @@ class UploadRoutesTest {
             setBody(multiPartForFile(fileName = "bad.gif", contentType = ContentType.Image.PNG, bytes = pngBytes()))
         }
         assertEquals(HttpStatusCode.BadRequest, unsupportedExtension.status)
-        assertEquals("Unsupported file type", parseError(unsupportedExtension.bodyAsText()))
+        assertEquals("Nepalaikomas failo tipas.", parseError(unsupportedExtension.bodyAsText()))
 
         val missingContentType = client.post("/api/uploads/images") {
             header("Authorization", "Bearer $token")
             setBody(multiPartForFile(fileName = "valid.png", contentType = null, bytes = pngBytes()))
         }
         assertEquals(HttpStatusCode.BadRequest, missingContentType.status)
-        assertEquals("Content-Type is required", parseError(missingContentType.bodyAsText()))
+        assertEquals("Nurodykite failo tipą.", parseError(missingContentType.bodyAsText()))
 
         val invalidName = client.post("/api/uploads/images") {
             header("Authorization", "Bearer $token")
             setBody(multiPartForFile(fileName = "nodot", contentType = ContentType.Image.PNG, bytes = pngBytes()))
         }
         assertEquals(HttpStatusCode.BadRequest, invalidName.status)
-        assertEquals("Original file name is required", parseError(invalidName.bodyAsText()))
+        assertEquals("Nurodykite pradinį failo pavadinimą.", parseError(invalidName.bodyAsText()))
 
         val mismatchedContent = client.post("/api/uploads/images") {
             header("Authorization", "Bearer $token")
             setBody(multiPartForFile(fileName = "looks-valid.png", contentType = ContentType.Image.PNG, bytes = pdfBytes()))
         }
         assertEquals(HttpStatusCode.BadRequest, mismatchedContent.status)
-        assertEquals("File contents do not match the declared type", parseError(mismatchedContent.bodyAsText()))
+        assertEquals("Failo turinys neatitinka nurodyto tipo.", parseError(mismatchedContent.bodyAsText()))
     }
 
     @Test
@@ -130,13 +130,13 @@ class UploadRoutesTest {
             setBody(MultiPartFormDataContent(formData { }))
         }
         assertEquals(HttpStatusCode.BadRequest, missingDocument.status)
-        assertEquals("Document file required", parseError(missingDocument.bodyAsText()))
+        assertEquals("Įkelkite dokumento failą.", parseError(missingDocument.bodyAsText()))
 
         val invalidDownload = client.get("/uploads/images/%20") {
             header("Authorization", "Bearer $token")
         }
         assertEquals(HttpStatusCode.BadRequest, invalidDownload.status)
-        assertEquals("Invalid file name", parseError(invalidDownload.bodyAsText()))
+        assertEquals("Neteisingas failo pavadinimas.", parseError(invalidDownload.bodyAsText()))
     }
 
     private fun pngBytes(): ByteArray = byteArrayOf(

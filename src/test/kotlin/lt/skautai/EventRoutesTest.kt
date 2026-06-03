@@ -837,7 +837,7 @@ class EventRoutesTest {
             setBody("""{ "userId": "$userId", "role": "KOMENDANTAS" }""")
         }
         assertEquals(HttpStatusCode.BadRequest, secondResponse.status)
-        assertTrue(secondResponse.bodyAsText().contains("already has an event staff role", ignoreCase = true))
+        assertTrue(secondResponse.bodyAsText().contains("Narys jau turi renginio štabo pareigas", ignoreCase = true))
     }
 
     @Test
@@ -2642,7 +2642,7 @@ class EventRoutesTest {
             setBody("""{ "items": [] }""")
         }
         assertEquals(HttpStatusCode.BadRequest, emptyBulkResponse.status)
-        assertTrue(emptyBulkResponse.bodyAsText().contains("At least one inventory item"))
+        assertTrue(emptyBulkResponse.bodyAsText().contains("Įveskite bent vieną inventoriaus objektą"))
 
         val invalidNestedResponse = client.post("/api/events/$eventId/inventory-items/bulk") {
             contentType(ContentType.Application.Json)
@@ -2651,7 +2651,7 @@ class EventRoutesTest {
             setBody("""{ "items": [{ "name": "", "plannedQuantity": 0 }] }""")
         }
         assertEquals(HttpStatusCode.BadRequest, invalidNestedResponse.status)
-        assertTrue(invalidNestedResponse.bodyAsText().contains("Planned quantity must be at least 1"))
+        assertTrue(invalidNestedResponse.bodyAsText().contains("Planuojamas kiekis turi būti bent 1"))
     }
 
     @Test
@@ -2676,7 +2676,7 @@ class EventRoutesTest {
             header("X-Tuntas-Id", tuntasId)
         }
         assertEquals(HttpStatusCode.NotFound, downloadResponse.status)
-        assertTrue(downloadResponse.bodyAsText().contains("Invoice file not found"))
+        assertTrue(downloadResponse.bodyAsText().contains("Sąskaitos failas nerastas"))
     }
 
     @Test
@@ -2811,7 +2811,7 @@ class EventRoutesTest {
             setBody("""{ "returns": [{ "custodyId": "$custodyId", "decision": "RETURNED", "quantity": 1 }] }""")
         }
         assertEquals(HttpStatusCode.BadRequest, notWrapUpResponse.status)
-        assertTrue(notWrapUpResponse.bodyAsText().contains("wrap-up", ignoreCase = true))
+        assertTrue(notWrapUpResponse.bodyAsText().contains("renginio užbaigimo", ignoreCase = true))
 
         val wrapUpResponse = client.put("/api/events/$eventId") {
             contentType(ContentType.Application.Json)
@@ -2828,7 +2828,7 @@ class EventRoutesTest {
             setBody("""{ "returns": [{ "custodyId": "$custodyId", "decision": "BROKEN", "quantity": 1 }] }""")
         }
         assertEquals(HttpStatusCode.BadRequest, invalidDecisionResponse.status)
-        assertTrue(invalidDecisionResponse.bodyAsText().contains("Invalid return decision"))
+        assertTrue(invalidDecisionResponse.bodyAsText().contains("Neteisingas grąžinimo sprendimas"))
 
         val validReturnResponse = client.post("/api/events/$eventId/reconciliation/returns") {
             contentType(ContentType.Application.Json)

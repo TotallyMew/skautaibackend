@@ -149,7 +149,7 @@ class SecurityTest {
 
         assertEquals(HttpStatusCode.Forbidden, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Insufficient permissions", body["error"]!!.jsonPrimitive.content)
+        assertEquals("Neturite teisių atlikti šį veiksmą.", body["error"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -175,6 +175,6 @@ class SecurityTest {
 
         assertEquals(HttpStatusCode.Forbidden, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Insufficient permissions", body["error"]!!.jsonPrimitive.content)
+        assertEquals("Neturite teisių atlikti šį veiksmą.", body["error"]!!.jsonPrimitive.content)
     }
 }

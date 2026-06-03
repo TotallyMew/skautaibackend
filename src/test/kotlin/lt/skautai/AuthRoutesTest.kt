@@ -132,7 +132,7 @@ class AuthRoutesTest {
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Invalid email format", body["error"]?.jsonPrimitive?.content)
+        assertEquals("Įveskite teisingą el. pašto adresą.", body["error"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -155,7 +155,7 @@ class AuthRoutesTest {
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Password must be at least 8 characters", body["error"]?.jsonPrimitive?.content)
+        assertEquals("Slaptažodis turi būti bent 8 simbolių.", body["error"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -178,7 +178,7 @@ class AuthRoutesTest {
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Invalid krastas", body["error"]?.jsonPrimitive?.content)
+        assertEquals("Neteisingas kraštas.", body["error"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -215,7 +215,7 @@ class AuthRoutesTest {
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Email already registered", body["error"]?.jsonPrimitive?.content)
+        assertEquals("Šis el. paštas jau užregistruotas.", body["error"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -252,7 +252,7 @@ class AuthRoutesTest {
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Tuntas name already exists", body["error"]?.jsonPrimitive?.content)
+        assertEquals("Tuntas tokiu pavadinimu jau yra.", body["error"]?.jsonPrimitive?.content)
 
         transaction {
             exec("SELECT COUNT(*) AS count FROM users WHERE email = 'second-tuntas@test.com'") { rs ->

@@ -49,7 +49,7 @@ class RolesRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, missingHeader.status)
         assertEquals(
-            "X-Tuntas-Id header required",
+            "Pirmiausia pasirinkite tuntą.",
             Json.parseToJsonElement(missingHeader.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -59,7 +59,7 @@ class RolesRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, invalidHeader.status)
         assertEquals(
-            "Invalid tuntas ID",
+            "Neteisingas tunto ID.",
             Json.parseToJsonElement(invalidHeader.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -78,7 +78,7 @@ class RolesRoutesTest {
         }
         assertEquals(HttpStatusCode.Forbidden, nonMember.status)
         assertEquals(
-            "Not a member of this tuntas",
+            "Nesate šio tunto narys.",
             Json.parseToJsonElement(nonMember.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 

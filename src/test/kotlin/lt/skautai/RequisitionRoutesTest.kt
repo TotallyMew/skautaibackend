@@ -370,7 +370,7 @@ class RequisitionRoutesTest {
         }
 
         assertEquals(HttpStatusCode.Forbidden, response.status)
-        assertTrue(response.bodyAsText().contains("accessible"))
+        assertTrue(response.bodyAsText().contains("Prašymas nepasiekiamas"))
     }
 
     @Test
@@ -412,7 +412,7 @@ class RequisitionRoutesTest {
 
         val foreignUnit = postRaw("""{ "requestingUnitId": "$unitB", "items": [{ "itemName": "Kirvis", "quantity": 1 }] }""")
         assertEquals(HttpStatusCode.BadRequest, foreignUnit.status)
-        assertTrue(foreignUnit.bodyAsText().contains("own unit"))
+        assertTrue(foreignUnit.bodyAsText().contains("savo vienetui"))
     }
 
     @Test
@@ -556,7 +556,7 @@ class RequisitionRoutesTest {
             header("X-Tuntas-Id", tuntasId)
         }
         assertEquals(HttpStatusCode.BadRequest, cancelApproved.status)
-        assertTrue(cancelApproved.bodyAsText().contains("cannot be cancelled", ignoreCase = true))
+        assertTrue(cancelApproved.bodyAsText().contains("atšaukti negalima", ignoreCase = true))
     }
 
     @Test

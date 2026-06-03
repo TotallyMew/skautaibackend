@@ -147,7 +147,7 @@ class UserRoutesTest {
 
         assertEquals(HttpStatusCode.NotFound, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("User not found", body["error"]!!.jsonPrimitive.content)
+        assertEquals("Vartotojas nerastas.", body["error"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -204,7 +204,7 @@ class UserRoutesTest {
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Email already registered", body["error"]!!.jsonPrimitive.content)
+        assertEquals("Šis el. paštas jau užregistruotas.", body["error"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -219,7 +219,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, blankName.status)
         assertEquals(
-            "Name is required",
+            "Įveskite vardą.",
             Json.parseToJsonElement(blankName.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -230,7 +230,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, blankSurname.status)
         assertEquals(
-            "Surname is required",
+            "Įveskite pavardę.",
             Json.parseToJsonElement(blankSurname.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -241,7 +241,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, invalidEmail.status)
         assertEquals(
-            "Invalid email format",
+            "Įveskite teisingą el. pašto adresą.",
             Json.parseToJsonElement(invalidEmail.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -252,7 +252,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, invalidPhone.status)
         assertEquals(
-            "Invalid phone format",
+            "Įveskite teisingą telefono numerį.",
             Json.parseToJsonElement(invalidPhone.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
     }
@@ -270,7 +270,7 @@ class UserRoutesTest {
 
         assertEquals(HttpStatusCode.NotFound, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("User not found", body["error"]!!.jsonPrimitive.content)
+        assertEquals("Vartotojas nerastas.", body["error"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -287,7 +287,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, blankCurrent.status)
         assertEquals(
-            "Current password is required",
+            "Įveskite dabartinį slaptažodį.",
             Json.parseToJsonElement(blankCurrent.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -298,7 +298,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, weakPassword.status)
         assertEquals(
-            "Password must be at least 8 characters",
+            "Slaptažodis turi būti bent 8 simbolių.",
             Json.parseToJsonElement(weakPassword.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -309,7 +309,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, samePassword.status)
         assertEquals(
-            "New password must be different",
+            "Naujas slaptažodis turi skirtis nuo dabartinio.",
             Json.parseToJsonElement(samePassword.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -320,7 +320,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, invalidCurrent.status)
         assertEquals(
-            "Invalid current password",
+            "Dabartinis slaptažodis neteisingas.",
             Json.parseToJsonElement(invalidCurrent.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -331,7 +331,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.OK, success.status)
         assertEquals(
-            "Password updated",
+            "Slaptažodis pakeistas.",
             Json.parseToJsonElement(success.bodyAsText()).jsonObject["message"]!!.jsonPrimitive.content
         )
 
@@ -356,7 +356,7 @@ class UserRoutesTest {
 
         assertEquals(HttpStatusCode.NotFound, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("User not found", body["error"]!!.jsonPrimitive.content)
+        assertEquals("Vartotojas nerastas.", body["error"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -377,7 +377,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, missingHeader.status)
         assertEquals(
-            "Missing X-Tuntas-Id header",
+            "Pirmiausia pasirinkite tuntą.",
             Json.parseToJsonElement(missingHeader.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -387,7 +387,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, invalidHeader.status)
         assertEquals(
-            "Invalid tuntas ID",
+            "Neteisingas tunto ID.",
             Json.parseToJsonElement(invalidHeader.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -406,7 +406,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.Forbidden, nonMember.status)
         assertEquals(
-            "Not a member of this tuntas",
+            "Nesate šio tunto narys.",
             Json.parseToJsonElement(nonMember.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -497,7 +497,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, invalidId.status)
         assertEquals(
-            "Invalid tuntas ID",
+            "Neteisingas tunto ID.",
             Json.parseToJsonElement(invalidId.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -507,7 +507,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, notMember.status)
         assertEquals(
-            "Not a member of this tuntas",
+            "Nesate šio tunto narys.",
             Json.parseToJsonElement(notMember.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 
@@ -516,7 +516,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.OK, success.status)
         assertEquals(
-            "Left tuntas",
+            "Tuntas paliktas.",
             Json.parseToJsonElement(success.bodyAsText()).jsonObject["message"]!!.jsonPrimitive.content
         )
 
