@@ -1157,6 +1157,14 @@ class ItemRoutesTest {
         }
         val itemId = Json.parseToJsonElement(createItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
 
+        val createSecondItemResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "name": "Pjūklas", "type": "COLLECTIVE", "category": "TOOLS", "quantity": 2 }""")
+        }
+        val secondItemId = Json.parseToJsonElement(createSecondItemResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+
         val createSessionResponse = client.post("/api/items/audit-sessions") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
@@ -1196,6 +1204,33 @@ class ItemRoutesTest {
         assertEquals(sessionId, fetchedBody["id"]!!.jsonPrimitive.content)
         assertEquals(1, fetchedBody["checks"]!!.jsonArray.size)
 
+        val incompleteCompleteResponse = client.post("/api/items/audit-sessions/$sessionId/complete") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.BadRequest, incompleteCompleteResponse.status)
+
+        val saveSecondCheckResponse = client.post("/api/items/audit-sessions/$sessionId/checks") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """
+                {
+                    "checks": [
+                        {
+                            "itemId": "$secondItemId",
+                            "result": "FOUND",
+                            "actualQuantity": 3,
+                            "conditionAtCheck": "NEEDS_INSPECTION"
+                        }
+                    ]
+                }
+                """.trimIndent()
+            )
+        }
+        assertEquals(HttpStatusCode.OK, saveSecondCheckResponse.status)
+
         val completeResponse = client.post("/api/items/audit-sessions/$sessionId/complete") {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
@@ -1203,6 +1238,15 @@ class ItemRoutesTest {
         assertEquals(HttpStatusCode.OK, completeResponse.status)
         val completedBody = Json.parseToJsonElement(completeResponse.bodyAsText()).jsonObject
         assertEquals("COMPLETED", completedBody["status"]!!.jsonPrimitive.content)
+
+        val updatedSecondItemResponse = client.get("/api/items/$secondItemId") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, updatedSecondItemResponse.status)
+        val updatedSecondItem = Json.parseToJsonElement(updatedSecondItemResponse.bodyAsText()).jsonObject
+        assertEquals(3, updatedSecondItem["quantity"]!!.jsonPrimitive.content.toInt())
+        assertEquals("NEEDS_INSPECTION", updatedSecondItem["condition"]!!.jsonPrimitive.content)
     }
 
     @Test

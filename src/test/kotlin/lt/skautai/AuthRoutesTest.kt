@@ -159,6 +159,75 @@ class AuthRoutesTest {
     }
 
     @Test
+    fun `register rejects digits in name`() = testApplication {
+        configureFullApp()
+
+        val response = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "123",
+                    "surname": "User",
+                    "email": "digits-in-name@test.com",
+                    "password": "testas123",
+                    "tuntasName": "Test Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Varde naudokite tik raides, tarpus, brūkšnį arba apostrofą.", body["error"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `register rejects too long fields before database write`() = testApplication {
+        configureFullApp()
+
+        val response = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "${"A".repeat(101)}",
+                    "surname": "User",
+                    "email": "too-long@test.com",
+                    "password": "testas123",
+                    "tuntasName": "Test Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Vardas negali būti ilgesnis nei 100 simbolių.", body["error"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `register rejects tuntas name without letters`() = testApplication {
+        configureFullApp()
+
+        val response = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""
+                {
+                    "name": "Test",
+                    "surname": "User",
+                    "email": "numeric-tuntas@test.com",
+                    "password": "testas123",
+                    "tuntasName": "123",
+                    "tuntasKrastas": "Vilniaus"
+                }
+            """.trimIndent())
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals("Tunto pavadinime turi būti bent viena raidė.", body["error"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun `register requires valid krastas`() = testApplication {
         configureFullApp()
 
@@ -203,8 +272,8 @@ class AuthRoutesTest {
             contentType(ContentType.Application.Json)
             setBody("""
                 {
-                    "name": "Test2",
-                    "surname": "User2",
+                    "name": "Testas",
+                    "surname": "Antras",
                     "email": "duplicate@test.com",
                     "password": "testas123",
                     "tuntasName": "Another Tuntas",
@@ -240,8 +309,8 @@ class AuthRoutesTest {
             contentType(ContentType.Application.Json)
             setBody("""
                 {
-                    "name": "Test2",
-                    "surname": "User2",
+                    "name": "Testas",
+                    "surname": "Antras",
                     "email": "second-tuntas@test.com",
                     "password": "testas123",
                     "tuntasName": "unique tuntas",

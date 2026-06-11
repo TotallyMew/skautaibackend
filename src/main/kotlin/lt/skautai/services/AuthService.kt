@@ -23,6 +23,17 @@ class AuthService(private val environment: ApplicationEnvironment) {
         private const val maxFailedAttempts = 5
         private const val rateLimitWindowMs = 15 * 60 * 1000L
         private const val blockDurationMs = 15 * 60 * 1000L
+        private const val nameMinLength = 2
+        private const val nameMaxLength = 100
+        private const val surnameMinLength = 2
+        private const val surnameMaxLength = 100
+        private const val emailMaxLength = 255
+        private const val passwordMinLength = 8
+        private const val passwordMaxLength = 128
+        private const val phoneMaxLength = 20
+        private const val tuntasNameMinLength = 2
+        private const val tuntasNameMaxLength = 100
+        private const val inviteCodeMaxLength = 20
         private val failedLoginAttempts = ConcurrentHashMap<String, MutableList<Long>>()
         private val blockedUntil = ConcurrentHashMap<String, Long>()
     }
@@ -31,6 +42,9 @@ class AuthService(private val environment: ApplicationEnvironment) {
     private val issuer = environment.config.property("jwt.issuer").getString()
     private val audience = environment.config.property("jwt.audience").getString()
     private val emailRegex = Regex("^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}$", RegexOption.IGNORE_CASE)
+    private val personNameRegex = Regex("^[\\p{L}][\\p{L} '\\-]*[\\p{L}]$")
+    private val tuntasNameRegex = Regex("^[\\p{L}\\p{N}][\\p{L}\\p{N} .,'()\\-]*$")
+    private val phoneRegex = Regex("^\\+?[0-9][0-9 ()\\-]*$")
     private val allowedKrastai = setOf(
         "Alytaus",
         "Kauno",
@@ -73,14 +87,16 @@ class AuthService(private val environment: ApplicationEnvironment) {
             val name = request.name.trim()
             val surname = request.surname.trim()
             val email = normalizeEmail(request.email)
+            val phone = normalizePhone(request.phone)
             val tuntasName = request.tuntasName.trim()
             val tuntasKrastas = request.tuntasKrastas?.trim().orEmpty()
 
-            validateRequired(name, "Name")?.let { return@transaction Result.failure(Exception(it)) }
-            validateRequired(surname, "Surname")?.let { return@transaction Result.failure(Exception(it)) }
+            validateName(name)?.let { return@transaction Result.failure(Exception(it)) }
+            validateSurname(surname)?.let { return@transaction Result.failure(Exception(it)) }
             validateEmail(email)?.let { return@transaction Result.failure(Exception(it)) }
             validatePassword(request.password)?.let { return@transaction Result.failure(Exception(it)) }
-            validateRequired(tuntasName, "Tuntas name")?.let { return@transaction Result.failure(Exception(it)) }
+            validatePhone(phone)?.let { return@transaction Result.failure(Exception(it)) }
+            validateTuntasName(tuntasName)?.let { return@transaction Result.failure(Exception(it)) }
             validateKrastas(tuntasKrastas)?.let { return@transaction Result.failure(Exception(it)) }
 
             val existingUser = Users.selectAll()
@@ -104,7 +120,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 it[Users.surname] = surname
                 it[Users.email] = email
                 it[Users.passwordHash] = passwordHash
-                it[Users.phone] = request.phone
+                it[Users.phone] = phone
             } get Users.id
 
             val tuntasId = Tuntai.insert {
@@ -165,13 +181,15 @@ class AuthService(private val environment: ApplicationEnvironment) {
             val name = request.name.trim()
             val surname = request.surname.trim()
             val email = normalizeEmail(request.email)
+            val phone = normalizePhone(request.phone)
             val inviteCode = request.inviteCode.trim()
 
-            validateRequired(name, "Name")?.let { return@transaction Result.failure(Exception(it)) }
-            validateRequired(surname, "Surname")?.let { return@transaction Result.failure(Exception(it)) }
+            validateName(name)?.let { return@transaction Result.failure(Exception(it)) }
+            validateSurname(surname)?.let { return@transaction Result.failure(Exception(it)) }
             validateEmail(email)?.let { return@transaction Result.failure(Exception(it)) }
             validatePassword(request.password)?.let { return@transaction Result.failure(Exception(it)) }
-            validateRequired(inviteCode, "Invite code")?.let { return@transaction Result.failure(Exception(it)) }
+            validatePhone(phone)?.let { return@transaction Result.failure(Exception(it)) }
+            validateInviteCode(inviteCode)?.let { return@transaction Result.failure(Exception(it)) }
 
             val existingUser = Users.selectAll()
                 .where { Users.email eq email }
@@ -219,7 +237,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 it[Users.surname] = surname
                 it[Users.email] = email
                 it[Users.passwordHash] = passwordHash
-                it[Users.phone] = request.phone
+                it[Users.phone] = phone
             } get Users.id
 
             UserTuntasMemberships.insert {
@@ -488,13 +506,32 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
     private fun normalizeEmail(email: String): String = email.trim().lowercase(Locale.ROOT)
 
-    private fun validateRequired(value: String, label: String): String? {
-        return if (value.isBlank()) "$label is required" else null
-    }
+    private fun normalizePhone(phone: String?): String? = phone?.trim()?.takeIf { it.isNotBlank() }
+
+    private fun validateName(name: String): String? = validatePersonName(
+        value = name,
+        requiredMessage = "Name is required",
+        tooShortMessage = "Name must be at least $nameMinLength characters",
+        tooLongMessage = "Name must be at most $nameMaxLength characters",
+        invalidMessage = "Name contains invalid characters",
+        minLength = nameMinLength,
+        maxLength = nameMaxLength
+    )
+
+    private fun validateSurname(surname: String): String? = validatePersonName(
+        value = surname,
+        requiredMessage = "Surname is required",
+        tooShortMessage = "Surname must be at least $surnameMinLength characters",
+        tooLongMessage = "Surname must be at most $surnameMaxLength characters",
+        invalidMessage = "Surname contains invalid characters",
+        minLength = surnameMinLength,
+        maxLength = surnameMaxLength
+    )
 
     private fun validateEmail(email: String): String? {
         return when {
             email.isBlank() -> "Email is required"
+            email.length > emailMaxLength -> "Email must be at most $emailMaxLength characters"
             !emailRegex.matches(email) -> "Invalid email format"
             else -> null
         }
@@ -503,10 +540,34 @@ class AuthService(private val environment: ApplicationEnvironment) {
     private fun validatePassword(password: String): String? {
         return when {
             password.isBlank() -> "Password is required"
-            password.length < 8 -> "Password must be at least 8 characters"
+            password.length < passwordMinLength -> "Password must be at least $passwordMinLength characters"
+            password.length > passwordMaxLength -> "Password must be at most $passwordMaxLength characters"
             password.any { it.isWhitespace() } -> "Password cannot contain spaces"
             !password.any { it.isLetter() } -> "Password must contain a letter"
             !password.any { it.isDigit() } -> "Password must contain a number"
+            else -> null
+        }
+    }
+
+    private fun validatePhone(phone: String?): String? {
+        if (phone == null) return null
+        val digitCount = phone.count { it.isDigit() }
+        return when {
+            phone.length > phoneMaxLength -> "Phone must be at most $phoneMaxLength characters"
+            !phoneRegex.matches(phone) -> "Invalid phone format"
+            digitCount < 5 -> "Phone must contain at least 5 digits"
+            digitCount > 15 -> "Phone must contain at most 15 digits"
+            else -> null
+        }
+    }
+
+    private fun validateTuntasName(tuntasName: String): String? {
+        return when {
+            tuntasName.isBlank() -> "Tuntas name is required"
+            tuntasName.length < tuntasNameMinLength -> "Tuntas name must be at least $tuntasNameMinLength characters"
+            tuntasName.length > tuntasNameMaxLength -> "Tuntas name must be at most $tuntasNameMaxLength characters"
+            !tuntasName.any { it.isLetter() } -> "Tuntas name must contain a letter"
+            !tuntasNameRegex.matches(tuntasName) -> "Tuntas name contains invalid characters"
             else -> null
         }
     }
@@ -515,6 +576,32 @@ class AuthService(private val environment: ApplicationEnvironment) {
         return when {
             krastas.isBlank() -> "Krastas is required"
             krastas !in allowedKrastai -> "Invalid krastas"
+            else -> null
+        }
+    }
+
+    private fun validateInviteCode(inviteCode: String): String? {
+        return when {
+            inviteCode.isBlank() -> "Invite code is required"
+            inviteCode.length > inviteCodeMaxLength -> "Invite code must be at most $inviteCodeMaxLength characters"
+            else -> null
+        }
+    }
+
+    private fun validatePersonName(
+        value: String,
+        requiredMessage: String,
+        tooShortMessage: String,
+        tooLongMessage: String,
+        invalidMessage: String,
+        minLength: Int,
+        maxLength: Int
+    ): String? {
+        return when {
+            value.isBlank() -> requiredMessage
+            value.length < minLength -> tooShortMessage
+            value.length > maxLength -> tooLongMessage
+            !personNameRegex.matches(value) -> invalidMessage
             else -> null
         }
     }

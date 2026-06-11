@@ -27,6 +27,7 @@ import java.util.UUID
 class ItemCheckService {
 
     private val validStorageAuditResults = setOf("FOUND", "MISSING", "MISPLACED", "DAMAGED")
+    private val validItemConditions = setOf("GOOD", "MISSING", "UNDER_REPAIR", "NEEDS_INSPECTION", "DAMAGED", "WRITTEN_OFF")
 
     fun createStorageAuditSession(
         tuntasId: UUID,
@@ -155,10 +156,25 @@ class ItemCheckService {
             val item = Items.selectAll()
                 .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Item not found"))
+            if (!itemMatchesStorageAuditScope(item, session)) {
+                return@transaction Result.failure(Exception("Item is outside this audit scope"))
+            }
             val expectedQuantity = item[Items.quantity]
             val actualQuantity = check.actualQuantity ?: defaultActualQuantity(result, expectedQuantity)
             if (actualQuantity < 0) {
                 return@transaction Result.failure(Exception("Actual quantity cannot be negative"))
+            }
+            val conditionAtCheck = check.conditionAtCheck
+                ?.trim()
+                ?.uppercase()
+                ?.takeIf { it.isNotBlank() }
+            if (conditionAtCheck != null && conditionAtCheck !in validItemConditions) {
+                return@transaction Result.failure(Exception("Invalid item condition"))
+            }
+            val resolvedCondition = when {
+                conditionAtCheck != null -> conditionAtCheck
+                result == "DAMAGED" -> "DAMAGED"
+                else -> item[Items.condition]
             }
 
             val existing = ItemChecks.selectAll()
@@ -182,10 +198,7 @@ class ItemCheckService {
                     it[this.actualQuantity] = actualQuantity
                     it[this.actualLocationId] = actualLocationId
                     it[actualLocationNote] = check.actualLocationNote?.trim()?.takeIf { value -> value.isNotBlank() }
-                    it[conditionAtCheck] = when (result) {
-                        "DAMAGED" -> "DAMAGED"
-                        else -> item[Items.condition]
-                    }
+                    it[ItemChecks.conditionAtCheck] = resolvedCondition
                     it[checkedByUserId] = userId
                     it[notes] = check.notes?.trim()?.takeIf { value -> value.isNotBlank() }
                     it[checkedAt] = now
@@ -198,10 +211,7 @@ class ItemCheckService {
                     it[this.actualQuantity] = actualQuantity
                     it[this.actualLocationId] = actualLocationId
                     it[actualLocationNote] = check.actualLocationNote?.trim()?.takeIf { value -> value.isNotBlank() }
-                    it[conditionAtCheck] = when (result) {
-                        "DAMAGED" -> "DAMAGED"
-                        else -> item[Items.condition]
-                    }
+                    it[ItemChecks.conditionAtCheck] = resolvedCondition
                     it[checkedByUserId] = userId
                     it[notes] = check.notes?.trim()?.takeIf { value -> value.isNotBlank() }
                     it[checkedAt] = now
@@ -222,6 +232,14 @@ class ItemCheckService {
         if (session[ItemCheckSessions.status] == "COMPLETED") {
             return@transaction Result.success(toSessionResponse(session))
         }
+        val checks = ItemChecks.selectAll()
+            .where { ItemChecks.sessionId eq sessionId }
+            .toList()
+        val unchecked = (session[ItemCheckSessions.scopeItemCount] - checks.size).coerceAtLeast(0)
+        if (unchecked > 0) {
+            return@transaction Result.failure(Exception("Cannot complete audit before every item is checked. Remaining: $unchecked"))
+        }
+        applyStorageAuditResults(checks)
         recordStorageAuditHistory(sessionId, userId)
         val now = Clock.System.now()
         ItemCheckSessions.update({ ItemCheckSessions.id eq sessionId }) {
@@ -372,6 +390,20 @@ class ItemCheckService {
             }
     }
 
+    private fun itemMatchesStorageAuditScope(item: ResultRow, session: ResultRow): Boolean {
+        val custodianMatches = session[ItemCheckSessions.scopeCustodianId]?.let { item[Items.custodianId] == it } ?: true
+        val typeMatches = session[ItemCheckSessions.scopeType]?.let { item[Items.type] == it } ?: true
+        val categoryMatches = session[ItemCheckSessions.scopeCategory]?.let { item[Items.category] == it } ?: true
+        val sharedOnlyMatches = !session[ItemCheckSessions.scopeSharedOnly] || item[Items.custodianId] == null
+        val ownerMatches = session[ItemCheckSessions.scopePersonalOwnerUserId]?.let { item[Items.createdByUserId] == it } ?: true
+        return item[Items.status] == "ACTIVE" &&
+            custodianMatches &&
+            typeMatches &&
+            categoryMatches &&
+            sharedOnlyMatches &&
+            ownerMatches
+    }
+
     private fun defaultActualQuantity(result: String, expectedQuantity: Int): Int = when (result) {
         "MISSING" -> 0
         else -> expectedQuantity
@@ -417,6 +449,20 @@ class ItemCheckService {
                     it[this.createdAt] = row[ItemChecks.checkedAt]
                 }
             }
+    }
+
+    private fun applyStorageAuditResults(checks: List<ResultRow>) {
+        val now = Clock.System.now()
+        checks.forEach { row ->
+            val itemId = row[ItemChecks.itemId] ?: return@forEach
+            val currentItem = Items.selectAll().where { Items.id eq itemId }.firstOrNull()
+                ?: return@forEach
+            Items.update({ Items.id eq itemId }) {
+                it[quantity] = row[ItemChecks.actualQuantity]
+                it[condition] = row[ItemChecks.conditionAtCheck] ?: currentItem[Items.condition]
+                it[updatedAt] = now
+            }
+        }
     }
 
     private fun userDisplayName(userId: UUID?): String? {

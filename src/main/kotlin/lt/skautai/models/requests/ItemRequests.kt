@@ -105,6 +105,7 @@ data class UpsertStorageAuditCheckRequest(
     val actualQuantity: Int? = null,
     val actualLocationId: String? = null,
     val actualLocationNote: String? = null,
+    val conditionAtCheck: String? = null,
     val notes: String? = null
 )
 
