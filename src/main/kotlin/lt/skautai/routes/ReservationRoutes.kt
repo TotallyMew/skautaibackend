@@ -15,11 +15,18 @@ import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
+import lt.skautai.models.responses.ReservationResponse
+import lt.skautai.services.FirebaseNotificationService
+import lt.skautai.services.NotificationRecipientService
 import lt.skautai.services.PermissionContextService
 import lt.skautai.services.ReservationService
 import java.util.*
 
-fun Route.reservationRoutes(reservationService: ReservationService) {
+fun Route.reservationRoutes(
+    reservationService: ReservationService,
+    firebaseNotificationService: FirebaseNotificationService,
+    notificationRecipientService: NotificationRecipientService
+) {
     authenticate("auth-jwt") {
         route("/api/reservations") {
 
@@ -147,7 +154,14 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                     approvableUnitIds,
                     userUnitIds
                 )
-                    .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                    .onSuccess {
+                        firebaseNotificationService.sendReservationAwaitingApprovalNotifications(
+                            reservation = it,
+                            recipients = notificationRecipientService,
+                            excludeUserId = userId
+                        )
+                        call.respond(HttpStatusCode.Created, it)
+                    }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create reservation")) }
             }
 
@@ -186,7 +200,15 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                     canApproveTopLevel,
                     approvableUnitIds
                 )
-                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onSuccess {
+                        firebaseNotificationService.sendReservationReviewNotification(it)
+                        firebaseNotificationService.sendReservationAwaitingApprovalNotifications(
+                            reservation = it,
+                            recipients = notificationRecipientService,
+                            excludeUserId = userId
+                        )
+                        call.respond(HttpStatusCode.OK, it)
+                    }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to review reservation")) }
             }
 
@@ -220,7 +242,10 @@ fun Route.reservationRoutes(reservationService: ReservationService) {
                     canApproveTopLevel = canApproveTopLevel,
                     approvableUnitIds = emptySet()
                 )
-                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onSuccess {
+                        firebaseNotificationService.sendReservationReviewNotification(it)
+                        call.respond(HttpStatusCode.OK, it)
+                    }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to review reservation")) }
             }
 
@@ -448,4 +473,66 @@ private fun parseInstantOrNull(value: String): kotlinx.datetime.Instant? = try {
     kotlinx.datetime.Instant.parse(value)
 } catch (_: Exception) {
     null
+}
+
+private fun FirebaseNotificationService.sendReservationAwaitingApprovalNotifications(
+    reservation: ReservationResponse,
+    recipients: NotificationRecipientService,
+    excludeUserId: UUID
+) {
+    val targetUsers = when {
+        reservation.unitReviewStatus == "PENDING" -> {
+            val unitId = reservation.requestingUnitId?.let(UUID::fromString) ?: return
+            recipients.usersWithPermission(
+                tuntasId = UUID.fromString(reservation.tuntasId),
+                permissionName = "reservations.approve",
+                organizationalUnitId = unitId,
+                excludeUserId = excludeUserId
+            )
+        }
+        reservation.topLevelReviewStatus == "PENDING" -> {
+            recipients.usersWithPermission(
+                tuntasId = UUID.fromString(reservation.tuntasId),
+                permissionName = "reservations.approve",
+                excludeUserId = excludeUserId
+            )
+        }
+        else -> emptyList()
+    }
+
+    targetUsers.forEach { userId ->
+        sendToUser(
+            userId = userId,
+            title = "Nauja rezervacija laukia patvirtinimo",
+            body = "Rezervacija \"${reservation.title}\" laukia jusu patvirtinimo.",
+            data = mapOf(
+                "resource" to "reservations",
+                "reservationId" to reservation.id,
+                "tuntasId" to reservation.tuntasId,
+                "status" to reservation.status
+            )
+        )
+    }
+}
+
+private fun FirebaseNotificationService.sendReservationReviewNotification(reservation: ReservationResponse) {
+    val status = reservation.status.uppercase()
+    if (status !in setOf("APPROVED", "REJECTED")) return
+    val title = if (status == "APPROVED") "Rezervacija patvirtinta" else "Rezervacija atmesta"
+    val body = if (status == "APPROVED") {
+        "Jūsų rezervacija „${reservation.title}“ buvo patvirtinta."
+    } else {
+        "Jūsų rezervacija „${reservation.title}“ buvo atmesta."
+    }
+    sendToUser(
+        userId = UUID.fromString(reservation.reservedByUserId),
+        title = title,
+        body = body,
+        data = mapOf(
+            "resource" to "reservations",
+            "reservationId" to reservation.id,
+            "tuntasId" to reservation.tuntasId,
+            "status" to reservation.status
+        )
+    )
 }

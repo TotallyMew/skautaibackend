@@ -9,6 +9,7 @@ import io.ktor.server.response.*
 import lt.skautai.database.tables.Tuntai
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.plugins.configureRouting
+import lt.skautai.plugins.configureLiveEventPublisher
 import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
 import lt.skautai.services.PermissionSeeder
@@ -27,9 +28,11 @@ fun main(args: Array<String>) {
 }
 
 fun Application.module() {
+    loadDotEnvIntoSystemProperties()
     configureDatabases()
     configureSerialization()
     configureSecurity()
+    configureLiveEventPublisher()
     install(DefaultHeaders) {
         header("X-Content-Type-Options", "nosniff")
         header("X-Frame-Options", "DENY")
@@ -86,13 +89,18 @@ private val supportedDotEnvKeys = setOf(
     "DB_PASSWORD",
     "JWT_SECRET",
     "SETUP_BOOTSTRAP_TOKEN",
+    "FIREBASE_SERVICE_ACCOUNT_PATH",
+    "NOTIFICATIONS_TEST_ENABLED",
     "PORT"
 )
 
 private fun loadDotEnvIntoSystemProperties(dotEnvPath: Path = Path(".env")) {
-    if (!Files.exists(dotEnvPath)) return
+    val resolvedDotEnvPath = listOf(
+        dotEnvPath,
+        Path("skautu-inventoriaus-valdymas-backend/.env")
+    ).firstOrNull { Files.exists(it) } ?: return
 
-    Files.readAllLines(dotEnvPath).forEach { rawLine ->
+    Files.readAllLines(resolvedDotEnvPath).forEach { rawLine ->
         val line = rawLine.trim()
         if (line.isBlank() || line.startsWith("#")) return@forEach
 

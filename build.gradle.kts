@@ -44,6 +44,9 @@ dependencies {
     implementation("org.mindrot:jbcrypt:0.4")
     implementation("com.auth0:java-jwt:4.4.0")
 
+    // Push notifications
+    implementation("com.google.firebase:firebase-admin:9.6.0")
+
     // Testing
     testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host:$ktor_version")

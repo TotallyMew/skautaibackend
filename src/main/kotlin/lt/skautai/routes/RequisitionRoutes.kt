@@ -16,10 +16,13 @@ import lt.skautai.models.requests.AddRequisitionToInventoryRequest
 import lt.skautai.models.requests.RequisitionTopLevelReviewRequest
 import lt.skautai.models.requests.RequisitionUnitReviewRequest
 import lt.skautai.models.requests.RequisitionMarkPurchasedRequest
+import lt.skautai.models.responses.RequisitionResponse
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
+import lt.skautai.services.FirebaseNotificationService
+import lt.skautai.services.NotificationRecipientService
 import lt.skautai.services.PermissionContextService
 import lt.skautai.services.RequisitionService
 import java.util.UUID
@@ -31,7 +34,11 @@ import org.jetbrains.exposed.sql.innerJoin
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 
-fun Route.requisitionRoutes(service: RequisitionService) {
+fun Route.requisitionRoutes(
+    service: RequisitionService,
+    firebaseNotificationService: FirebaseNotificationService,
+    notificationRecipientService: NotificationRecipientService
+) {
     authenticate("auth-jwt") {
         route("/api/requisitions") {
             get {
@@ -132,7 +139,14 @@ fun Route.requisitionRoutes(service: RequisitionService) {
 
                 val request = call.receive<CreateRequisitionRequest>()
                 service.createRequest(tuntasUUID, userId, request)
-                    .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                    .onSuccess {
+                        firebaseNotificationService.sendRequisitionNextStepNotifications(
+                            request = it,
+                            recipients = notificationRecipientService,
+                            excludeUserId = userId
+                        )
+                        call.respond(HttpStatusCode.Created, it)
+                    }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create requisition")) }
             }
 
@@ -191,7 +205,15 @@ fun Route.requisitionRoutes(service: RequisitionService) {
 
                 val request = call.receive<RequisitionUnitReviewRequest>()
                 service.unitReview(requestUUID, tuntasUUID, userId, request)
-                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onSuccess {
+                        firebaseNotificationService.sendRequisitionReviewNotification(it)
+                        firebaseNotificationService.sendRequisitionNextStepNotifications(
+                            request = it,
+                            recipients = notificationRecipientService,
+                            excludeUserId = userId
+                        )
+                        call.respond(HttpStatusCode.OK, it)
+                    }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to process unit review")) }
             }
 
@@ -219,7 +241,10 @@ fun Route.requisitionRoutes(service: RequisitionService) {
 
                 val request = call.receive<RequisitionTopLevelReviewRequest>()
                 service.topLevelReview(requestUUID, tuntasUUID, userId, request)
-                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onSuccess {
+                        firebaseNotificationService.sendRequisitionReviewNotification(it)
+                        call.respond(HttpStatusCode.OK, it)
+                    }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to process top-level review")) }
             }
 
@@ -313,4 +338,70 @@ private fun resolveRequisitionReviewableUnitIds(userId: UUID, tuntasId: UUID): L
             .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
             .distinct()
     }
+}
+
+private fun FirebaseNotificationService.sendRequisitionNextStepNotifications(
+    request: RequisitionResponse,
+    recipients: NotificationRecipientService,
+    excludeUserId: UUID
+) {
+    val targetUsers = when {
+        request.unitReviewStatus == "PENDING" -> {
+            val unitId = request.requestingUnitId?.let(UUID::fromString) ?: return
+            recipients.usersWithPermission(
+                tuntasId = UUID.fromString(request.tuntasId),
+                permissionName = "items.request.approve.unit",
+                organizationalUnitId = unitId,
+                excludeUserId = excludeUserId
+            )
+        }
+        request.topLevelReviewStatus == "PENDING" -> {
+            recipients.usersWithPermission(
+                tuntasId = UUID.fromString(request.tuntasId),
+                permissionName = "requisitions.approve",
+                excludeUserId = excludeUserId
+            )
+        }
+        else -> emptyList()
+    }
+
+    targetUsers.forEach { userId ->
+        sendToUser(
+            userId = userId,
+            title = "Naujas pirkimo prasymas",
+            body = "Pirkimo prasymas laukia jusu perziuros.",
+            data = mapOf(
+                "resource" to "requisitions",
+                "requestId" to request.id,
+                "tuntasId" to request.tuntasId,
+                "status" to request.status
+            )
+        )
+    }
+}
+
+private fun FirebaseNotificationService.sendRequisitionReviewNotification(
+    request: RequisitionResponse
+) {
+    if (request.status !in setOf("APPROVED", "REJECTED")) return
+
+    val approved = request.status == "APPROVED"
+    val title = if (approved) "Pirkimo prasymas patvirtintas" else "Pirkimo prasymas atmestas"
+    val body = if (approved) {
+        "Jusu pirkimo prasymas buvo patvirtintas."
+    } else {
+        "Jusu pirkimo prasymas buvo atmestas."
+    }
+
+    sendToUser(
+        userId = UUID.fromString(request.createdByUserId),
+        title = title,
+        body = body,
+        data = mapOf(
+            "resource" to "requisitions",
+            "requestId" to request.id,
+            "tuntasId" to request.tuntasId,
+            "status" to request.status
+        )
+    )
 }

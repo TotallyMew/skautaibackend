@@ -10,12 +10,15 @@ import lt.skautai.database.tables.Roles
 import lt.skautai.database.tables.Tuntai
 import lt.skautai.models.requests.AssignLeadershipRoleRequest
 import lt.skautai.models.requests.AssignRankRequest
+import lt.skautai.models.requests.SuperAdminNotificationRequest
 import lt.skautai.models.requests.UpdateLeadershipRoleRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.models.responses.RoleListResponse
 import lt.skautai.models.responses.RoleResponse
 import lt.skautai.services.MemberService
+import lt.skautai.services.FirebaseNotificationService
+import lt.skautai.services.NotificationRecipientService
 import lt.skautai.services.OrganizationalUnitService
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -33,9 +36,61 @@ private val supportedRankNames = setOf(
 
 fun Route.superAdminRoutes(
     memberService: MemberService,
-    organizationalUnitService: OrganizationalUnitService
+    organizationalUnitService: OrganizationalUnitService,
+    firebaseNotificationService: FirebaseNotificationService,
+    notificationRecipientService: NotificationRecipientService
 ) {
     authenticate("auth-super-admin") {
+        route("/api/super-admin/notifications") {
+            post {
+                val request = call.receive<SuperAdminNotificationRequest>()
+                val title = request.title.trim()
+                val body = request.body.trim()
+                if (title.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Notification title is required"))
+                }
+                if (body.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Notification body is required"))
+                }
+                if (title.length > 120) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Notification title is too long"))
+                }
+                if (body.length > 1000) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Notification body is too long"))
+                }
+
+                val tuntasUUID = request.tuntasId
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let {
+                        runCatching { UUID.fromString(it) }.getOrNull()
+                            ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                    }
+                val recipientIds = if (tuntasUUID == null) {
+                    notificationRecipientService.usersInActiveTuntai()
+                } else {
+                    notificationRecipientService.usersInTuntas(tuntasUUID)
+                }
+
+                recipientIds.forEach { userId ->
+                    firebaseNotificationService.sendToUser(
+                        userId = userId,
+                        title = title,
+                        body = body,
+                        data = buildMap {
+                            put("resource", "announcement")
+                            put("source", "super_admin")
+                            tuntasUUID?.let { put("tuntasId", it.toString()) }
+                        }
+                    )
+                }
+
+                call.respond(
+                    HttpStatusCode.OK,
+                    MessageResponse("Pranesimas issiustas ${recipientIds.size} gavejams")
+                )
+            }
+        }
+
         route("/api/super-admin/tuntai") {
             get {
                 val tuntai = transaction {

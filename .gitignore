@@ -44,6 +44,11 @@ bin/
 ### Environment variables ###
 .env
 
+### Firebase private keys ###
+*firebase-adminsdk*.json
+firebase-service-account*.json
+serviceAccountKey.json
+
 
 loc.py
 plantuml/

@@ -9,11 +9,14 @@ import io.ktor.server.routing.*
 import lt.skautai.models.requests.CreateBendrasInventoryRequestRequest
 import lt.skautai.models.requests.DraugininkasReviewRequest
 import lt.skautai.models.requests.TopLevelReviewRequest
+import lt.skautai.models.responses.BendrasInventoryRequestResponse
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.BendrasInventoryRequestService
+import lt.skautai.services.FirebaseNotificationService
+import lt.skautai.services.NotificationRecipientService
 import java.util.*
 import lt.skautai.database.tables.BendrasInventoryRequests
 import lt.skautai.database.tables.Roles
@@ -23,7 +26,11 @@ import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 
-fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService) {
+fun Route.bendrasInventoryRequestRoutes(
+    service: BendrasInventoryRequestService,
+    firebaseNotificationService: FirebaseNotificationService,
+    notificationRecipientService: NotificationRecipientService
+) {
     authenticate("auth-jwt") {
         route("/api/inventory-requests") {
 
@@ -112,7 +119,14 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                 val request = call.receive<CreateBendrasInventoryRequestRequest>()
 
                 service.createRequest(tuntasUUID, requestedByUserId, request)
-                    .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                    .onSuccess {
+                        firebaseNotificationService.sendBendrasRequestNextStepNotifications(
+                            request = it,
+                            recipients = notificationRecipientService,
+                            excludeUserId = requestedByUserId
+                        )
+                        call.respond(HttpStatusCode.Created, it)
+                    }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create request")) }
             }
 
@@ -169,7 +183,15 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                 val request = call.receive<DraugininkasReviewRequest>()
 
                 service.draugininkasReview(requestUUID, tuntasUUID, reviewerUserId, request)
-                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onSuccess {
+                        firebaseNotificationService.sendBendrasRequestReviewNotification(it)
+                        firebaseNotificationService.sendBendrasRequestNextStepNotifications(
+                            request = it,
+                            recipients = notificationRecipientService,
+                            excludeUserId = reviewerUserId
+                        )
+                        call.respond(HttpStatusCode.OK, it)
+                    }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to process review")) }
             }
 
@@ -194,7 +216,10 @@ fun Route.bendrasInventoryRequestRoutes(service: BendrasInventoryRequestService)
                 val request = call.receive<TopLevelReviewRequest>()
 
                 service.topLevelReview(requestUUID, tuntasUUID, reviewerUserId, request)
-                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onSuccess {
+                        firebaseNotificationService.sendBendrasRequestReviewNotification(it)
+                        call.respond(HttpStatusCode.OK, it)
+                    }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to process review")) }
             }
         }
@@ -232,4 +257,73 @@ private fun resolveReviewableUnitIds(userId: UUID, tuntasId: UUID): List<UUID> {
             .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
             .distinct()
     }
+}
+
+private fun FirebaseNotificationService.sendBendrasRequestNextStepNotifications(
+    request: BendrasInventoryRequestResponse,
+    recipients: NotificationRecipientService,
+    excludeUserId: UUID
+) {
+    val targetUsers = when {
+        request.draugininkasStatus == "PENDING" -> {
+            val unitId = request.requestingUnitId?.let(UUID::fromString) ?: return
+            recipients.usersWithPermission(
+                tuntasId = UUID.fromString(request.tuntasId),
+                permissionName = "items.request.forward.bendras",
+                organizationalUnitId = unitId,
+                excludeUserId = excludeUserId
+            )
+        }
+        request.topLevelStatus == "PENDING" &&
+            (!request.needsDraugininkasApproval || request.draugininkasStatus == "FORWARDED") -> {
+            recipients.usersWithPermission(
+                tuntasId = UUID.fromString(request.tuntasId),
+                permissionName = "items.request.approve.bendras",
+                excludeUserId = excludeUserId
+            )
+        }
+        else -> emptyList()
+    }
+
+    targetUsers.forEach { userId ->
+        sendToUser(
+            userId = userId,
+            title = "Naujas paemimo prasymas",
+            body = "Prasymas \"${request.itemName}\" laukia perziuros.",
+            data = mapOf(
+                "resource" to "bendras_requests",
+                "requestId" to request.id,
+                "tuntasId" to request.tuntasId,
+                "status" to request.topLevelStatus
+            )
+        )
+    }
+}
+
+private fun FirebaseNotificationService.sendBendrasRequestReviewNotification(
+    request: BendrasInventoryRequestResponse
+) {
+    val rejectedByUnit = request.draugininkasStatus == "REJECTED"
+    val finishedTopLevel = request.topLevelStatus in setOf("APPROVED", "REJECTED")
+    if (!rejectedByUnit && !finishedTopLevel) return
+
+    val approved = request.topLevelStatus == "APPROVED"
+    val title = if (approved) "Paemimo prasymas patvirtintas" else "Paemimo prasymas atmestas"
+    val body = if (approved) {
+        "Jusu prasymas \"${request.itemName}\" buvo patvirtintas."
+    } else {
+        "Jusu prasymas \"${request.itemName}\" buvo atmestas."
+    }
+
+    sendToUser(
+        userId = UUID.fromString(request.requestedByUserId),
+        title = title,
+        body = body,
+        data = mapOf(
+            "resource" to "bendras_requests",
+            "requestId" to request.id,
+            "tuntasId" to request.tuntasId,
+            "status" to request.topLevelStatus
+        )
+    )
 }
