@@ -27,6 +27,7 @@ import lt.skautai.services.EventService
 import lt.skautai.services.ItemService
 import lt.skautai.services.MyTaskService
 import lt.skautai.services.OrganizationalUnitService
+import lt.skautai.services.PermissionContext
 import lt.skautai.services.PermissionContextService
 import lt.skautai.services.RequisitionService
 import lt.skautai.services.ReservationService
@@ -65,38 +66,165 @@ fun Route.mobileRoutes(
                     ?.units
                     .orEmpty()
                 val resolvedUnit = resolveActiveUnit(activeUnitId, units)
-
-                val items = itemService.getItems(tuntasId, userId, status = "ACTIVE")
-                    .getOrNull()
-                    ?.items
-                    .orEmpty()
-                val pendingItems = if (permissions.has("items.review") || permissions.has("items.create")) {
-                    itemService.getItems(tuntasId, userId, status = "PENDING_APPROVAL").getOrNull()?.items.orEmpty()
-                } else emptyList()
                 val canViewAllReservations = permissions.hasAll("reservations.approve")
                 val approvableUnitIds = permissions.scopedUnitIds("reservations.approve").toList()
-                val reservations = reservationService.getReservations(
-                    tuntasId,
-                    userId,
-                    canViewAllReservations,
-                    approvableUnitIds
-                ).getOrNull()?.reservations.orEmpty()
                 val isSharedRequestAdmin = permissions.hasAll("items.request.approve.bendras")
                 val sharedRequestUnitIds = if (isSharedRequestAdmin) emptyList() else permissions.allUserOrgUnitIds.toList()
-                val sharedRequests = bendrasInventoryRequestService.getAllRequests(
-                    tuntasId,
-                    userId,
-                    isSharedRequestAdmin,
-                    sharedRequestUnitIds
-                ).getOrNull()?.requests.orEmpty()
                 val isTopLevelRequisitionReviewer = permissions.hasAll("requisitions.approve")
                 val requisitionUnitIds = if (isTopLevelRequisitionReviewer) emptyList() else permissions.allUserOrgUnitIds.toList()
-                val requisitions = requisitionService.getAllRequests(
-                    tuntasId,
-                    userId,
-                    isTopLevelRequisitionReviewer,
-                    requisitionUnitIds
-                ).getOrNull()?.requests.orEmpty()
+                val counts = transaction {
+                    val itemVisibility = itemVisibilitySql(permissions)
+                    val reservationVisibility = reservationVisibilitySql(
+                        userId = userId,
+                        canViewAll = canViewAllReservations,
+                        approvableUnitIds = approvableUnitIds
+                    )
+                    val sharedRequestVisibility = sharedRequestVisibilitySql(
+                        isAdmin = isSharedRequestAdmin,
+                        unitIds = sharedRequestUnitIds
+                    )
+                    val requisitionVisibility = requisitionVisibilitySql(
+                        userId = userId,
+                        isTopLevelReviewer = isTopLevelRequisitionReviewer,
+                        unitIds = requisitionUnitIds
+                    )
+                    val canReviewReservations = canApproveAnyReservation(permissionNames)
+                    val canReviewRequisitions = canReviewTopLevelRequisitions(permissionNames)
+
+                    HomeSummaryCounts(
+                        activeUnitItemCount = resolvedUnit?.id?.let { unitId ->
+                            countSql(
+                                """
+                                SELECT COUNT(*)
+                                FROM items
+                                WHERE tuntas_id = '${tuntasId}'
+                                  AND status = 'ACTIVE'
+                                  AND custodian_id = '${unitId}'
+                                  AND type <> 'INDIVIDUAL'
+                                  $itemVisibility
+                                """.trimIndent()
+                            )
+                        } ?: 0,
+                        activeUnitFromSharedCount = resolvedUnit?.id?.let { unitId ->
+                            countSql(
+                                """
+                                SELECT COUNT(*)
+                                FROM items
+                                WHERE tuntas_id = '${tuntasId}'
+                                  AND status = 'ACTIVE'
+                                  AND custodian_id = '${unitId}'
+                                  AND origin = 'TRANSFERRED_FROM_TUNTAS'
+                                  $itemVisibility
+                                """.trimIndent()
+                            )
+                        } ?: 0,
+                        sharedInventoryCount = countSql(
+                            """
+                            SELECT COUNT(*)
+                            FROM items
+                            WHERE tuntas_id = '${tuntasId}'
+                              AND status = 'ACTIVE'
+                              AND custodian_id IS NULL
+                              AND type <> 'INDIVIDUAL'
+                              $itemVisibility
+                            """.trimIndent()
+                        ),
+                        sharedPendingApprovalCount = if (permissions.has("items.review") || permissions.has("items.create")) {
+                            countSql(
+                                """
+                                SELECT COUNT(*)
+                                FROM items
+                                WHERE tuntas_id = '${tuntasId}'
+                                  AND status = 'PENDING_APPROVAL'
+                                  AND custodian_id IS NULL
+                                  AND type <> 'INDIVIDUAL'
+                                  $itemVisibility
+                                """.trimIndent()
+                            )
+                        } else 0,
+                        personalLendingCount = countSql(
+                            """
+                            SELECT COUNT(*)
+                            FROM items
+                            WHERE tuntas_id = '${tuntasId}'
+                              AND status = 'ACTIVE'
+                              AND type = 'INDIVIDUAL'
+                              AND created_by_user_id = '${userId}'
+                              $itemVisibility
+                            """.trimIndent()
+                        ),
+                        requisitionCount = countSql(
+                            """
+                            SELECT COUNT(*)
+                            FROM draugove_requisitions
+                            WHERE tuntas_id = '${tuntasId}'
+                              $requisitionVisibility
+                            """.trimIndent()
+                        ),
+                        myRequisitionCount = countSql(
+                            """
+                            SELECT COUNT(*)
+                            FROM draugove_requisitions
+                            WHERE tuntas_id = '${tuntasId}'
+                              AND created_by_user_id = '${userId}'
+                              $requisitionVisibility
+                            """.trimIndent()
+                        ),
+                        assignedRequisitionCount = if (canReviewRequisitions) {
+                            countSql(
+                                """
+                                SELECT COUNT(*)
+                                FROM draugove_requisitions
+                                WHERE tuntas_id = '${tuntasId}'
+                                  AND created_by_user_id <> '${userId}'
+                                  AND top_level_review_status = 'PENDING'
+                                  $requisitionVisibility
+                                """.trimIndent()
+                            )
+                        } else 0,
+                        sharedRequestCount = countSql(
+                            """
+                            SELECT COUNT(*)
+                            FROM bendras_inventory_requests
+                            WHERE tuntas_id = '${tuntasId}'
+                              AND top_level_status = 'PENDING'
+                              $sharedRequestVisibility
+                            """.trimIndent()
+                        ),
+                        myReservationCount = countSql(
+                            """
+                            SELECT COUNT(DISTINCT group_id)
+                            FROM reservations
+                            WHERE tuntas_id = '${tuntasId}'
+                              AND reserved_by_user_id = '${userId}'
+                              AND status IN ('APPROVED', 'ACTIVE')
+                              $reservationVisibility
+                            """.trimIndent()
+                        ),
+                        assignedReservationCount = if (canReviewReservations) {
+                            countSql(
+                                """
+                                SELECT COUNT(DISTINCT group_id)
+                                FROM reservations
+                                WHERE tuntas_id = '${tuntasId}'
+                                  AND status = 'PENDING'
+                                  $reservationVisibility
+                                """.trimIndent()
+                            )
+                        } else 0,
+                        trackedReservationCount = if (canReviewReservations) {
+                            countSql(
+                                """
+                                SELECT COUNT(DISTINCT group_id)
+                                FROM reservations
+                                WHERE tuntas_id = '${tuntasId}'
+                                  AND status IN ('APPROVED', 'ACTIVE')
+                                  $reservationVisibility
+                                """.trimIndent()
+                            )
+                        } else 0
+                    )
+                }
                 val tasks = myTaskService.getMyTasks(tuntasId, userId).getOrNull()
 
                 call.respond(
@@ -105,19 +233,19 @@ fun Route.mobileRoutes(
                         activeUnitId = resolvedUnit?.id,
                         activeUnitName = resolvedUnit?.name,
                         availableUnits = units,
-                        activeUnitItemCount = items.count { it.custodianId == resolvedUnit?.id && it.type != "INDIVIDUAL" },
-                        activeUnitFromSharedCount = items.count { it.custodianId == resolvedUnit?.id && it.origin == "TRANSFERRED_FROM_TUNTAS" },
-                        sharedInventoryCount = items.count { it.custodianId == null && it.type != "INDIVIDUAL" },
-                        sharedPendingApprovalCount = pendingItems.count { it.custodianId == null && it.type != "INDIVIDUAL" },
-                        personalLendingCount = items.count { it.type == "INDIVIDUAL" && it.createdByUserId == userId.toString() },
-                        requisitionCount = requisitions.size,
-                        myRequisitionCount = requisitions.count { it.createdByUserId == userId.toString() },
-                        assignedRequisitionCount = requisitions.count { it.createdByUserId != userId.toString() && it.topLevelReviewStatus == "PENDING" && canReviewTopLevelRequisitions(permissionNames) },
-                        sharedRequestCount = sharedRequests.count { it.topLevelStatus == "PENDING" },
-                        myReservationCount = reservations.count { it.reservedByUserId == userId.toString() && it.status in activeReservationStatuses },
-                        assignedReservationCount = reservations.count { it.status == "PENDING" && canApproveAnyReservation(permissionNames) },
-                        trackedReservationCount = reservations.count { it.status in activeReservationStatuses && canApproveAnyReservation(permissionNames) },
-                        activeReservations = reservations.filter { it.status in activeReservationStatuses }.take(5),
+                        activeUnitItemCount = counts.activeUnitItemCount,
+                        activeUnitFromSharedCount = counts.activeUnitFromSharedCount,
+                        sharedInventoryCount = counts.sharedInventoryCount,
+                        sharedPendingApprovalCount = counts.sharedPendingApprovalCount,
+                        personalLendingCount = counts.personalLendingCount,
+                        requisitionCount = counts.requisitionCount,
+                        myRequisitionCount = counts.myRequisitionCount,
+                        assignedRequisitionCount = counts.assignedRequisitionCount,
+                        sharedRequestCount = counts.sharedRequestCount,
+                        myReservationCount = counts.myReservationCount,
+                        assignedReservationCount = counts.assignedReservationCount,
+                        trackedReservationCount = counts.trackedReservationCount,
+                        activeReservations = emptyList(),
                         tasks = tasks?.tasks?.take(3).orEmpty(),
                         taskTotalCount = tasks?.total ?: 0
                     )
@@ -140,7 +268,69 @@ fun Route.mobileRoutes(
     }
 }
 
-private val activeReservationStatuses = setOf("APPROVED", "ACTIVE")
+private data class HomeSummaryCounts(
+    val activeUnitItemCount: Int,
+    val activeUnitFromSharedCount: Int,
+    val sharedInventoryCount: Int,
+    val sharedPendingApprovalCount: Int,
+    val personalLendingCount: Int,
+    val requisitionCount: Int,
+    val myRequisitionCount: Int,
+    val assignedRequisitionCount: Int,
+    val sharedRequestCount: Int,
+    val myReservationCount: Int,
+    val assignedReservationCount: Int,
+    val trackedReservationCount: Int
+)
+
+private fun org.jetbrains.exposed.sql.Transaction.countSql(sql: String): Int {
+    var value = 0
+    exec(sql) { rs ->
+        if (rs.next()) value = rs.getInt(1)
+    }
+    return value
+}
+
+private fun itemVisibilitySql(permissions: PermissionContext): String {
+    if (permissions.hasAll("items.view") || permissions.hasAll("items.create") || permissions.hasAll("items.update")) {
+        return ""
+    }
+    val unitIds = permissions.allUserOrgUnitIds
+    if (unitIds.isEmpty()) return "AND custodian_id IS NULL"
+    return "AND (custodian_id IS NULL OR custodian_id IN (${unitIds.sqlUuidList()}))"
+}
+
+private fun reservationVisibilitySql(
+    userId: UUID,
+    canViewAll: Boolean,
+    approvableUnitIds: List<UUID>
+): String {
+    if (canViewAll) return ""
+    if (approvableUnitIds.isEmpty()) return "AND reserved_by_user_id = '${userId}'"
+    return "AND (requesting_unit_id IN (${approvableUnitIds.sqlUuidList()}) OR reserved_by_user_id = '${userId}')"
+}
+
+private fun sharedRequestVisibilitySql(
+    isAdmin: Boolean,
+    unitIds: List<UUID>
+): String {
+    if (isAdmin) return ""
+    if (unitIds.isEmpty()) return "AND requested_by_user_id IS NULL"
+    return "AND requesting_unit_id IN (${unitIds.sqlUuidList()})"
+}
+
+private fun requisitionVisibilitySql(
+    userId: UUID,
+    isTopLevelReviewer: Boolean,
+    unitIds: List<UUID>
+): String {
+    if (isTopLevelReviewer) return ""
+    if (unitIds.isEmpty()) return "AND created_by_user_id = '${userId}'"
+    return "AND (organizational_unit_id IN (${unitIds.sqlUuidList()}) OR created_by_user_id = '${userId}')"
+}
+
+private fun Collection<UUID>.sqlUuidList(): String =
+    joinToString(",") { "'$it'" }
 
 private fun parseUuidOrNull(value: String): UUID? = try {
     UUID.fromString(value)
