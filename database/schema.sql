@@ -267,6 +267,7 @@ CREATE TABLE events (
                         inventory_budget_amount DECIMAL(10,2),
                         notes TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        target_audience VARCHAR(100),
                         CHECK (end_date >= start_date)
 );
 
@@ -318,7 +319,7 @@ CREATE TABLE event_roles (
                                                                        'PASTOVYKLES_GURU', 'VADOVAS', 'SAVANORIS',
                                                                        'PATYRE_SKAUTAS', 'SKAUTAS', 'PROGRAMERIS', 'MAISTININKAS'
                                  )),
-                             target_group VARCHAR(20) CHECK (target_group IN ('PATYRE_SKAUTAI', 'SKAUTAI_VILKAI', 'TEVAI')),
+                             target_group VARCHAR(20) CHECK (target_group IN ('VILKAI', 'SKAUTAI', 'PATYRE_SKAUTAI', 'VYR_SKAUTAI', 'VYR_SKAUTES', 'SKAUTAI_VILKAI', 'TEVAI', 'PROGRAMA')),
                              pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE CASCADE,
                              assigned_by_user_id UUID REFERENCES users(id),
                              assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
