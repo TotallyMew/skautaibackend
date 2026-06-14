@@ -1,6 +1,7 @@
 package lt.skautai
 
 import io.ktor.http.*
+import io.ktor.server.config.ApplicationConfig
 import io.ktor.server.application.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.defaultheaders.*
@@ -18,8 +19,11 @@ import org.flywaydb.core.Flyway
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import java.net.URI
+import java.net.URLDecoder
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.charset.StandardCharsets
 import kotlin.io.path.Path
 
 fun main(args: Array<String>) {
@@ -55,21 +59,19 @@ fun Application.module() {
 
 fun Application.configureDatabases() {
     val config = environment.config
-    val url = config.property("database.url").getString()
+    val databaseSettings = resolveDatabaseSettings(config)
     val driver = config.property("database.driver").getString()
-    val user = config.property("database.user").getString()
-    val password = config.property("database.password").getString()
 
     Database.connect(
-        url = url,
+        url = databaseSettings.url,
         driver = driver,
-        user = user,
-        password = password
+        user = databaseSettings.user,
+        password = databaseSettings.password
     )
 
     val logger = log
     Flyway.configure()
-        .dataSource(url, user, password)
+        .dataSource(databaseSettings.url, databaseSettings.user, databaseSettings.password)
         .locations("classpath:db/migration")
         .baselineOnMigrate(true)
         .baselineVersion("1")
@@ -83,10 +85,62 @@ fun Application.configureDatabases() {
     }
 }
 
+private data class DatabaseSettings(
+    val url: String,
+    val user: String,
+    val password: String
+)
+
+private fun resolveDatabaseSettings(config: ApplicationConfig): DatabaseSettings {
+    val railwayUrl = System.getenv("DATABASE_PRIVATE_URL")
+        ?: System.getProperty("DATABASE_PRIVATE_URL")
+        ?: System.getenv("DATABASE_URL")
+        ?: System.getProperty("DATABASE_URL")
+
+    val parsedRailway = railwayUrl?.let(::parseDatabaseUrl)
+
+    return DatabaseSettings(
+        url = System.getenv("DB_URL")
+            ?: System.getProperty("DB_URL")
+            ?: parsedRailway?.url
+            ?: config.property("database.url").getString(),
+        user = System.getenv("DB_USER")
+            ?: System.getProperty("DB_USER")
+            ?: parsedRailway?.user
+            ?: config.property("database.user").getString(),
+        password = System.getenv("DB_PASSWORD")
+            ?: System.getProperty("DB_PASSWORD")
+            ?: parsedRailway?.password
+            ?: config.propertyOrNull("database.password")?.getString()
+            ?: ""
+    )
+}
+
+private fun parseDatabaseUrl(rawUrl: String): DatabaseSettings? {
+    if (rawUrl.startsWith("jdbc:postgresql://")) {
+        return DatabaseSettings(rawUrl, "", "")
+    }
+    if (!rawUrl.startsWith("postgres://") && !rawUrl.startsWith("postgresql://")) return null
+
+    val uri = URI(rawUrl)
+    val userInfo = uri.rawUserInfo.orEmpty().split(":", limit = 2)
+    val user = userInfo.getOrNull(0).orEmpty().urlDecode()
+    val password = userInfo.getOrNull(1).orEmpty().urlDecode()
+    val port = if (uri.port > 0) ":${uri.port}" else ""
+    val query = uri.rawQuery?.let { "?$it" }.orEmpty()
+    val jdbcUrl = "jdbc:postgresql://${uri.host}$port${uri.rawPath}$query"
+    return DatabaseSettings(jdbcUrl, user, password)
+}
+
+private fun String.urlDecode(): String =
+    URLDecoder.decode(this, StandardCharsets.UTF_8)
+
 private val supportedDotEnvKeys = setOf(
     "DB_URL",
     "DB_USER",
     "DB_PASSWORD",
+    "DATABASE_URL",
+    "DATABASE_PRIVATE_URL",
     "JWT_SECRET",
     "SETUP_BOOTSTRAP_TOKEN",
     "FIREBASE_SERVICE_ACCOUNT_PATH",
