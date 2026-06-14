@@ -37,11 +37,8 @@ fun Application.configureSecurity() {
                 if (userId == null || tokenType != "user" || tokenUse != "access") {
                     return@validate null
                 }
-                val userUuid = runCatching { UUID.fromString(userId) }.getOrNull() ?: return@validate null
-                val userExists = transaction {
-                    Users.selectAll().where { Users.id eq userUuid }.firstOrNull() != null
-                }
-                if (userExists) JWTPrincipal(credential.payload) else null
+                runCatching { UUID.fromString(userId) }.getOrNull() ?: return@validate null
+                JWTPrincipal(credential.payload)
             }
             challenge { _, _ ->
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "Token is invalid or expired"))
@@ -64,10 +61,7 @@ fun Application.configureSecurity() {
                 val adminId = credential.payload.getClaim("userId").asString()
                     ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@validate null
-                val adminExists = transaction {
-                    SuperAdmins.selectAll().where { SuperAdmins.id eq adminId }.firstOrNull() != null
-                }
-                if (adminExists) JWTPrincipal(credential.payload) else null
+                JWTPrincipal(credential.payload)
             }
             challenge { _, _ ->
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "Super admin access required"))
@@ -170,22 +164,6 @@ suspend fun RoutingContext.checkPermission(
         UUID.fromString(principal.getClaim("userId", String::class))
     } catch (e: Exception) {
         call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
-        return false
-    }
-
-    val isMember = transaction {
-        UserTuntasMemberships
-            .selectAll()
-            .where {
-                (UserTuntasMemberships.userId eq userId) and
-                        (UserTuntasMemberships.tuntasId eq tuntasId) and
-                        (UserTuntasMemberships.leftAt.isNull())
-            }
-            .firstOrNull() != null
-    }
-
-    if (!isMember) {
-        call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
         return false
     }
 

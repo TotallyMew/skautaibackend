@@ -885,6 +885,8 @@ CREATE INDEX idx_draugove_requisitions_tuntas ON draugove_requisitions(tuntas_id
 CREATE INDEX idx_draugove_requisitions_unit ON draugove_requisitions(organizational_unit_id);
 CREATE INDEX idx_draugove_requisitions_tuntas_review ON draugove_requisitions(tuntas_id, top_level_review_status, unit_review_status);
 CREATE INDEX idx_draugove_requisitions_tuntas_unit_user ON draugove_requisitions(tuntas_id, organizational_unit_id, created_by_user_id);
+CREATE INDEX idx_draugove_requisition_items_requisition ON draugove_requisition_items(requisition_id);
+CREATE INDEX idx_draugove_requisitions_tuntas_updated_at ON draugove_requisitions(tuntas_id, updated_at);
 CREATE INDEX idx_pastovykle_inventory_pastovykle ON pastovykle_inventory(pastovykle_id);
 CREATE INDEX idx_sync_operations_client_timestamp ON sync_operations(client_timestamp);
 CREATE INDEX idx_invitations_code ON invitations(code);
@@ -895,9 +897,15 @@ CREATE INDEX idx_bendras_inventory_requests_item ON bendras_inventory_requests(i
 CREATE INDEX idx_bendras_inventory_requests_top_status ON bendras_inventory_requests(top_level_status);
 CREATE INDEX idx_bendras_requests_tuntas_status_unit ON bendras_inventory_requests(tuntas_id, top_level_status, requesting_unit_id);
 CREATE INDEX idx_bendras_inventory_request_items_request ON bendras_inventory_request_items(request_id);
+CREATE INDEX idx_bendras_inventory_requests_tuntas_updated_at ON bendras_inventory_requests(tuntas_id, updated_at);
 CREATE INDEX idx_unit_assignments_user ON unit_assignments(user_id);
 CREATE INDEX idx_unit_assignments_tuntas ON unit_assignments(tuntas_id);
 CREATE INDEX idx_unit_assignments_unit ON unit_assignments(organizational_unit_id);
+CREATE INDEX idx_reservations_tuntas_updated_at ON reservations(tuntas_id, updated_at);
+CREATE INDEX idx_events_tuntas_updated_at ON events(tuntas_id, updated_at);
+CREATE INDEX idx_user_tuntas_memberships_active_user_tuntas ON user_tuntas_memberships(user_id, tuntas_id) WHERE left_at IS NULL;
+CREATE INDEX idx_user_leadership_roles_active_user_tuntas ON user_leadership_roles(user_id, tuntas_id, role_id, organizational_unit_id) WHERE term_status = 'ACTIVE' AND left_at IS NULL;
+CREATE INDEX idx_unit_assignments_active_user_tuntas ON unit_assignments(user_id, tuntas_id, organizational_unit_id) WHERE left_at IS NULL;
 CREATE INDEX idx_item_check_sessions_tuntas_context ON item_check_sessions(tuntas_id, context_type);
 CREATE INDEX idx_item_check_sessions_event ON item_check_sessions(event_id);
 CREATE INDEX idx_item_check_sessions_tuntas_status_scope ON item_check_sessions(tuntas_id, status, scope_custodian_id);

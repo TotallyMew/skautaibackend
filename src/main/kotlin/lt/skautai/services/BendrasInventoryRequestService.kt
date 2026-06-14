@@ -19,6 +19,8 @@ import lt.skautai.models.responses.BendrasInventoryRequestItemResponse
 import lt.skautai.models.responses.BendrasInventoryRequestListResponse
 import lt.skautai.models.responses.BendrasInventoryRequestResponse
 import org.jetbrains.exposed.sql.ResultRow
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.andWhere
 import org.jetbrains.exposed.sql.insert
@@ -49,7 +51,8 @@ class BendrasInventoryRequestService {
         tuntasId: UUID,
         userId: UUID,
         isAdmin: Boolean,
-        unitIds: List<UUID>
+        unitIds: List<UUID>,
+        updatedAfter: kotlinx.datetime.Instant? = null
     ): Result<BendrasInventoryRequestListResponse> {
         return transaction {
             var query = BendrasInventoryRequests.selectAll()
@@ -71,8 +74,13 @@ class BendrasInventoryRequestService {
                     BendrasInventoryRequests.requestedByUserId eq userId
                 }
             }
+            updatedAfter?.let { since ->
+                query = query.andWhere { BendrasInventoryRequests.updatedAt greater since }
+            }
 
-            val requests = query.map { toResponse(it) }
+            val rows = query.toList()
+            val hydration = buildListHydration(rows)
+            val requests = rows.map { toResponse(it, hydration) }
             Result.success(BendrasInventoryRequestListResponse(requests = requests, total = requests.size))
         }
     }
@@ -559,7 +567,73 @@ class BendrasInventoryRequestService {
         }
     }
 
-    private fun loadRequestItems(row: ResultRow): List<BendrasInventoryRequestItemResponse> {
+    private data class BendrasRequestListHydration(
+        val requestItemsByRequestId: Map<UUID, List<BendrasInventoryRequestItemResponse>>,
+        val itemNamesById: Map<UUID, String>,
+        val unitNamesById: Map<UUID, String>,
+        val userNamesById: Map<UUID, String>
+    )
+
+    private fun buildListHydration(rows: List<ResultRow>): BendrasRequestListHydration {
+        if (rows.isEmpty()) {
+            return BendrasRequestListHydration(emptyMap(), emptyMap(), emptyMap(), emptyMap())
+        }
+
+        val requestIds = rows.map { it[BendrasInventoryRequests.id] }
+        val persistedLines = BendrasInventoryRequestItems.selectAll()
+            .where { BendrasInventoryRequestItems.requestId inList requestIds }
+            .toList()
+        val itemIds = (
+            persistedLines.map { it[BendrasInventoryRequestItems.itemId] } +
+                rows.mapNotNull { it[BendrasInventoryRequests.itemId] }
+            ).toSet()
+
+        val itemNamesById = if (itemIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Items.selectAll()
+                .where { Items.id inList itemIds.toList() }
+                .associate { it[Items.id] to it[Items.name] }
+        }
+
+        val requestItemsByRequestId = persistedLines
+            .groupBy { it[BendrasInventoryRequestItems.requestId] }
+            .mapValues { (_, lines) ->
+                lines.map { line ->
+                    BendrasInventoryRequestItemResponse(
+                        id = line[BendrasInventoryRequestItems.id].toString(),
+                        itemId = line[BendrasInventoryRequestItems.itemId].toString(),
+                        itemName = itemNamesById[line[BendrasInventoryRequestItems.itemId]] ?: "Unknown",
+                        quantity = line[BendrasInventoryRequestItems.quantity]
+                    )
+                }
+            }
+
+        val unitIds = rows.mapNotNull { it[BendrasInventoryRequests.requestingUnitId] }.toSet()
+        val unitNamesById = if (unitIds.isEmpty()) {
+            emptyMap()
+        } else {
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id inList unitIds.toList() }
+                .associate { it[OrganizationalUnits.id] to it[OrganizationalUnits.name] }
+        }
+
+        val userIds = rows.map { it[BendrasInventoryRequests.requestedByUserId] }.toSet()
+        val userNamesById = Users.selectAll()
+            .where { Users.id inList userIds.toList() }
+            .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
+
+        return BendrasRequestListHydration(
+            requestItemsByRequestId = requestItemsByRequestId,
+            itemNamesById = itemNamesById,
+            unitNamesById = unitNamesById,
+            userNamesById = userNamesById
+        )
+    }
+
+    private fun loadRequestItems(row: ResultRow, hydration: BendrasRequestListHydration? = null): List<BendrasInventoryRequestItemResponse> {
+        hydration?.requestItemsByRequestId?.get(row[BendrasInventoryRequests.id])?.takeIf { it.isNotEmpty() }?.let { return it }
+
         val persisted = BendrasInventoryRequestItems.selectAll()
             .where { BendrasInventoryRequestItems.requestId eq row[BendrasInventoryRequests.id] }
             .map { line ->
@@ -577,6 +651,16 @@ class BendrasInventoryRequestService {
         if (persisted.isNotEmpty()) return persisted
 
         val legacyItemId = row[BendrasInventoryRequests.itemId] ?: return emptyList()
+        hydration?.itemNamesById?.get(legacyItemId)?.let { legacyName ->
+            return listOf(
+                BendrasInventoryRequestItemResponse(
+                    id = row[BendrasInventoryRequests.id].toString(),
+                    itemId = legacyItemId.toString(),
+                    itemName = legacyName,
+                    quantity = row[BendrasInventoryRequests.quantity]
+                )
+            )
+        }
         val legacyName = Items.selectAll()
             .where { Items.id eq legacyItemId }
             .firstOrNull()
@@ -593,8 +677,8 @@ class BendrasInventoryRequestService {
         )
     }
 
-    private fun toResponse(row: ResultRow): BendrasInventoryRequestResponse {
-        val items = loadRequestItems(row)
+    private fun toResponse(row: ResultRow, hydration: BendrasRequestListHydration? = null): BendrasInventoryRequestResponse {
+        val items = loadRequestItems(row, hydration)
         val itemName = when {
             items.size > 1 -> "Keli bendro inventoriaus daiktai"
             items.isNotEmpty() -> items.first().itemName
@@ -603,15 +687,17 @@ class BendrasInventoryRequestService {
 
         val requestingUnitId = row[BendrasInventoryRequests.requestingUnitId]
         val requestingUnitName = requestingUnitId?.let {
+            hydration?.unitNamesById?.get(it) ?:
             OrganizationalUnits.selectAll()
                 .where { OrganizationalUnits.id eq it }
                 .firstOrNull()
                 ?.get(OrganizationalUnits.name)
         }
-        val requestedByUserName = Users.selectAll()
-            .where { Users.id eq row[BendrasInventoryRequests.requestedByUserId] }
-            .firstOrNull()
-            ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+        val requestedByUserName = hydration?.userNamesById?.get(row[BendrasInventoryRequests.requestedByUserId])
+            ?: Users.selectAll()
+                .where { Users.id eq row[BendrasInventoryRequests.requestedByUserId] }
+                .firstOrNull()
+                ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
 
         val neededByDate = row[BendrasInventoryRequests.startDate]?.toString()
 

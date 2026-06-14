@@ -17,6 +17,7 @@ import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.BendrasInventoryRequestService
 import lt.skautai.services.FirebaseNotificationService
 import lt.skautai.services.NotificationRecipientService
+import lt.skautai.services.PermissionContextService
 import java.util.*
 import lt.skautai.database.tables.BendrasInventoryRequests
 import lt.skautai.database.tables.Roles
@@ -44,7 +45,8 @@ fun Route.bendrasInventoryRequestRoutes(
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                val userPerms = resolveUserPermissions(userId, tuntasUUID)
+                val updatedAfter = call.request.queryParameters["updatedAfter"]?.let(::parseInstantOrNull)
+                val userPerms = PermissionContextService.resolve(userId, tuntasUUID).permissions
                 if (userPerms.none { it.permissionName == "items.view" }) {
                     return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
@@ -57,7 +59,7 @@ fun Route.bendrasInventoryRequestRoutes(
                     resolveReviewableUnitIds(userId, tuntasUUID)
                 }
 
-                service.getAllRequests(tuntasUUID, userId, isAdmin, unitIds)
+                service.getAllRequests(tuntasUUID, userId, isAdmin, unitIds, updatedAfter)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch requests")) }
             }
@@ -257,6 +259,12 @@ private fun resolveReviewableUnitIds(userId: UUID, tuntasId: UUID): List<UUID> {
             .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
             .distinct()
     }
+}
+
+private fun parseInstantOrNull(value: String): kotlinx.datetime.Instant? = try {
+    kotlinx.datetime.Instant.parse(value)
+} catch (_: Exception) {
+    null
 }
 
 private fun FirebaseNotificationService.sendBendrasRequestNextStepNotifications(

@@ -19,8 +19,10 @@ import lt.skautai.models.responses.RequisitionListResponse
 import lt.skautai.models.responses.RequisitionResponse
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.andWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.innerJoin
 import org.jetbrains.exposed.sql.or
@@ -50,7 +52,8 @@ class RequisitionService {
         tuntasId: UUID,
         userId: UUID,
         isTopLevelReviewer: Boolean,
-        reviewableUnitIds: List<UUID>
+        reviewableUnitIds: List<UUID>,
+        updatedAfter: kotlinx.datetime.Instant? = null
     ): Result<RequisitionListResponse> {
         return transaction {
             val filter = when {
@@ -68,7 +71,11 @@ class RequisitionService {
                 }
             }
 
-            val rows = DraugoveRequisitions.selectAll().where { filter }.toList()
+            var query = DraugoveRequisitions.selectAll().where { filter }
+            updatedAfter?.let { since ->
+                query = query.andWhere { DraugoveRequisitions.updatedAt greater since }
+            }
+            val rows = query.toList()
             val hydration = buildListHydration(rows)
             val requests = rows.map { toResponse(it, hydration) }
             Result.success(RequisitionListResponse(requests = requests, total = requests.size))

@@ -54,6 +54,7 @@ fun Route.requisitionRoutes(
                 }
 
                 val permissionContext = PermissionContextService.resolve(userId, tuntasUUID)
+                val updatedAfter = call.request.queryParameters["updatedAfter"]?.let(::parseInstantOrNull)
                 if (
                     !permissionContext.has("requisitions.create") &&
                     !permissionContext.has("requisitions.approve") &&
@@ -68,7 +69,7 @@ fun Route.requisitionRoutes(
                 }
                 val reviewableUnitIds = if (isTopLevelReviewer) emptyList() else resolveRequisitionReviewableUnitIds(userId, tuntasUUID)
 
-                service.getAllRequests(tuntasUUID, userId, isTopLevelReviewer, reviewableUnitIds)
+                service.getAllRequests(tuntasUUID, userId, isTopLevelReviewer, reviewableUnitIds, updatedAfter)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch requisitions")) }
             }
@@ -378,6 +379,12 @@ private fun FirebaseNotificationService.sendRequisitionNextStepNotifications(
             )
         )
     }
+}
+
+private fun parseInstantOrNull(value: String): kotlinx.datetime.Instant? = try {
+    kotlinx.datetime.Instant.parse(value)
+} catch (_: Exception) {
+    null
 }
 
 private fun FirebaseNotificationService.sendRequisitionReviewNotification(
