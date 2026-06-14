@@ -27,10 +27,12 @@ data class EventResponse(
     val organizationalUnitId: String? = null,
     val createdByUserId: String? = null,
     val status: String,
+    val inventoryBudgetAmount: Double? = null,
     val notes: String? = null,
     val createdAt: String,
     val eventRoles: List<EventRoleResponse>,
-    val inventorySummary: EventInventorySummaryResponse? = null
+    val inventorySummary: EventInventorySummaryResponse? = null,
+    val financeSummary: EventFinanceSummaryResponse? = null
 )
 
 @Serializable
@@ -200,6 +202,14 @@ data class EventPurchaseItemResponse(
 )
 
 @Serializable
+data class EventPurchaseInvoiceResponse(
+    val id: String,
+    val purchaseId: String,
+    val fileUrl: String,
+    val createdAt: String
+)
+
+@Serializable
 data class EventPurchaseResponse(
     val id: String,
     val eventId: String,
@@ -209,6 +219,7 @@ data class EventPurchaseResponse(
     val purchaseDate: String? = null,
     val totalAmount: Double? = null,
     val invoiceFileUrl: String? = null,
+    val invoices: List<EventPurchaseInvoiceResponse> = emptyList(),
     val notes: String? = null,
     val createdAt: String,
     val updatedAt: String,
@@ -219,6 +230,39 @@ data class EventPurchaseResponse(
 data class EventPurchaseListResponse(
     val purchases: List<EventPurchaseResponse>,
     val total: Int
+)
+
+@Serializable
+data class EventExtraCostResponse(
+    val id: String,
+    val eventId: String,
+    val category: String,
+    val label: String,
+    val quantity: Double? = null,
+    val unit: String? = null,
+    val unitPrice: Double? = null,
+    val totalAmount: Double,
+    val notes: String? = null,
+    val createdByUserId: String? = null,
+    val createdAt: String,
+    val updatedAt: String
+)
+
+@Serializable
+data class EventFinanceSummaryResponse(
+    val inventoryBudgetAmount: Double? = null,
+    val purchaseTotal: Double,
+    val extraCostTotal: Double,
+    val spentTotal: Double,
+    val remainingAmount: Double? = null,
+    val overBudget: Boolean
+)
+
+@Serializable
+data class EventFinanceResponse(
+    val eventId: String,
+    val summary: EventFinanceSummaryResponse,
+    val extraCosts: List<EventExtraCostResponse>
 )
 
 @Serializable
@@ -385,4 +429,57 @@ data class EventReconciliationResponse(
     val returnedToEventStorage: List<EventReconciliationReturnLineResponse>,
     val unresolvedPurchases: List<EventReconciliationPurchaseLineResponse>,
     val canComplete: Boolean
+)
+
+@Serializable
+data class EventPackingContainerResponse(
+    val id: String,
+    val eventId: String,
+    val name: String,
+    val type: String,
+    val status: String,
+    val sortOrder: Int,
+    val notes: String? = null,
+    val createdAt: String,
+    val updatedAt: String
+)
+
+@Serializable
+data class EventPackingLineResponse(
+    val id: String,
+    val eventId: String,
+    val eventInventoryItemId: String,
+    val allocationId: String? = null,
+    val containerId: String? = null,
+    val containerName: String? = null,
+    val bucketId: String? = null,
+    val bucketName: String? = null,
+    val itemId: String? = null,
+    val itemName: String,
+    val requiredQuantity: Int,
+    val status: String,
+    val sourceSummary: String? = null,
+    val notes: String? = null,
+    val checkedByUserId: String? = null,
+    val checkedByUserName: String? = null,
+    val checkedAt: String? = null,
+    val createdAt: String,
+    val updatedAt: String
+)
+
+@Serializable
+data class EventPackingSummaryResponse(
+    val totalLines: Int,
+    val doneLines: Int,
+    val totalQuantity: Int,
+    val doneQuantity: Int,
+    val progressPercent: Int
+)
+
+@Serializable
+data class EventPackingListResponse(
+    val eventId: String,
+    val containers: List<EventPackingContainerResponse>,
+    val lines: List<EventPackingLineResponse>,
+    val summary: EventPackingSummaryResponse
 )

@@ -28,6 +28,11 @@ data class UpdateEventRequest(
 )
 
 @Serializable
+data class UpdateEventFinanceBudgetRequest(
+    val inventoryBudgetAmount: Double? = null
+)
+
+@Serializable
 data class AssignEventRoleRequest(
     val userId: String,
     val role: String,
@@ -178,6 +183,28 @@ data class AttachEventPurchaseInvoiceRequest(
 )
 
 @Serializable
+data class CreateEventExtraCostRequest(
+    val category: String,
+    val label: String,
+    val quantity: Double? = null,
+    val unit: String? = null,
+    val unitPrice: Double? = null,
+    val totalAmount: Double? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class UpdateEventExtraCostRequest(
+    val category: String? = null,
+    val label: String? = null,
+    val quantity: Double? = null,
+    val unit: String? = null,
+    val unitPrice: Double? = null,
+    val totalAmount: Double? = null,
+    val notes: String? = null
+)
+
+@Serializable
 data class CreateEventInventoryMovementRequest(
     val eventInventoryItemId: String,
     val movementType: String,
@@ -250,4 +277,19 @@ data class ReconcileEventPurchaseLineRequest(
 @Serializable
 data class ReconcileEventPurchasesRequest(
     val purchases: List<ReconcileEventPurchaseLineRequest>
+)
+
+@Serializable
+data class CreateEventPackingContainerRequest(
+    val name: String,
+    val type: String = "BOX",
+    val notes: String? = null
+)
+
+@Serializable
+data class UpdateEventPackingLineRequest(
+    val status: String? = null,
+    val containerId: String? = null,
+    val clearContainer: Boolean = false,
+    val notes: String? = null
 )

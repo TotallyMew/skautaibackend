@@ -91,6 +91,7 @@ private val supportedDotEnvKeys = setOf(
     "SETUP_BOOTSTRAP_TOKEN",
     "FIREBASE_SERVICE_ACCOUNT_PATH",
     "NOTIFICATIONS_TEST_ENABLED",
+    "UPLOADS_DIR",
     "PORT"
 )
 

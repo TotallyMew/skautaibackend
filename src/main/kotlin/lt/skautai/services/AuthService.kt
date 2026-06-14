@@ -305,40 +305,66 @@ class AuthService(private val environment: ApplicationEnvironment) {
 
     fun login(request: LoginRequest): Result<TokenResponse> {
         val email = normalizeEmail(request.email)
-        val rateLimitKey = "user:$email"
+        val rateLimitKey = "login:$email"
         loginRateLimitError(rateLimitKey)?.let { return Result.failure(Exception(it)) }
 
         return transaction {
             val user = Users.selectAll()
                 .where { Users.email eq email }
                 .firstOrNull()
-                ?: return@transaction Result.failure(Exception("Invalid email or password"))
 
-            if (!BCrypt.checkpw(request.password, user[Users.passwordHash])) {
-                return@transaction Result.failure(Exception("Invalid email or password"))
+            if (user != null && BCrypt.checkpw(request.password, user[Users.passwordHash])) {
+                val token = generateAccessToken(
+                    user[Users.id].toString(),
+                    user[Users.email],
+                    "user"
+                )
+                val refreshToken = generateRefreshToken(
+                    user[Users.id].toString(),
+                    user[Users.email],
+                    "user"
+                )
+                val tuntai = getActiveTuntaiForUser(user[Users.id])
+                return@transaction Result.success(
+                    TokenResponse(
+                        token = token,
+                        refreshToken = refreshToken,
+                        userId = user[Users.id].toString(),
+                        email = user[Users.email],
+                        name = user[Users.name],
+                        tuntai = tuntai
+                    )
+                )
             }
 
-            val token = generateAccessToken(
-                user[Users.id].toString(),
-                user[Users.email],
-                "user"
-            )
-            val refreshToken = generateRefreshToken(
-                user[Users.id].toString(),
-                user[Users.email],
-                "user"
-            )
-            val tuntai = getActiveTuntaiForUser(user[Users.id])
-            Result.success(
-                TokenResponse(
-                    token = token,
-                    refreshToken = refreshToken,
-                    userId = user[Users.id].toString(),
-                    email = user[Users.email],
-                    name = user[Users.name],
-                    tuntai = tuntai
+            val admin = SuperAdmins.selectAll()
+                .where { SuperAdmins.email eq email }
+                .firstOrNull()
+
+            if (admin != null && BCrypt.checkpw(request.password, admin[SuperAdmins.passwordHash])) {
+                val token = generateAccessToken(
+                    admin[SuperAdmins.id].toString(),
+                    admin[SuperAdmins.email],
+                    "super_admin"
                 )
-            )
+                val refreshToken = generateRefreshToken(
+                    admin[SuperAdmins.id].toString(),
+                    admin[SuperAdmins.email],
+                    "super_admin"
+                )
+                return@transaction Result.success(
+                    TokenResponse(
+                        token = token,
+                        refreshToken = refreshToken,
+                        userId = admin[SuperAdmins.id].toString(),
+                        email = admin[SuperAdmins.email],
+                        name = admin[SuperAdmins.name],
+                        type = "super_admin"
+                    )
+                )
+            }
+
+            Result.failure(Exception("Invalid email or password"))
         }.also { result ->
             if (result.isSuccess) {
                 clearLoginFailures(rateLimitKey)

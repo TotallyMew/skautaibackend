@@ -12,11 +12,12 @@ import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.EventService
+import lt.skautai.services.EventPackingService
 import lt.skautai.services.MemberService
-import java.io.File
+import lt.skautai.util.UploadStorage
 import java.util.*
 
-fun Route.eventRoutes(eventService: EventService, memberService: MemberService) {
+fun Route.eventRoutes(eventService: EventService, memberService: MemberService, eventPackingService: EventPackingService) {
     authenticate("auth-jwt") {
         route("/api/events") {
 
@@ -216,6 +217,48 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                     eventService.getEventInventoryPlan(eventUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch inventory plan")) }
+                }
+            }
+
+            route("{id}/packing-list") {
+                get {
+                    val tuntasUUID = parseTuntasId() ?: return@get
+                    val eventUUID = parseEventId() ?: return@get
+                    if (!canViewEventInventory(eventService, tuntasUUID, eventUUID)) return@get
+                    eventPackingService.getPackingList(eventUUID, tuntasUUID)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch packing list")) }
+                }
+
+                post("generate") {
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+                    eventPackingService.generateFromPlan(eventUUID, tuntasUUID)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to generate packing list")) }
+                }
+
+                post("containers") {
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+                    val request = call.receive<CreateEventPackingContainerRequest>()
+                    eventPackingService.createContainer(eventUUID, tuntasUUID, request)
+                        .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create packing container")) }
+                }
+
+                put("lines/{lineId}") {
+                    val userId = currentUserId() ?: return@put
+                    val tuntasUUID = parseTuntasId() ?: return@put
+                    val eventUUID = parseEventId() ?: return@put
+                    val lineUUID = parseUuidParameter("lineId", "Invalid packing line ID") ?: return@put
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
+                    val request = call.receive<UpdateEventPackingLineRequest>()
+                    eventPackingService.updateLine(eventUUID, lineUUID, tuntasUUID, userId, request)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update packing line")) }
                 }
             }
 
@@ -447,7 +490,7 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                 get {
                     val tuntasUUID = parseTuntasId() ?: return@get
                     val eventUUID = parseEventId() ?: return@get
-                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@get
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@get
                     eventService.getPurchases(eventUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch purchases")) }
@@ -458,7 +501,7 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                     val userId = UUID.fromString(principal.getClaim("userId", String::class))
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
-                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
                     val request = call.receive<CreateEventPurchaseRequest>()
                     eventService.createPurchase(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -468,7 +511,7 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                 put("{purchaseId}") {
                     val tuntasUUID = parseTuntasId() ?: return@put
                     val eventUUID = parseEventId() ?: return@put
-                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@put
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@put
                     val request = call.receive<UpdateEventPurchaseRequest>()
                     eventService.updatePurchase(eventUUID, purchaseUUID, tuntasUUID, request)
@@ -479,7 +522,7 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                 post("{purchaseId}/invoice") {
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
-                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@post
                     val request = call.receive<AttachEventPurchaseInvoiceRequest>()
                     eventService.attachPurchaseInvoice(eventUUID, purchaseUUID, tuntasUUID, request)
@@ -495,7 +538,34 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
 
                     eventService.getPurchaseInvoiceFileName(eventUUID, purchaseUUID, tuntasUUID)
                         .onSuccess { fileName ->
-                            val file = File("uploads/documents", fileName)
+                            val file = UploadStorage.resolveDocument(fileName)
+                                ?: return@onSuccess call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid invoice file name"))
+                            if (!file.exists()) {
+                                return@onSuccess call.respond(HttpStatusCode.NotFound, ErrorResponse("Invoice file not found"))
+                            }
+                            call.response.header(
+                                HttpHeaders.ContentDisposition,
+                                ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, fileName).toString()
+                            )
+                            call.respondFile(file)
+                        }
+                        .onFailure { e ->
+                            val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
+                            call.respond(status, ErrorResponse(e.message ?: "Failed to download invoice"))
+                        }
+                }
+
+                get("{purchaseId}/invoices/{invoiceId}/download") {
+                    val tuntasUUID = parseTuntasId() ?: return@get
+                    val eventUUID = parseEventId() ?: return@get
+                    val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@get
+                    val invoiceUUID = parseUuidParameter("invoiceId", "Invalid invoice ID") ?: return@get
+                    if (!canDownloadPurchaseInvoice(eventService, tuntasUUID, eventUUID)) return@get
+
+                    eventService.getPurchaseInvoiceFileName(eventUUID, purchaseUUID, tuntasUUID, invoiceUUID)
+                        .onSuccess { fileName ->
+                            val file = UploadStorage.resolveDocument(fileName)
+                                ?: return@onSuccess call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid invoice file name"))
                             if (!file.exists()) {
                                 return@onSuccess call.respond(HttpStatusCode.NotFound, ErrorResponse("Invoice file not found"))
                             }
@@ -514,7 +584,7 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                 post("{purchaseId}/complete") {
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
-                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@post
                     eventService.completePurchase(eventUUID, purchaseUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -526,6 +596,59 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService) 
                         HttpStatusCode.Gone,
                         ErrorResponse("Pirkinių pridėjimas į inventorių perkeltas į renginio inventoriaus suvedimą")
                     )
+                }
+            }
+
+            route("{id}/finance") {
+                get {
+                    val tuntasUUID = parseTuntasId() ?: return@get
+                    val eventUUID = parseEventId() ?: return@get
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@get
+                    eventService.getEventFinance(eventUUID, tuntasUUID)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch event finance")) }
+                }
+
+                put("budget") {
+                    val tuntasUUID = parseTuntasId() ?: return@put
+                    val eventUUID = parseEventId() ?: return@put
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@put
+                    val request = call.receive<UpdateEventFinanceBudgetRequest>()
+                    eventService.updateEventFinanceBudget(eventUUID, tuntasUUID, request)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update event budget")) }
+                }
+
+                post("costs") {
+                    val userId = currentUserId() ?: return@post
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
+                    val request = call.receive<CreateEventExtraCostRequest>()
+                    eventService.createEventExtraCost(eventUUID, tuntasUUID, userId, request)
+                        .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create event cost")) }
+                }
+
+                put("costs/{costId}") {
+                    val tuntasUUID = parseTuntasId() ?: return@put
+                    val eventUUID = parseEventId() ?: return@put
+                    val costUUID = parseUuidParameter("costId", "Invalid extra cost ID") ?: return@put
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@put
+                    val request = call.receive<UpdateEventExtraCostRequest>()
+                    eventService.updateEventExtraCost(eventUUID, tuntasUUID, costUUID, request)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update event cost")) }
+                }
+
+                delete("costs/{costId}") {
+                    val tuntasUUID = parseTuntasId() ?: return@delete
+                    val eventUUID = parseEventId() ?: return@delete
+                    val costUUID = parseUuidParameter("costId", "Invalid extra cost ID") ?: return@delete
+                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@delete
+                    eventService.deleteEventExtraCost(eventUUID, tuntasUUID, costUUID)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to delete event cost")) }
                 }
             }
 
@@ -1153,6 +1276,23 @@ private suspend fun RoutingContext.canManageEventInventory(
     return false
 }
 
+private suspend fun RoutingContext.canManageEventFinance(
+    eventService: EventService,
+    tuntasId: UUID,
+    eventId: UUID
+): Boolean {
+    val principal = call.principal<JWTPrincipal>()
+        ?: return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Not authenticated")).let { false }
+    val userId = try {
+        UUID.fromString(principal.getClaim("userId", String::class))
+    } catch (e: Exception) {
+        return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
+    }
+    if (eventService.canManageEventFinance(eventId, tuntasId, userId)) return true
+    call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+    return false
+}
+
 private suspend fun RoutingContext.canViewEventInventory(
     eventService: EventService,
     tuntasId: UUID,
@@ -1203,7 +1343,7 @@ private suspend fun RoutingContext.canDownloadPurchaseInvoice(
     } catch (e: Exception) {
         return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
     }
-    if (eventService.canManageEventInventory(eventId, tuntasId, userId)) return true
+    if (eventService.canManageEventFinance(eventId, tuntasId, userId)) return true
     call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
     return false
 }

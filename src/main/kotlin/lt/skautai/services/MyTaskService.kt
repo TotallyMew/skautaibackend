@@ -4,11 +4,13 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
+import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
 import lt.skautai.database.tables.BendrasInventoryRequests
 import lt.skautai.database.tables.DraugoveRequisitions
 import lt.skautai.database.tables.EventInventoryCustody
 import lt.skautai.database.tables.EventInventoryItems
+import lt.skautai.database.tables.EventPackingLines
 import lt.skautai.database.tables.EventPurchaseItems
 import lt.skautai.database.tables.EventPurchases
 import lt.skautai.database.tables.EventRoles
@@ -51,6 +53,7 @@ class MyTaskService {
             addSharedPickupReviewTask(this, tuntasId, userId, permissionContext, now)
             addLeadershipChangeReviewTask(this, tuntasId, userId, now)
             addEventLogisticsTask(this, tuntasId, userId, now)
+            addEventPackingTask(this, tuntasId, userId, today, now)
             addEventReconciliationTask(this, tuntasId, userId, now)
             addAuditSessionTask(this, tuntasId, userId, permissionContext, now)
         }
@@ -381,6 +384,82 @@ class MyTaskService {
         )
     }
 
+    private fun addEventPackingTask(
+        tasks: MutableList<MyTaskResponse>,
+        tuntasId: UUID,
+        userId: UUID,
+        today: kotlinx.datetime.LocalDate,
+        now: Instant
+    ) {
+        val eventRows = actionableEventRows(tuntasId, userId, eventInventoryTaskRoles)
+        val needsGeneration = eventRows.filter { event ->
+            event[Events.status] in listOf("PLANNING", "ACTIVE") &&
+                today.daysUntil(event[Events.startDate]) in 0..7 &&
+                eventHasInventoryPlan(event[Events.id]) &&
+                !eventHasPackingList(event[Events.id])
+        }
+        val openBeforeStart = eventRows.filter { event ->
+            event[Events.status] in listOf("PLANNING", "ACTIVE") &&
+                today.daysUntil(event[Events.startDate]) <= 2 &&
+                eventHasOpenPacking(event[Events.id])
+        }
+        val openReturns = eventRows.filter { event ->
+            event[Events.status] in listOf("WRAP_UP", "COMPLETED") &&
+                eventHasOpenPackingReturns(event[Events.id])
+        }
+
+        val generationSingle = needsGeneration.singleOrNull()
+        if (needsGeneration.isNotEmpty()) {
+            tasks += task(
+                type = "EVENT_PACKING_GENERATE",
+                title = if (generationSingle != null) "Sugeneruok pakavimo sarasa" else "Sugeneruok renginiu pakavimo sarasus",
+                subtitle = if (generationSingle != null) generationSingle[Events.name] else "${needsGeneration.size} renginiai arteja be pakavimo saraso.",
+                count = needsGeneration.size,
+                priority = 68,
+                urgency = "MEDIUM",
+                bucket = "NEXT",
+                routeTarget = generationSingle?.let { "event_packing/${it[Events.id]}" } ?: "event_list",
+                createdAt = now,
+                dueAt = needsGeneration.minOfOrNull { it[Events.startDate] }?.atStartOfDayIn(TimeZone.currentSystemDefault()),
+                entityId = generationSingle?.get(Events.id)?.toString()
+            )
+        }
+
+        val packingSingle = openBeforeStart.singleOrNull()
+        if (openBeforeStart.isNotEmpty()) {
+            val hasToday = openBeforeStart.any { today.daysUntil(it[Events.startDate]) <= 0 }
+            tasks += task(
+                type = "EVENT_PACKING_OPEN",
+                title = if (packingSingle != null) "Užbaik renginio pakavima" else "Užbaik renginiu pakavima",
+                subtitle = if (packingSingle != null) packingSingle[Events.name] else "${openBeforeStart.size} renginiai turi nebaigtu pakavimo eiluciu.",
+                count = openBeforeStart.size,
+                priority = 5,
+                urgency = if (hasToday) "CRITICAL" else "HIGH",
+                bucket = if (hasToday) "URGENT" else "TODAY",
+                routeTarget = packingSingle?.let { "event_packing/${it[Events.id]}" } ?: "event_list",
+                createdAt = now,
+                dueAt = openBeforeStart.minOfOrNull { it[Events.startDate] }?.atStartOfDayIn(TimeZone.currentSystemDefault()),
+                entityId = packingSingle?.get(Events.id)?.toString()
+            )
+        }
+
+        val returnsSingle = openReturns.singleOrNull()
+        if (openReturns.isNotEmpty()) {
+            tasks += task(
+                type = "EVENT_PACKING_RETURN_OPEN",
+                title = if (returnsSingle != null) "Sutikrink grąžinta inventoriu" else "Sutikrink renginiu grąžinimus",
+                subtitle = if (returnsSingle != null) returnsSingle[Events.name] else "${openReturns.size} renginiai turi pakavimo eiluciu nepažymetu kaip grąžintos.",
+                count = openReturns.size,
+                priority = 12,
+                urgency = "HIGH",
+                bucket = "TODAY",
+                routeTarget = returnsSingle?.let { "event_packing/${it[Events.id]}" } ?: "event_list",
+                createdAt = now,
+                entityId = returnsSingle?.get(Events.id)?.toString()
+            )
+        }
+    }
+
     private fun addAuditSessionTask(
         tasks: MutableList<MyTaskResponse>,
         tuntasId: UUID,
@@ -594,8 +673,28 @@ class MyTaskService {
             .where { EventInventoryItems.eventId eq eventId }
             .any { row ->
                 row[EventInventoryItems.needsPurchase] ||
-                    row[EventInventoryItems.plannedQuantity] > row[EventInventoryItems.availableQuantity]
+                row[EventInventoryItems.plannedQuantity] > row[EventInventoryItems.availableQuantity]
             }
+
+    private fun eventHasInventoryPlan(eventId: UUID): Boolean =
+        EventInventoryItems.selectAll()
+            .where { EventInventoryItems.eventId eq eventId }
+            .count() > 0
+
+    private fun eventHasPackingList(eventId: UUID): Boolean =
+        EventPackingLines.selectAll()
+            .where { EventPackingLines.eventId eq eventId }
+            .count() > 0
+
+    private fun eventHasOpenPacking(eventId: UUID): Boolean =
+        EventPackingLines.selectAll()
+            .where { EventPackingLines.eventId eq eventId }
+            .any { it[EventPackingLines.status] !in setOf("PACKED", "LOADED", "RETURNED") }
+
+    private fun eventHasOpenPackingReturns(eventId: UUID): Boolean =
+        EventPackingLines.selectAll()
+            .where { EventPackingLines.eventId eq eventId }
+            .any { it[EventPackingLines.status] in setOf("PICKED", "PACKED", "LOADED") }
 
     private fun eventHasOpenReconciliation(eventId: UUID): Boolean {
         val openReturns = EventInventoryCustody.selectAll()

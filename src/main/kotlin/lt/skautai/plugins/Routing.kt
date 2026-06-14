@@ -39,6 +39,7 @@ import lt.skautai.routes.userRoutes
 import lt.skautai.services.BendrasInventoryRequestService
 import lt.skautai.services.DeviceService
 import lt.skautai.services.EventService
+import lt.skautai.services.EventPackingService
 import lt.skautai.services.FirebaseNotificationService
 import lt.skautai.services.RequisitionService
 import lt.skautai.routes.rolesRoutes
@@ -54,6 +55,7 @@ fun Application.configureRouting() {
     val memberService = MemberService()
     val reservationService = ReservationService()
     val eventService = EventService()
+    val eventPackingService = EventPackingService()
     val bendrasInventoryRequestService = BendrasInventoryRequestService()
     val requisitionService = RequisitionService()
     val inventoryTemplateService = InventoryTemplateService()
@@ -80,7 +82,7 @@ fun Application.configureRouting() {
         memberRoutes(memberService)
         leadershipChangeRequestRoutes(leadershipChangeRequestService)
         reservationRoutes(reservationService, firebaseNotificationService, notificationRecipientService)
-        eventRoutes(eventService, memberService)
+        eventRoutes(eventService, memberService, eventPackingService)
         bendrasInventoryRequestRoutes(bendrasInventoryRequestService, firebaseNotificationService, notificationRecipientService)
         requisitionRoutes(requisitionService, firebaseNotificationService, notificationRecipientService)
         inventoryTemplateRoutes(inventoryTemplateService)

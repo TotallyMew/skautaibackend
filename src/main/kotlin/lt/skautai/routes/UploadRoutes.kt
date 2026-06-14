@@ -14,6 +14,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.UploadResponse
+import lt.skautai.util.UploadStorage
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -32,7 +33,7 @@ fun Route.uploadRoutes() {
             get("{fileName}") {
                 val fileName = call.parameters["fileName"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("File name required"))
-                val file = resolveUploadFile(File("uploads/images"), fileName)
+                val file = UploadStorage.resolveImage(fileName)
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid file name"))
 
                 if (!file.exists()) {
@@ -45,24 +46,24 @@ fun Route.uploadRoutes() {
 
         post("/api/uploads/images") {
             call.handleUpload(
-                uploadDir = File("uploads/images"),
+                uploadDir = UploadStorage.imagesDir(),
                 maxBytes = maxImageBytes,
                 allowedExtensions = allowedImageExtensions,
                 allowedContentTypes = allowedImageContentTypes,
                 allowPdf = false,
-                urlPrefix = "/uploads/images",
+                urlPrefix = UploadStorage.imageUrlPrefix,
                 missingFileMessage = "Image file required"
             )
         }
 
         post("/api/uploads/documents") {
             call.handleUpload(
-                uploadDir = File("uploads/documents"),
+                uploadDir = UploadStorage.documentsDir(),
                 maxBytes = maxDocumentBytes,
                 allowedExtensions = allowedDocumentExtensions,
                 allowedContentTypes = allowedDocumentContentTypes,
                 allowPdf = true,
-                urlPrefix = "/uploads/documents",
+                urlPrefix = UploadStorage.documentUrlPrefix,
                 missingFileMessage = "Document file required"
             )
         }
@@ -162,16 +163,6 @@ private fun validateUpload(
     }
 
     return UploadValidationResult(bytes = bytes, extension = extension)
-}
-
-private fun resolveUploadFile(baseDir: File, fileName: String): File? {
-    if (fileName.isBlank()) {
-        return null
-    }
-
-    val root = baseDir.canonicalFile
-    val candidate = File(root, fileName).canonicalFile
-    return if (candidate.toPath().startsWith(root.toPath())) candidate else null
 }
 
 private fun InputStream.readUpTo(maxBytes: Long): ByteArray {

@@ -16,6 +16,7 @@ import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateItemRequest
+import lt.skautai.models.requests.ConsumeItemRequest
 import lt.skautai.models.requests.ReviewItemAdditionRequest
 import lt.skautai.plugins.ResolvedPermission
 import lt.skautai.models.requests.ItemCustomFieldRequest
@@ -35,13 +36,13 @@ import lt.skautai.models.responses.ItemListResponse
 import lt.skautai.models.responses.ItemResponse
 import lt.skautai.models.responses.ItemTransferListResponse
 import lt.skautai.models.responses.ItemTransferResponse
+import lt.skautai.util.UploadStorage
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
-import java.io.File
 import java.util.*
 
 class DuplicateItemConflictException(val duplicateItem: ItemResponse) :
@@ -218,6 +219,9 @@ class ItemService {
             if (request.quantity < 1) {
                 return@transaction Result.failure(Exception("Quantity must be at least 1"))
             }
+            validateConsumableFields(request.isConsumable, request.unitOfMeasure, request.minimumQuantity)?.let {
+                return@transaction Result.failure(it)
+            }
 
             if (request.duplicateHandling !in listOf("ASK", "ADD_TO_EXISTING", "CREATE_NEW")) {
                 return@transaction Result.failure(Exception("Invalid duplicate handling option"))
@@ -307,6 +311,9 @@ class ItemService {
                         val now = Clock.System.now()
                         Items.update({ Items.id eq duplicateItem[Items.id] }) {
                             it[quantity] = duplicateItem[Items.quantity] + request.quantity
+                            it[isConsumable] = duplicateItem[Items.isConsumable] || request.isConsumable
+                            it[unitOfMeasure] = request.unitOfMeasure.trim().ifBlank { duplicateItem[Items.unitOfMeasure] }
+                            request.minimumQuantity?.let { value -> it[minimumQuantity] = value }
                             it[updatedAt] = now
                         }
                         recordItemHistory(
@@ -338,6 +345,9 @@ class ItemService {
                 it[category] = request.category
                 it[condition] = request.condition
                 it[quantity] = request.quantity
+                it[isConsumable] = request.isConsumable
+                it[unitOfMeasure] = request.unitOfMeasure.trim().ifBlank { "vnt." }
+                it[minimumQuantity] = request.minimumQuantity
                 it[locationId] = locationUUID
                 it[temporaryStorageLabel] = request.temporaryStorageLabel
                 it[sourceSharedItemId] = null
@@ -467,6 +477,52 @@ class ItemService {
         }
     }
 
+    fun consumeItem(
+        itemId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        request: ConsumeItemRequest
+    ): Result<ItemResponse> {
+        return transaction {
+            if (request.quantity < 1) {
+                return@transaction Result.failure(Exception("Quantity must be at least 1"))
+            }
+            val item = Items.selectAll()
+                .where {
+                    (Items.id eq itemId) and
+                        (Items.tuntasId eq tuntasId) and
+                        (Items.status eq "ACTIVE")
+                }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Item not found"))
+
+            if (!item[Items.isConsumable]) {
+                return@transaction Result.failure(Exception("Only consumable items can be consumed"))
+            }
+            if (request.quantity > item[Items.quantity]) {
+                return@transaction Result.failure(Exception("Consumed quantity cannot exceed available quantity"))
+            }
+
+            val remaining = item[Items.quantity] - request.quantity
+            val now = Clock.System.now()
+            Items.update({ Items.id eq itemId }) {
+                it[quantity] = remaining
+                it[updatedAt] = now
+            }
+            InventoryKitService.syncMembershipAfterItemQuantityChange(itemId, remaining)
+            recordItemHistory(
+                itemId = itemId,
+                eventType = "CONSUMED",
+                quantityChange = -request.quantity,
+                performedByUserId = userId,
+                notes = request.notes,
+                createdAt = now
+            )
+            Result.success(toItemResponse(Items.selectAll().where { Items.id eq itemId }.first()))
+        }
+    }
+
     fun updateItem(
         itemId: UUID,
         tuntasId: UUID,
@@ -500,6 +556,11 @@ class ItemService {
             request.condition?.let {
                 validateItemCondition(it)?.let { error -> return@transaction Result.failure(error) }
             }
+            validateConsumableFields(
+                isConsumable = request.isConsumable ?: existing[Items.isConsumable],
+                unitOfMeasure = request.unitOfMeasure ?: existing[Items.unitOfMeasure],
+                minimumQuantity = if (request.clearMinimumQuantity) null else request.minimumQuantity ?: existing[Items.minimumQuantity]
+            )?.let { return@transaction Result.failure(it) }
 
             request.status?.let {
                 if (it !in listOf("ACTIVE", "PENDING_APPROVAL", "INACTIVE")) {
@@ -606,6 +667,12 @@ class ItemService {
                 request.category?.let { v -> it[category] = v }
                 request.condition?.let { v -> it[condition] = v }
                 request.quantity?.let { v -> it[quantity] = v }
+                request.isConsumable?.let { v -> it[isConsumable] = v }
+                request.unitOfMeasure?.let { v -> it[unitOfMeasure] = v.trim().ifBlank { "vnt." } }
+                when {
+                    request.clearMinimumQuantity -> it[minimumQuantity] = null
+                    request.minimumQuantity != null -> it[minimumQuantity] = request.minimumQuantity
+                }
                 request.photoUrl?.let { v -> it[photoUrl] = v }
                 request.purchasePrice?.let { v -> it[purchasePrice] = v.toBigDecimal() }
                 request.notes?.let { v -> it[notes] = v }
@@ -751,6 +818,9 @@ class ItemService {
                     it[category] = sharedItem[Items.category]
                     it[condition] = sharedItem[Items.condition]
                     it[quantity] = request.quantity
+                    it[isConsumable] = sharedItem[Items.isConsumable]
+                    it[unitOfMeasure] = sharedItem[Items.unitOfMeasure]
+                    it[minimumQuantity] = sharedItem[Items.minimumQuantity]
                     it[locationId] = null
                     it[temporaryStorageLabel] = null
                     it[sourceSharedItemId] = sharedItem[Items.id]
@@ -1083,7 +1153,7 @@ class ItemService {
                 return@transaction Result.failure(Exception("Item cannot be deactivated while it has active reservations"))
             }
 
-            deleteManagedUpload(existing[Items.photoUrl], "/uploads/images/", "uploads/images")
+            UploadStorage.deleteManagedUpload(existing[Items.photoUrl], UploadStorage.imageUrlPrefix)
 
             Items.update({ (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }) {
                 it[status] = "INACTIVE"
@@ -1367,6 +1437,11 @@ class ItemService {
                 category = row[Items.category],
             condition = row[Items.condition],
             quantity = row[Items.quantity],
+            isConsumable = row[Items.isConsumable],
+            unitOfMeasure = row[Items.unitOfMeasure],
+            minimumQuantity = row[Items.minimumQuantity],
+            isLowStock = row[Items.isConsumable] &&
+                row[Items.minimumQuantity]?.let { row[Items.quantity] <= it } == true,
             locationId = locationId?.toString(),
             locationName = locationName,
             locationPath = locationPath,
@@ -1417,6 +1492,18 @@ class ItemService {
         val normalized = category.trim()
         if (normalized.isBlank()) return Exception("Inventory category is required")
         if (normalized.length > 30) return Exception("Inventory category must be at most 30 characters")
+        return null
+    }
+
+    private fun validateConsumableFields(
+        isConsumable: Boolean,
+        unitOfMeasure: String,
+        minimumQuantity: Int?
+    ): Exception? {
+        val normalizedUnit = unitOfMeasure.trim()
+        if (isConsumable && normalizedUnit.isBlank()) return Exception("Unit of measure is required for consumable items")
+        if (normalizedUnit.length > 30) return Exception("Unit of measure must be at most 30 characters")
+        if (minimumQuantity != null && minimumQuantity < 0) return Exception("Minimum quantity cannot be negative")
         return null
     }
 
@@ -1539,12 +1626,4 @@ class ItemService {
         }
     }
 
-    private fun deleteManagedUpload(url: String?, prefix: String, baseDir: String) {
-        val fileName = url?.takeIf { it.startsWith(prefix) }?.removePrefix(prefix) ?: return
-        val root = File(baseDir).canonicalFile
-        val candidate = File(root, fileName).canonicalFile
-        if (candidate.toPath().startsWith(root.toPath()) && candidate.exists()) {
-            candidate.delete()
-        }
-    }
 }

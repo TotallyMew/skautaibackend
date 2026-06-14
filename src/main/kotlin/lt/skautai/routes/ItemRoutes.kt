@@ -8,6 +8,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.CreateStorageAuditSessionRequest
+import lt.skautai.models.requests.ConsumeItemRequest
 import lt.skautai.models.requests.ReturnItemToSharedRequest
 import lt.skautai.models.requests.RestockItemRequest
 import lt.skautai.models.requests.ReviewItemAdditionRequest
@@ -431,6 +432,32 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 itemService.restockItem(itemUUID, tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to restock item")) }
+            }
+
+            post("{id}/consume") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
+                    ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                if (!checkPermission("items.update", tuntasUUID, scopeInfo.custodianId)) return@post
+
+                val request = call.receive<ConsumeItemRequest>()
+                itemService.consumeItem(itemUUID, tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to consume item")) }
             }
 
             post("{id}/review") {

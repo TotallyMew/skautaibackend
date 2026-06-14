@@ -169,6 +169,54 @@ class ItemRoutesTest {
     }
 
     @Test
+    fun `consume item decreases consumable quantity and records history`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+
+        val createResponse = client.post("/api/items") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody(
+                """{
+                    "name": "Dujos",
+                    "type": "COLLECTIVE",
+                    "category": "COOKING",
+                    "quantity": 8,
+                    "isConsumable": true,
+                    "unitOfMeasure": "vnt.",
+                    "minimumQuantity": 5
+                }""".trimIndent()
+            )
+        }
+        val itemId = Json.parseToJsonElement(createResponse.bodyAsText())
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val consumeResponse = client.post("/api/items/$itemId/consume") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantity": 3, "notes": "Renginys" }""")
+        }
+
+        assertEquals(HttpStatusCode.OK, consumeResponse.status)
+        val body = Json.parseToJsonElement(consumeResponse.bodyAsText()).jsonObject
+        assertEquals(5, body["quantity"]!!.jsonPrimitive.content.toInt())
+        assertEquals("true", body["isLowStock"]!!.jsonPrimitive.content)
+
+        val historyResponse = client.get("/api/items/$itemId/history") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val history = Json.parseToJsonElement(historyResponse.bodyAsText())
+            .jsonObject["entries"]!!.jsonArray
+        assertTrue(history.any {
+            it.jsonObject["eventType"]!!.jsonPrimitive.content == "CONSUMED" &&
+                it.jsonObject["quantityChange"]!!.jsonPrimitive.content.toInt() == -3
+        })
+    }
+
+    @Test
     fun `create item can force new record even when duplicate exists`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()

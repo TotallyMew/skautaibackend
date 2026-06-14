@@ -17,6 +17,7 @@ object Events : Table("events") {
         .references(OrganizationalUnits.id).nullable()
     val createdByUserId = uuid("created_by_user_id").references(Users.id).nullable()
     val status = varchar("status", 20).default("PLANNING")
+    val inventoryBudgetAmount = decimal("inventory_budget_amount", 10, 2).nullable()
     val notes = text("notes").nullable()
     val createdAt = timestamp("created_at")
     val updatedAt = timestamp("updated_at")

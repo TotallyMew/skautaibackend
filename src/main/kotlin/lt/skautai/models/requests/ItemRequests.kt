@@ -17,6 +17,9 @@ data class CreateItemRequest(
     val custodianId: String? = null,
     val origin: String = "UNIT_ACQUIRED",
     val quantity: Int = 1,
+    val isConsumable: Boolean = false,
+    val unitOfMeasure: String = "vnt.",
+    val minimumQuantity: Int? = null,
     val condition: String = "GOOD",
     val locationId: String? = null,
     val temporaryStorageLabel: String? = null,
@@ -39,6 +42,9 @@ data class UpdateItemRequest(
     val category: String? = null,
     val condition: String? = null,
     val quantity: Int? = null,
+    val isConsumable: Boolean? = null,
+    val unitOfMeasure: String? = null,
+    val minimumQuantity: Int? = null,
     val custodianId: String? = null,
     val locationId: String? = null,
     val temporaryStorageLabel: String? = null,
@@ -53,7 +59,8 @@ data class UpdateItemRequest(
     val clearCustodianId: Boolean = false,
     val clearLocationId: Boolean = false,
     val clearSourceSharedItemId: Boolean = false,
-    val clearResponsibleUserId: Boolean = false
+    val clearResponsibleUserId: Boolean = false,
+    val clearMinimumQuantity: Boolean = false
 )
 
 @Serializable
@@ -74,6 +81,12 @@ data class RestockItemRequest(
     val quantity: Int,
     val purchaseDate: String? = null,
     val purchasePrice: Double? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class ConsumeItemRequest(
+    val quantity: Int,
     val notes: String? = null
 )
 

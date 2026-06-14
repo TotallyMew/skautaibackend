@@ -3,12 +3,13 @@ package lt.skautai.services
 import lt.skautai.database.tables.*
 import lt.skautai.models.requests.*
 import lt.skautai.models.responses.*
+import lt.skautai.util.UploadStorage
 import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
-import java.io.File
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.util.*
 
 class EventService {
@@ -17,17 +18,19 @@ class EventService {
     private val validStatuses = listOf("PLANNING", "ACTIVE", "WRAP_UP", "COMPLETED", "CANCELLED")
     private val readOnlyEventStatuses = listOf("COMPLETED", "CANCELLED")
     private val validEventRoles = listOf(
-        "VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "PASTOVYKLES_GURU",
+        "VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "FINANSININKAS", "PASTOVYKLES_GURU",
         "VADOVAS", "SAVANORIS", "PATYRE_SKAUTAS", "SKAUTAS",
         "PROGRAMERIS", "MAISTININKAS"
     )
     private val validTargetGroups = listOf("VILKAI", "SKAUTAI", "PATYRE_SKAUTAI", "VYR_SKAUTAI", "VYR_SKAUTES", "SKAUTAI_VILKAI", "TEVAI", "PROGRAMA")
     private val eventManagerRoles = listOf("VIRSININKAS")
     private val eventInventoryRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS")
+    private val eventFinanceRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "FINANSININKAS")
     private val eventViewerRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "PROGRAMERIS")
     private val eventInventoryRequesterRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "PROGRAMERIS")
     private val validBucketTypes = listOf("PROGRAM", "KITCHEN", "ADMIN", "MEDICAL", "PASTOVYKLE", "OTHER")
     private val validPurchaseStatuses = listOf("DRAFT", "PURCHASED", "CANCELLED")
+    private val validExtraCostCategories = listOf("FIREWOOD", "TOILETS", "OTHER")
     private val validInventoryRequestStatuses = listOf(
         "PENDING",
         "APPROVED",
@@ -144,6 +147,20 @@ class EventService {
                 (EventRoles.eventId eq eventId) and
                         (EventRoles.userId eq userId) and
                         (EventRoles.role inList eventInventoryRoles)
+            }
+            .firstOrNull() != null
+    }
+
+    fun canManageEventFinance(eventId: UUID, tuntasId: UUID, userId: UUID): Boolean = transaction {
+        Events.selectAll()
+            .where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }
+            .firstOrNull() ?: return@transaction false
+
+        EventRoles.selectAll()
+            .where {
+                (EventRoles.eventId eq eventId) and
+                        (EventRoles.userId eq userId) and
+                        (EventRoles.role inList eventFinanceRoles)
             }
             .firstOrNull() != null
     }
@@ -3488,24 +3505,54 @@ class EventService {
             if (request.invoiceFileUrl.isBlank()) {
                 return@transaction Result.failure(Exception("Invoice file URL cannot be blank"))
             }
-            existing[EventPurchases.invoiceFileUrl]
-                ?.takeIf { it != request.invoiceFileUrl }
-                ?.let { deleteManagedDocument(it) }
+            val alreadyAttached = EventPurchaseInvoices.selectAll()
+                .where {
+                    (EventPurchaseInvoices.purchaseId eq purchaseId) and
+                        (EventPurchaseInvoices.fileUrl eq request.invoiceFileUrl)
+                }
+                .firstOrNull() != null
+            if (!alreadyAttached) {
+                EventPurchaseInvoices.insert {
+                    it[id] = UUID.randomUUID()
+                    it[EventPurchaseInvoices.purchaseId] = purchaseId
+                    it[fileUrl] = request.invoiceFileUrl
+                    it[createdAt] = kotlinx.datetime.Clock.System.now()
+                }
+            }
             EventPurchases.update({ (EventPurchases.id eq purchaseId) and (EventPurchases.eventId eq eventId) }) {
-                it[invoiceFileUrl] = request.invoiceFileUrl
+                if (existing[EventPurchases.invoiceFileUrl].isNullOrBlank()) {
+                    it[invoiceFileUrl] = request.invoiceFileUrl
+                }
+                it[updatedAt] = kotlinx.datetime.Clock.System.now()
             }
             Result.success(toPurchaseResponse(EventPurchases.selectAll().where { EventPurchases.id eq purchaseId }.first()))
         }
     }
 
-    fun getPurchaseInvoiceFileName(eventId: UUID, purchaseId: UUID, tuntasId: UUID): Result<String> {
+    fun getPurchaseInvoiceFileName(eventId: UUID, purchaseId: UUID, tuntasId: UUID, invoiceId: UUID? = null): Result<String> {
         return transaction {
             ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
             val purchase = EventPurchases.selectAll()
                 .where { (EventPurchases.id eq purchaseId) and (EventPurchases.eventId eq eventId) }
                 .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase not found"))
-            val invoiceUrl = purchase[EventPurchases.invoiceFileUrl]
-                ?: return@transaction Result.failure(Exception("Invoice not attached"))
+            val invoiceUrl = if (invoiceId != null) {
+                EventPurchaseInvoices.selectAll()
+                    .where {
+                        (EventPurchaseInvoices.id eq invoiceId) and
+                            (EventPurchaseInvoices.purchaseId eq purchaseId)
+                    }
+                    .firstOrNull()
+                    ?.get(EventPurchaseInvoices.fileUrl)
+                    ?: return@transaction Result.failure(Exception("Invoice not attached"))
+            } else {
+                EventPurchaseInvoices.selectAll()
+                    .where { EventPurchaseInvoices.purchaseId eq purchaseId }
+                    .orderBy(EventPurchaseInvoices.createdAt to SortOrder.ASC)
+                    .firstOrNull()
+                    ?.get(EventPurchaseInvoices.fileUrl)
+                    ?: purchase[EventPurchases.invoiceFileUrl]
+                    ?: return@transaction Result.failure(Exception("Invoice not attached"))
+            }
             val prefix = "/uploads/documents/"
             if (!invoiceUrl.startsWith(prefix)) {
                 return@transaction Result.failure(Exception("Invoice file URL is not downloadable"))
@@ -3515,6 +3562,132 @@ class EventService {
                 return@transaction Result.failure(Exception("Invalid invoice file name"))
             }
             Result.success(fileName)
+        }
+    }
+
+    fun getEventFinance(eventId: UUID, tuntasId: UUID): Result<EventFinanceResponse> {
+        return transaction {
+            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            Result.success(toFinanceResponse(eventId))
+        }
+    }
+
+    fun updateEventFinanceBudget(
+        eventId: UUID,
+        tuntasId: UUID,
+        request: UpdateEventFinanceBudgetRequest
+    ): Result<EventFinanceResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            val amount = request.inventoryBudgetAmount?.let {
+                if (it < 0.0) return@transaction Result.failure(Exception("Budget cannot be negative"))
+                it.toMoney()
+            }
+            Events.update({ (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }) {
+                it[inventoryBudgetAmount] = amount
+                it[updatedAt] = kotlinx.datetime.Clock.System.now()
+            }
+            Result.success(toFinanceResponse(eventId))
+        }
+    }
+
+    fun createEventExtraCost(
+        eventId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        request: CreateEventExtraCostRequest
+    ): Result<EventFinanceResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            val category = validateExtraCostCategory(request.category)
+                ?: return@transaction Result.failure(Exception("Invalid extra cost category"))
+            val label = request.label.trim().ifBlank {
+                return@transaction Result.failure(Exception("Extra cost label cannot be blank"))
+            }
+            val quantity = request.quantity?.let {
+                if (it < 0.0) return@transaction Result.failure(Exception("Quantity cannot be negative"))
+                it.toMoney()
+            }
+            val unitPrice = request.unitPrice?.let {
+                if (it < 0.0) return@transaction Result.failure(Exception("Unit price cannot be negative"))
+                it.toMoney()
+            }
+            val totalAmount = resolveExtraCostTotal(quantity, unitPrice, request.totalAmount)
+                ?: return@transaction Result.failure(Exception("Extra cost total amount is required"))
+            val now = kotlinx.datetime.Clock.System.now()
+            EventExtraCosts.insert {
+                it[id] = UUID.randomUUID()
+                it[EventExtraCosts.eventId] = eventId
+                it[EventExtraCosts.category] = category
+                it[EventExtraCosts.label] = label
+                it[EventExtraCosts.quantity] = quantity
+                it[unit] = request.unit?.trim()?.ifBlank { null }
+                it[EventExtraCosts.unitPrice] = unitPrice
+                it[EventExtraCosts.totalAmount] = totalAmount
+                it[notes] = request.notes?.trim()?.ifBlank { null }
+                it[createdByUserId] = userId
+                it[createdAt] = now
+                it[updatedAt] = now
+            }
+            Result.success(toFinanceResponse(eventId))
+        }
+    }
+
+    fun updateEventExtraCost(
+        eventId: UUID,
+        tuntasId: UUID,
+        costId: UUID,
+        request: UpdateEventExtraCostRequest
+    ): Result<EventFinanceResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            val existing = EventExtraCosts.selectAll()
+                .where { (EventExtraCosts.id eq costId) and (EventExtraCosts.eventId eq eventId) }
+                .firstOrNull() ?: return@transaction Result.failure(Exception("Extra cost not found"))
+            val category = request.category?.let {
+                validateExtraCostCategory(it) ?: return@transaction Result.failure(Exception("Invalid extra cost category"))
+            }
+            val label = request.label?.trim()?.ifBlank {
+                return@transaction Result.failure(Exception("Extra cost label cannot be blank"))
+            }
+            val quantity = request.quantity?.let {
+                if (it < 0.0) return@transaction Result.failure(Exception("Quantity cannot be negative"))
+                it.toMoney()
+            }
+            val unitPrice = request.unitPrice?.let {
+                if (it < 0.0) return@transaction Result.failure(Exception("Unit price cannot be negative"))
+                it.toMoney()
+            }
+            val resolvedQuantity = quantity ?: existing[EventExtraCosts.quantity]
+            val resolvedUnitPrice = unitPrice ?: existing[EventExtraCosts.unitPrice]
+            val totalAmount = resolveExtraCostTotal(resolvedQuantity, resolvedUnitPrice, request.totalAmount)
+                ?: existing[EventExtraCosts.totalAmount]
+            EventExtraCosts.update({ (EventExtraCosts.id eq costId) and (EventExtraCosts.eventId eq eventId) }) {
+                category?.let { value -> it[EventExtraCosts.category] = value }
+                label?.let { value -> it[EventExtraCosts.label] = value }
+                if (request.quantity != null) it[EventExtraCosts.quantity] = quantity
+                if (request.unit != null) it[unit] = request.unit.trim().ifBlank { null }
+                if (request.unitPrice != null) it[EventExtraCosts.unitPrice] = unitPrice
+                it[EventExtraCosts.totalAmount] = totalAmount
+                if (request.notes != null) it[notes] = request.notes.trim().ifBlank { null }
+                it[updatedAt] = kotlinx.datetime.Clock.System.now()
+            }
+            Result.success(toFinanceResponse(eventId))
+        }
+    }
+
+    fun deleteEventExtraCost(eventId: UUID, tuntasId: UUID, costId: UUID): Result<EventFinanceResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+            val deleted = EventExtraCosts.deleteWhere {
+                (EventExtraCosts.id eq costId) and (EventExtraCosts.eventId eq eventId)
+            }
+            if (deleted == 0) return@transaction Result.failure(Exception("Extra cost not found"))
+            Result.success(toFinanceResponse(eventId))
         }
     }
 
@@ -3742,12 +3915,92 @@ class EventService {
             organizationalUnitId = row[Events.organizationalUnitId]?.toString(),
             createdByUserId = row[Events.createdByUserId]?.toString(),
             status = row[Events.status],
+            inventoryBudgetAmount = row[Events.inventoryBudgetAmount]?.toDouble(),
             notes = row[Events.notes],
             createdAt = row[Events.createdAt].toString(),
             eventRoles = roles,
-            inventorySummary = toInventorySummary(eventId)
+            inventorySummary = toInventorySummary(eventId),
+            financeSummary = toFinanceSummary(eventId)
         )
     }
+
+    private fun toFinanceResponse(eventId: UUID): EventFinanceResponse {
+        val costs = EventExtraCosts.selectAll()
+            .where { EventExtraCosts.eventId eq eventId }
+            .orderBy(EventExtraCosts.createdAt to SortOrder.DESC)
+            .map { toExtraCostResponse(it) }
+        return EventFinanceResponse(
+            eventId = eventId.toString(),
+            summary = toFinanceSummary(eventId),
+            extraCosts = costs
+        )
+    }
+
+    private fun toFinanceSummary(eventId: UUID): EventFinanceSummaryResponse {
+        val event = Events.selectAll()
+            .where { Events.id eq eventId }
+            .first()
+        val purchaseTotal = EventPurchases.selectAll()
+            .where {
+                (EventPurchases.eventId eq eventId) and
+                    (EventPurchases.status neq "CANCELLED")
+            }
+            .fold(BigDecimal.ZERO) { sum, row -> sum + (row[EventPurchases.totalAmount] ?: BigDecimal.ZERO) }
+        val extraCostTotal = EventExtraCosts.selectAll()
+            .where { EventExtraCosts.eventId eq eventId }
+            .fold(BigDecimal.ZERO) { sum, row -> sum + row[EventExtraCosts.totalAmount] }
+        val spentTotal = purchaseTotal + extraCostTotal
+        val budget = event[Events.inventoryBudgetAmount]
+        return EventFinanceSummaryResponse(
+            inventoryBudgetAmount = budget?.toDouble(),
+            purchaseTotal = purchaseTotal.toDouble(),
+            extraCostTotal = extraCostTotal.toDouble(),
+            spentTotal = spentTotal.toDouble(),
+            remainingAmount = budget?.subtract(spentTotal)?.toDouble(),
+            overBudget = budget != null && spentTotal > budget
+        )
+    }
+
+    private fun toExtraCostResponse(row: ResultRow): EventExtraCostResponse {
+        return EventExtraCostResponse(
+            id = row[EventExtraCosts.id].toString(),
+            eventId = row[EventExtraCosts.eventId].toString(),
+            category = row[EventExtraCosts.category],
+            label = row[EventExtraCosts.label],
+            quantity = row[EventExtraCosts.quantity]?.toDouble(),
+            unit = row[EventExtraCosts.unit],
+            unitPrice = row[EventExtraCosts.unitPrice]?.toDouble(),
+            totalAmount = row[EventExtraCosts.totalAmount].toDouble(),
+            notes = row[EventExtraCosts.notes],
+            createdByUserId = row[EventExtraCosts.createdByUserId]?.toString(),
+            createdAt = row[EventExtraCosts.createdAt].toString(),
+            updatedAt = row[EventExtraCosts.updatedAt].toString()
+        )
+    }
+
+    private fun validateExtraCostCategory(category: String): String? {
+        val normalized = category.trim().uppercase()
+        return normalized.takeIf { it in validExtraCostCategories }
+    }
+
+    private fun resolveExtraCostTotal(
+        quantity: BigDecimal?,
+        unitPrice: BigDecimal?,
+        totalAmount: Double?
+    ): BigDecimal? {
+        totalAmount?.let {
+            if (it < 0.0) return null
+            return it.toMoney()
+        }
+        return if (quantity != null && unitPrice != null) {
+            quantity.multiply(unitPrice).setScale(2, RoundingMode.HALF_UP)
+        } else {
+            null
+        }
+    }
+
+    private fun Double.toMoney(): BigDecimal =
+        BigDecimal.valueOf(this).setScale(2, RoundingMode.HALF_UP)
 
     private fun toEventRoleResponse(row: ResultRow): EventRoleResponse {
         val userName = Users.selectAll()
@@ -4035,6 +4288,17 @@ class EventService {
         val items = EventPurchaseItems.selectAll()
             .where { EventPurchaseItems.purchaseId eq row[EventPurchases.id] }
             .map { toPurchaseItemResponse(it) }
+        val invoices = EventPurchaseInvoices.selectAll()
+            .where { EventPurchaseInvoices.purchaseId eq row[EventPurchases.id] }
+            .orderBy(EventPurchaseInvoices.createdAt to SortOrder.ASC)
+            .map {
+                EventPurchaseInvoiceResponse(
+                    id = it[EventPurchaseInvoices.id].toString(),
+                    purchaseId = it[EventPurchaseInvoices.purchaseId].toString(),
+                    fileUrl = it[EventPurchaseInvoices.fileUrl],
+                    createdAt = it[EventPurchaseInvoices.createdAt].toString()
+                )
+            }
         return EventPurchaseResponse(
             id = row[EventPurchases.id].toString(),
             eventId = row[EventPurchases.eventId].toString(),
@@ -4043,7 +4307,8 @@ class EventService {
             status = row[EventPurchases.status],
             purchaseDate = row[EventPurchases.purchaseDate]?.toString(),
             totalAmount = row[EventPurchases.totalAmount]?.toDouble(),
-            invoiceFileUrl = row[EventPurchases.invoiceFileUrl],
+            invoiceFileUrl = invoices.firstOrNull()?.fileUrl ?: row[EventPurchases.invoiceFileUrl],
+            invoices = invoices,
             notes = row[EventPurchases.notes],
             createdAt = row[EventPurchases.createdAt].toString(),
             updatedAt = row[EventPurchases.updatedAt].toString(),
@@ -4738,16 +5003,6 @@ class EventService {
     }
 
     private fun deleteManagedDocument(url: String?) {
-        val prefix = "/uploads/documents/"
-        if (url.isNullOrBlank() || !url.startsWith(prefix)) return
-
-        val fileName = url.removePrefix(prefix)
-        if (fileName.isBlank() || fileName.contains("/") || fileName.contains("\\")) return
-
-        val baseDir = File("uploads/documents").canonicalFile
-        val targetFile = File(baseDir, fileName).canonicalFile
-        if (targetFile.path.startsWith(baseDir.path + File.separator) && targetFile.exists()) {
-            targetFile.delete()
-        }
+        UploadStorage.deleteManagedUpload(url, UploadStorage.documentUrlPrefix)
     }
 }

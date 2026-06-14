@@ -167,7 +167,10 @@ CREATE TABLE items (
                        type VARCHAR(20) NOT NULL CHECK (type IN ('COLLECTIVE', 'ASSIGNED', 'INDIVIDUAL')),
                        category VARCHAR(30) NOT NULL,
                        condition VARCHAR(30) DEFAULT 'GOOD',
-                       quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+                       quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 0),
+                       is_consumable BOOLEAN NOT NULL DEFAULT FALSE,
+                       unit_of_measure VARCHAR(30) NOT NULL DEFAULT 'vnt.',
+                       minimum_quantity INTEGER CHECK (minimum_quantity IS NULL OR minimum_quantity >= 0),
                        location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
                        temporary_storage_label VARCHAR(255),
                        source_shared_item_id UUID REFERENCES items(id),
@@ -261,6 +264,7 @@ CREATE TABLE events (
                         organizational_unit_id UUID REFERENCES organizational_units(id),
                         created_by_user_id UUID REFERENCES users(id),
                         status VARCHAR(20) DEFAULT 'PLANNING' CHECK (status IN ('PLANNING', 'ACTIVE', 'WRAP_UP', 'COMPLETED', 'CANCELLED')),
+                        inventory_budget_amount DECIMAL(10,2),
                         notes TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         CHECK (end_date >= start_date)
@@ -310,6 +314,7 @@ CREATE TABLE event_roles (
                              user_id UUID NOT NULL REFERENCES users(id),
                              role VARCHAR(30) NOT NULL CHECK (role IN (
                                                                        'VIRSININKAS', 'KOMENDANTAS', 'UKVEDYS',
+                                                                       'FINANSININKAS',
                                                                        'PASTOVYKLES_GURU', 'VADOVAS', 'SAVANORIS',
                                                                        'PATYRE_SKAUTAS', 'SKAUTAS', 'PROGRAMERIS', 'MAISTININKAS'
                                  )),
@@ -455,6 +460,28 @@ CREATE TABLE event_purchases (
 CREATE TRIGGER update_event_purchases_updated_at
     BEFORE UPDATE ON event_purchases
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TABLE event_purchase_invoices (
+                                      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                      purchase_id UUID NOT NULL REFERENCES event_purchases(id) ON DELETE CASCADE,
+                                      file_url TEXT NOT NULL,
+                                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE event_extra_costs (
+                                   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                                   category VARCHAR(40) NOT NULL CHECK (category IN ('FIREWOOD', 'TOILETS', 'OTHER')),
+                                   label VARCHAR(200) NOT NULL,
+                                   quantity DECIMAL(10,2),
+                                   unit VARCHAR(40),
+                                   unit_price DECIMAL(10,2),
+                                   total_amount DECIMAL(10,2) NOT NULL,
+                                   notes TEXT,
+                                   created_by_user_id UUID REFERENCES users(id),
+                                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE event_purchase_items (
                                       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -833,6 +860,8 @@ CREATE INDEX idx_event_inventory_custody_parent ON event_inventory_custody(paren
 CREATE INDEX idx_event_inventory_requests_event ON event_inventory_requests(event_id);
 CREATE UNIQUE INDEX idx_event_inventory_movements_client_request ON event_inventory_movements(event_id, client_request_id) WHERE client_request_id IS NOT NULL;
 CREATE INDEX idx_event_purchases_event ON event_purchases(event_id);
+CREATE INDEX idx_event_purchase_invoices_purchase_id ON event_purchase_invoices(purchase_id);
+CREATE INDEX idx_event_extra_costs_event ON event_extra_costs(event_id);
 CREATE INDEX idx_event_purchase_items_purchase ON event_purchase_items(purchase_id);
 CREATE INDEX idx_event_purchase_items_inventory_item ON event_purchase_items(event_inventory_item_id);
 CREATE INDEX idx_event_purchase_item_reconciliations_item ON event_purchase_item_reconciliations(purchase_item_id);
