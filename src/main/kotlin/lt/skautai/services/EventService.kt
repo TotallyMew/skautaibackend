@@ -220,7 +220,9 @@ class EventService {
             }
             updatedAfter?.let { since -> query = query.andWhere { Events.updatedAt greater since } }
 
-            val events = query.map { toEventResponse(it) }
+            val rows = query.toList()
+            val hydration = buildEventListHydration(rows)
+            val events = rows.map { toEventResponse(it, hydration) }
             Result.success(EventListResponse(events = events, total = events.size))
         }
     }
@@ -243,9 +245,10 @@ class EventService {
             updatedAfter?.let { since -> query = query.andWhere { Events.updatedAt greater since } }
 
             val access = resolveEventAccess(userId, tuntasId)
-            val events = query
+            val rows = query
                 .filter { canViewEventRow(it, access) }
-                .map { toEventResponse(it) }
+            val hydration = buildEventListHydration(rows)
+            val events = rows.map { toEventResponse(it, hydration) }
             Result.success(EventListResponse(events = events, total = events.size))
         }
     }
@@ -272,7 +275,9 @@ class EventService {
             }
             updatedAfter?.let { since -> query = query.andWhere { Events.updatedAt greater since } }
 
-            val events = query.map { toEventResponse(it) }.distinctBy { it.id }
+            val rows = query.toList().distinctBy { it[Events.id] }
+            val hydration = buildEventListHydration(rows)
+            val events = rows.map { toEventResponse(it, hydration) }
             Result.success(EventListResponse(events = events, total = events.size))
         }
     }
@@ -3896,10 +3901,102 @@ class EventService {
             .firstOrNull() != null
     }
 
-    private fun toEventResponse(row: ResultRow): EventResponse {
+    private data class EventListHydration(
+        val rolesByEventId: Map<UUID, List<EventRoleResponse>>,
+        val inventorySummaryByEventId: Map<UUID, EventInventorySummaryResponse>,
+        val financeSummaryByEventId: Map<UUID, EventFinanceSummaryResponse>
+    )
+
+    private fun buildEventListHydration(rows: List<ResultRow>): EventListHydration {
+        if (rows.isEmpty()) {
+            return EventListHydration(emptyMap(), emptyMap(), emptyMap())
+        }
+
+        val eventRowsById = rows.associateBy { it[Events.id] }
+        val eventIds = eventRowsById.keys.toList()
+
+        val roleRows = EventRoles.selectAll()
+            .where { EventRoles.eventId inList eventIds }
+            .toList()
+        val roleUserIds = roleRows.map { it[EventRoles.userId] }.toSet()
+        val roleUserNamesById = if (roleUserIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Users.selectAll()
+                .where { Users.id inList roleUserIds.toList() }
+                .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
+        }
+        val rolesByEventId = roleRows
+            .map { row -> row[EventRoles.eventId] to toEventRoleResponse(row, roleUserNamesById[row[EventRoles.userId]]) }
+            .groupBy({ it.first }, { it.second })
+
+        val inventoryRows = EventInventoryItems.selectAll()
+            .where { EventInventoryItems.eventId inList eventIds }
+            .toList()
+        val inventoryItemIds = inventoryRows.map { it[EventInventoryItems.id] }
+        val allocatedByItemId = if (inventoryItemIds.isEmpty()) {
+            emptyMap()
+        } else {
+            EventInventoryAllocations.selectAll()
+                .where { EventInventoryAllocations.eventInventoryItemId inList inventoryItemIds }
+                .groupBy { it[EventInventoryAllocations.eventInventoryItemId] }
+                .mapValues { (_, allocationRows) -> allocationRows.sumOf { it[EventInventoryAllocations.quantity] } }
+        }
+        val inventorySummaryByEventId = inventoryRows
+            .groupBy { it[EventInventoryItems.eventId] }
+            .mapValues { (_, itemRows) ->
+                EventInventorySummaryResponse(
+                    totalPlannedQuantity = itemRows.sumOf { it[EventInventoryItems.plannedQuantity] },
+                    totalAvailableQuantity = itemRows.sumOf { it[EventInventoryItems.availableQuantity] },
+                    totalShortageQuantity = itemRows.sumOf {
+                        (it[EventInventoryItems.plannedQuantity] - it[EventInventoryItems.availableQuantity]).coerceAtLeast(0)
+                    },
+                    totalAllocatedQuantity = itemRows.sumOf { allocatedByItemId[it[EventInventoryItems.id]] ?: 0 },
+                    itemsNeedingPurchase = itemRows.count { it[EventInventoryItems.needsPurchase] }
+                )
+            }
+
+        val purchaseTotalsByEventId = EventPurchases.selectAll()
+            .where {
+                (EventPurchases.eventId inList eventIds) and
+                    (EventPurchases.status neq "CANCELLED")
+            }
+            .groupBy { it[EventPurchases.eventId] }
+            .mapValues { (_, purchaseRows) ->
+                purchaseRows.fold(BigDecimal.ZERO) { sum, row -> sum + (row[EventPurchases.totalAmount] ?: BigDecimal.ZERO) }
+            }
+        val extraCostTotalsByEventId = EventExtraCosts.selectAll()
+            .where { EventExtraCosts.eventId inList eventIds }
+            .groupBy { it[EventExtraCosts.eventId] }
+            .mapValues { (_, costRows) ->
+                costRows.fold(BigDecimal.ZERO) { sum, row -> sum + row[EventExtraCosts.totalAmount] }
+            }
+        val financeSummaryByEventId = eventRowsById.mapValues { (eventId, eventRow) ->
+            val purchaseTotal = purchaseTotalsByEventId[eventId] ?: BigDecimal.ZERO
+            val extraCostTotal = extraCostTotalsByEventId[eventId] ?: BigDecimal.ZERO
+            val spentTotal = purchaseTotal + extraCostTotal
+            val budget = eventRow[Events.inventoryBudgetAmount]
+            EventFinanceSummaryResponse(
+                inventoryBudgetAmount = budget?.toDouble(),
+                purchaseTotal = purchaseTotal.toDouble(),
+                extraCostTotal = extraCostTotal.toDouble(),
+                spentTotal = spentTotal.toDouble(),
+                remainingAmount = budget?.subtract(spentTotal)?.toDouble(),
+                overBudget = budget != null && spentTotal > budget
+            )
+        }
+
+        return EventListHydration(
+            rolesByEventId = rolesByEventId,
+            inventorySummaryByEventId = inventorySummaryByEventId,
+            financeSummaryByEventId = financeSummaryByEventId
+        )
+    }
+
+    private fun toEventResponse(row: ResultRow, hydration: EventListHydration? = null): EventResponse {
         val eventId = row[Events.id]
 
-        val roles = EventRoles.selectAll()
+        val roles = hydration?.rolesByEventId?.get(eventId) ?: EventRoles.selectAll()
             .where { EventRoles.eventId eq eventId }
             .map { toEventRoleResponse(it) }
 
@@ -3919,8 +4016,8 @@ class EventService {
             notes = row[Events.notes],
             createdAt = row[Events.createdAt].toString(),
             eventRoles = roles,
-            inventorySummary = toInventorySummary(eventId),
-            financeSummary = toFinanceSummary(eventId)
+            inventorySummary = hydration?.inventorySummaryByEventId?.get(eventId) ?: toInventorySummary(eventId),
+            financeSummary = hydration?.financeSummaryByEventId?.get(eventId) ?: toFinanceSummary(eventId)
         )
     }
 
@@ -4007,6 +4104,10 @@ class EventService {
             .where { Users.id eq row[EventRoles.userId] }
             .firstOrNull()
             ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+        return toEventRoleResponse(row, userName)
+    }
+
+    private fun toEventRoleResponse(row: ResultRow, userName: String?): EventRoleResponse {
         return EventRoleResponse(
             id = row[EventRoles.id].toString(),
             userId = row[EventRoles.userId].toString(),

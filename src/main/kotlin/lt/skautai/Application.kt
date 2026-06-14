@@ -11,6 +11,7 @@ import lt.skautai.database.tables.Tuntai
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.plugins.configureRouting
 import lt.skautai.plugins.configureLiveEventPublisher
+import lt.skautai.plugins.configureRequestTiming
 import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
 import lt.skautai.services.PermissionSeeder
@@ -38,6 +39,7 @@ fun Application.module() {
     configureDatabases()
     configureSerialization()
     configureSecurity()
+    configureRequestTiming()
     configureLiveEventPublisher()
     install(DefaultHeaders) {
         header("X-Content-Type-Options", "nosniff")

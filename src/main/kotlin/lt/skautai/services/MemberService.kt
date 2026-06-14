@@ -28,21 +28,29 @@ class MemberService {
                     ?: return@transaction Result.failure(Exception("You are not an active member of this tuntas"))
             }
 
-            val members = UserTuntasMemberships
+            val memberRows = UserTuntasMemberships
                 .innerJoin(Users, { UserTuntasMemberships.userId }, { Users.id })
                 .selectAll()
                 .where {
                     (UserTuntasMemberships.tuntasId eq tuntasId) and
                         (UserTuntasMemberships.leftAt.isNull())
                 }
-                .map { row ->
+                .toList()
+            val hydration = buildMemberListHydration(
+                rows = memberRows,
+                tuntasId = tuntasId,
+                callerUserId = callerUserId,
+                callerVisibleUnitIds = callerContext?.visibleUnitIds.orEmpty()
+            )
+            val members = memberRows.map { row ->
                 val userId = row[UserTuntasMemberships.userId]
                 buildMemberResponse(
                     userId = userId,
                     tuntasId = tuntasId,
                     membershipRow = row,
                     callerUserId = callerUserId,
-                    callerVisibleUnitIds = callerContext?.visibleUnitIds.orEmpty()
+                    callerVisibleUnitIds = callerContext?.visibleUnitIds.orEmpty(),
+                    hydration = hydration
                 )
             }
                 .filter { member ->
@@ -93,21 +101,29 @@ class MemberService {
 
     fun getEventCandidateMembers(tuntasId: UUID): Result<MemberListResponse> {
         return transaction {
-            val members = UserTuntasMemberships
+            val memberRows = UserTuntasMemberships
                 .innerJoin(Users, { UserTuntasMemberships.userId }, { Users.id })
                 .selectAll()
                 .where {
                     (UserTuntasMemberships.tuntasId eq tuntasId) and
                         (UserTuntasMemberships.leftAt.isNull())
                 }
-                .mapNotNull { row ->
+                .toList()
+            val hydration = buildMemberListHydration(
+                rows = memberRows,
+                tuntasId = tuntasId,
+                callerUserId = null,
+                callerVisibleUnitIds = emptySet()
+            )
+            val members = memberRows.mapNotNull { row ->
                     val userId = row[UserTuntasMemberships.userId]
                     val member = buildMemberResponse(
                         userId = userId,
                         tuntasId = tuntasId,
                         membershipRow = row,
                         callerUserId = null,
-                        callerVisibleUnitIds = emptySet()
+                        callerVisibleUnitIds = emptySet(),
+                        hydration = hydration
                     )
                     member.takeIf(::isEligibleEventCandidate)
                 }
@@ -558,76 +574,87 @@ class MemberService {
         tuntasId: UUID,
         membershipRow: ResultRow,
         callerUserId: UUID?,
-        callerVisibleUnitIds: Set<UUID>
+        callerVisibleUnitIds: Set<UUID>,
+        hydration: MemberListHydration? = null
     ): MemberResponse {
-        val leadershipRoles = UserLeadershipRoles
-            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
-            .selectAll()
-            .where {
-                (UserLeadershipRoles.userId eq userId) and
-                        (UserLeadershipRoles.tuntasId eq tuntasId) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                        (UserLeadershipRoles.leftAt.isNull())
-            }
-            .map { row ->
+        val activeLeadershipRows = hydration?.activeLeadershipRolesByUserId?.get(userId)
+            ?: UserLeadershipRoles
+                .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+                .selectAll()
+                .where {
+                    (UserLeadershipRoles.userId eq userId) and
+                            (UserLeadershipRoles.tuntasId eq tuntasId) and
+                            (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                            (UserLeadershipRoles.leftAt.isNull())
+                }
+                .toList()
+        val leadershipRoles = activeLeadershipRows.map { row ->
                 val orgUnitId = row[UserLeadershipRoles.organizationalUnitId]
                 toLeadershipRoleResponse(
                     row,
                     row[Roles.name],
-                    orgUnitId?.let { getOrgUnitName(it) }
+                    orgUnitId?.let { hydration?.orgUnitNamesById?.get(it) ?: getOrgUnitName(it) }
                 )
             }
 
-        val leadershipRoleHistory = UserLeadershipRoles
-            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
-            .selectAll()
-            .where {
-                (UserLeadershipRoles.userId eq userId) and
-                        (UserLeadershipRoles.tuntasId eq tuntasId) and
-                        ((UserLeadershipRoles.termStatus neq "ACTIVE") or UserLeadershipRoles.leftAt.isNotNull())
-            }
-            .map { row ->
+        val leadershipHistoryRows = hydration?.leadershipRoleHistoryByUserId?.get(userId)
+            ?: UserLeadershipRoles
+                .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+                .selectAll()
+                .where {
+                    (UserLeadershipRoles.userId eq userId) and
+                            (UserLeadershipRoles.tuntasId eq tuntasId) and
+                            ((UserLeadershipRoles.termStatus neq "ACTIVE") or UserLeadershipRoles.leftAt.isNotNull())
+                }
+                .toList()
+        val leadershipRoleHistory = leadershipHistoryRows.map { row ->
                 val orgUnitId = row[UserLeadershipRoles.organizationalUnitId]
                 toLeadershipRoleResponse(
                     row,
                     row[Roles.name],
-                    orgUnitId?.let { getOrgUnitName(it) }
+                    orgUnitId?.let { hydration?.orgUnitNamesById?.get(it) ?: getOrgUnitName(it) }
                 )
             }
 
-        val ranks = UserRanks
-            .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
-            .selectAll()
-            .where {
-                (UserRanks.userId eq userId) and
-                        (UserRanks.tuntasId eq tuntasId)
-            }
-            .map { row -> toRankResponse(row, row[Roles.name]) }
+        val rankRows = hydration?.ranksByUserId?.get(userId)
+            ?: UserRanks
+                .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
+                .selectAll()
+                .where {
+                    (UserRanks.userId eq userId) and
+                            (UserRanks.tuntasId eq tuntasId)
+                }
+                .toList()
+        val ranks = rankRows.map { row -> toRankResponse(row, row[Roles.name]) }
 
-        val unitAssignments = UnitAssignments
-            .innerJoin(OrganizationalUnits, { UnitAssignments.organizationalUnitId }, { OrganizationalUnits.id })
-            .selectAll()
-            .where {
-                (UnitAssignments.userId eq userId) and
-                        (UnitAssignments.tuntasId eq tuntasId) and
-                        (UnitAssignments.leftAt.isNull())
-            }
-            .map { row ->
+        val unitAssignmentRows = hydration?.unitAssignmentsByUserId?.get(userId)
+            ?: UnitAssignments
+                .innerJoin(OrganizationalUnits, { UnitAssignments.organizationalUnitId }, { OrganizationalUnits.id })
+                .selectAll()
+                .where {
+                    (UnitAssignments.userId eq userId) and
+                            (UnitAssignments.tuntasId eq tuntasId) and
+                            (UnitAssignments.leftAt.isNull())
+                }
+                .toList()
+        val unitAssignments = unitAssignmentRows.map { row ->
+                val unitId = row[UnitAssignments.organizationalUnitId]
                 MemberUnitAssignmentResponse(
                     id = row[UnitAssignments.id].toString(),
-                    organizationalUnitId = row[UnitAssignments.organizationalUnitId].toString(),
-                    organizationalUnitName = row[OrganizationalUnits.name],
+                    organizationalUnitId = unitId.toString(),
+                    organizationalUnitName = hydration?.orgUnitNamesById?.get(unitId) ?: row[OrganizationalUnits.name],
                     assignmentType = row[UnitAssignments.assignmentType],
                     joinedAt = row[UnitAssignments.joinedAt].toString()
                 )
             }
 
-        val canSeeContacts = canSeeMemberContacts(
-            targetUserId = userId,
-            callerUserId = callerUserId,
-            callerVisibleUnitIds = callerVisibleUnitIds,
-            tuntasId = tuntasId
-        )
+        val canSeeContacts = hydration?.contactVisibleUserIds?.let { userId in it }
+            ?: canSeeMemberContacts(
+                targetUserId = userId,
+                callerUserId = callerUserId,
+                callerVisibleUnitIds = callerVisibleUnitIds,
+                tuntasId = tuntasId
+            )
 
         return MemberResponse(
             userId = membershipRow[Users.id].toString(),
@@ -640,6 +667,89 @@ class MemberService {
             leadershipRoles = leadershipRoles,
             leadershipRoleHistory = leadershipRoleHistory,
             ranks = ranks
+        )
+    }
+
+    private data class MemberListHydration(
+        val activeLeadershipRolesByUserId: Map<UUID, List<ResultRow>>,
+        val leadershipRoleHistoryByUserId: Map<UUID, List<ResultRow>>,
+        val ranksByUserId: Map<UUID, List<ResultRow>>,
+        val unitAssignmentsByUserId: Map<UUID, List<ResultRow>>,
+        val orgUnitNamesById: Map<UUID, String>,
+        val contactVisibleUserIds: Set<UUID>
+    )
+
+    private fun buildMemberListHydration(
+        rows: List<ResultRow>,
+        tuntasId: UUID,
+        callerUserId: UUID?,
+        callerVisibleUnitIds: Set<UUID>
+    ): MemberListHydration {
+        if (rows.isEmpty()) {
+            return MemberListHydration(emptyMap(), emptyMap(), emptyMap(), emptyMap(), emptyMap(), emptySet())
+        }
+
+        val userIds = rows.map { it[UserTuntasMemberships.userId] }
+        val leadershipRows = UserLeadershipRoles
+            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId inList userIds) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId)
+            }
+            .toList()
+        val activeLeadershipRows = leadershipRows.filter {
+            it[UserLeadershipRoles.termStatus] == "ACTIVE" && it[UserLeadershipRoles.leftAt] == null
+        }
+        val leadershipHistoryRows = leadershipRows.filter {
+            it[UserLeadershipRoles.termStatus] != "ACTIVE" || it[UserLeadershipRoles.leftAt] != null
+        }
+        val rankRows = UserRanks
+            .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserRanks.userId inList userIds) and
+                    (UserRanks.tuntasId eq tuntasId)
+            }
+            .toList()
+        val assignmentRows = UnitAssignments
+            .innerJoin(OrganizationalUnits, { UnitAssignments.organizationalUnitId }, { OrganizationalUnits.id })
+            .selectAll()
+            .where {
+                (UnitAssignments.userId inList userIds) and
+                    (UnitAssignments.tuntasId eq tuntasId) and
+                    UnitAssignments.leftAt.isNull()
+            }
+            .toList()
+
+        val orgUnitIds = (
+            leadershipRows.mapNotNull { it[UserLeadershipRoles.organizationalUnitId] } +
+                assignmentRows.map { it[UnitAssignments.organizationalUnitId] }
+            ).toSet()
+        val orgUnitNamesById = if (orgUnitIds.isEmpty()) {
+            emptyMap()
+        } else {
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id inList orgUnitIds.toList() }
+                .associate { it[OrganizationalUnits.id] to it[OrganizationalUnits.name] }
+        }
+
+        val contactVisibleUserIds = when {
+            callerUserId == null -> userIds.toSet()
+            callerVisibleUnitIds.isEmpty() -> setOf(callerUserId)
+            else -> activeLeadershipRows
+                .filter { it[UserLeadershipRoles.organizationalUnitId] in callerVisibleUnitIds }
+                .map { it[UserLeadershipRoles.userId] }
+                .toSet() + callerUserId
+        }
+
+        return MemberListHydration(
+            activeLeadershipRolesByUserId = activeLeadershipRows.groupBy { it[UserLeadershipRoles.userId] },
+            leadershipRoleHistoryByUserId = leadershipHistoryRows.groupBy { it[UserLeadershipRoles.userId] },
+            ranksByUserId = rankRows.groupBy { it[UserRanks.userId] },
+            unitAssignmentsByUserId = assignmentRows.groupBy { it[UnitAssignments.userId] },
+            orgUnitNamesById = orgUnitNamesById,
+            contactVisibleUserIds = contactVisibleUserIds
         )
     }
 

@@ -49,7 +49,9 @@ class OrganizationalUnitService {
                 query = query.andWhere { OrganizationalUnits.id inList unitIds.toList() }
             }
 
-            val units = query.map { toResponse(it) }
+            val rows = query.toList()
+            val hydration = buildListHydration(rows, tuntasId)
+            val units = rows.map { toResponse(it, hydration) }
             Result.success(OrganizationalUnitListResponse(units = units, total = units.size))
         }
     }
@@ -497,16 +499,67 @@ class OrganizationalUnitService {
         }
     }
 
-    private fun toResponse(row: ResultRow): OrganizationalUnitResponse {
+    private data class OrganizationalUnitListHydration(
+        val acceptedRankNamesById: Map<UUID, String>,
+        val memberCountsByUnitId: Map<UUID, Int>,
+        val itemCountsByUnitId: Map<UUID, Int>
+    )
+
+    private fun buildListHydration(rows: List<ResultRow>, tuntasId: UUID): OrganizationalUnitListHydration {
+        if (rows.isEmpty()) {
+            return OrganizationalUnitListHydration(emptyMap(), emptyMap(), emptyMap())
+        }
+
+        val unitIds = rows.map { it[OrganizationalUnits.id] }
+        val acceptedRankIds = rows.mapNotNull { it[OrganizationalUnits.acceptedRankId] }.toSet()
+        val acceptedRankNamesById = if (acceptedRankIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Roles.selectAll()
+                .where { Roles.id inList acceptedRankIds.toList() }
+                .associate { it[Roles.id] to it[Roles.name] }
+        }
+
+        val memberCountExpr = UnitAssignments.id.count()
+        val memberCountsByUnitId = UnitAssignments
+            .select(UnitAssignments.organizationalUnitId, memberCountExpr)
+            .where {
+                (UnitAssignments.tuntasId eq tuntasId) and
+                    (UnitAssignments.organizationalUnitId inList unitIds) and
+                    UnitAssignments.leftAt.isNull()
+            }
+            .groupBy(UnitAssignments.organizationalUnitId)
+            .associate { it[UnitAssignments.organizationalUnitId] to it[memberCountExpr].toInt() }
+
+        val itemCountExpr = Items.id.count()
+        val itemCountsByUnitId = Items
+            .select(Items.custodianId, itemCountExpr)
+            .where {
+                (Items.tuntasId eq tuntasId) and
+                    (Items.custodianId inList unitIds) and
+                    (Items.status neq "INACTIVE")
+            }
+            .groupBy(Items.custodianId)
+            .associateNotNullKeys { it[Items.custodianId] to it[itemCountExpr].toInt() }
+
+        return OrganizationalUnitListHydration(
+            acceptedRankNamesById = acceptedRankNamesById,
+            memberCountsByUnitId = memberCountsByUnitId,
+            itemCountsByUnitId = itemCountsByUnitId
+        )
+    }
+
+    private fun toResponse(row: ResultRow, hydration: OrganizationalUnitListHydration? = null): OrganizationalUnitResponse {
         val unitId = row[OrganizationalUnits.id]
         val acceptedRankId = row[OrganizationalUnits.acceptedRankId]
         val acceptedRankName = acceptedRankId?.let {
+            hydration?.acceptedRankNamesById?.get(it) ?:
             Roles.selectAll()
                 .where { Roles.id eq it }
                 .firstOrNull()
                 ?.get(Roles.name)
         }
-        val memberCount = UnitAssignments.selectAll()
+        val memberCount = hydration?.memberCountsByUnitId?.get(unitId) ?: UnitAssignments.selectAll()
             .where {
                 (UnitAssignments.organizationalUnitId eq unitId) and
                         (UnitAssignments.tuntasId eq row[OrganizationalUnits.tuntasId]) and
@@ -514,7 +567,7 @@ class OrganizationalUnitService {
             }
             .count()
             .toInt()
-        val itemCount = Items.selectAll()
+        val itemCount = hydration?.itemCountsByUnitId?.get(unitId) ?: Items.selectAll()
             .where {
                 (Items.custodianId eq unitId) and
                         (Items.tuntasId eq row[OrganizationalUnits.tuntasId]) and
@@ -536,6 +589,12 @@ class OrganizationalUnitService {
             createdAt = row[OrganizationalUnits.createdAt].toString()
         )
     }
+
+    private inline fun <T, K : Any, V> Iterable<T>.associateNotNullKeys(transform: (T) -> Pair<K?, V>): Map<K, V> =
+        mapNotNull { value ->
+            val (key, mappedValue) = transform(value)
+            key?.let { it to mappedValue }
+        }.toMap()
 
     private fun toUnitMembershipResponse(row: ResultRow): UnitMembershipResponse {
         val unitId = row[UnitAssignments.organizationalUnitId]
