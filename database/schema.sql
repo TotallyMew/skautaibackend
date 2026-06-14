@@ -833,6 +833,7 @@ CREATE INDEX idx_items_status ON items(status);
 CREATE INDEX idx_items_tuntas_status_custodian_type ON items(tuntas_id, status, custodian_id, type);
 CREATE INDEX idx_items_tuntas_updated_at ON items(tuntas_id, updated_at);
 CREATE INDEX idx_items_source_shared_status ON items(source_shared_item_id, status);
+CREATE INDEX idx_items_duplicate_lookup ON items(tuntas_id, status, type, category, custodian_id, lower(name), updated_at);
 CREATE UNIQUE INDEX idx_items_qr_token ON items(qr_token);
 CREATE INDEX idx_reservations_item ON reservations(item_id);
 CREATE INDEX idx_reservations_group ON reservations(group_id);

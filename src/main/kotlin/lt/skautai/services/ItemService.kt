@@ -309,7 +309,7 @@ class ItemService {
             if (duplicateItem != null) {
                 when (request.duplicateHandling) {
                     "ASK" -> return@transaction Result.failure(
-                        DuplicateItemConflictException(toItemResponse(duplicateItem))
+                        DuplicateItemConflictException(toSingleItemResponse(duplicateItem, tuntasId))
                     )
                     "ADD_TO_EXISTING" -> {
                         val now = Clock.System.now()
@@ -332,7 +332,7 @@ class ItemService {
                         val updatedItem = Items.selectAll()
                             .where { Items.id eq duplicateItem[Items.id] }
                             .first()
-                        return@transaction Result.success(toItemResponse(updatedItem))
+                        return@transaction Result.success(toSingleItemResponse(updatedItem, tuntasId))
                     }
                 }
             }
@@ -394,7 +394,7 @@ class ItemService {
                 .where { Items.id eq itemId }
                 .first()
 
-            Result.success(toItemResponse(item))
+            Result.success(toSingleItemResponse(item, tuntasId))
         }
     }
 
@@ -413,6 +413,7 @@ class ItemService {
                     (Items.status eq "ACTIVE") and
                     (Items.type eq type) and
                     (Items.category eq category) and
+                    (Items.name.lowerCase() eq normalizedName) and
                     if (custodianId == null) {
                         Items.custodianId.isNull()
                     } else {
@@ -420,7 +421,6 @@ class ItemService {
                     }
             }
             .toList()
-            .filter { normalizeItemName(it[Items.name]) == normalizedName }
 
         if (candidates.isEmpty()) {
             return null
@@ -434,6 +434,9 @@ class ItemService {
     }
 
     private fun normalizeItemName(value: String): String = value.trim().lowercase()
+
+    private fun toSingleItemResponse(row: ResultRow, tuntasId: UUID): ItemResponse =
+        toItemResponse(row, buildItemListHydration(listOf(row), tuntasId))
 
     fun restockItem(
         itemId: UUID,
