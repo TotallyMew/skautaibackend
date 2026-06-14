@@ -15,6 +15,8 @@ import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
 import lt.skautai.services.PermissionSeeder
 import lt.skautai.services.VadovasRankSupport
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import org.flywaydb.core.Flyway
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.selectAll
@@ -61,17 +63,27 @@ fun Application.configureDatabases() {
     val config = environment.config
     val databaseSettings = resolveDatabaseSettings(config)
     val driver = config.property("database.driver").getString()
-
-    Database.connect(
-        url = databaseSettings.url,
-        driver = driver,
-        user = databaseSettings.user,
-        password = databaseSettings.password
+    val dataSource = HikariDataSource(
+        HikariConfig().apply {
+            jdbcUrl = databaseSettings.url
+            driverClassName = driver
+            username = databaseSettings.user
+            password = databaseSettings.password
+            maximumPoolSize = systemInt("DB_POOL_MAX_SIZE", 5)
+            minimumIdle = systemInt("DB_POOL_MIN_IDLE", 1)
+            connectionTimeout = systemLong("DB_POOL_CONNECTION_TIMEOUT_MS", 10_000L)
+            validationTimeout = systemLong("DB_POOL_VALIDATION_TIMEOUT_MS", 3_000L)
+            idleTimeout = systemLong("DB_POOL_IDLE_TIMEOUT_MS", 600_000L)
+            maxLifetime = systemLong("DB_POOL_MAX_LIFETIME_MS", 1_500_000L)
+            poolName = "skautai-db"
+        }
     )
+
+    Database.connect(dataSource)
 
     val logger = log
     Flyway.configure()
-        .dataSource(databaseSettings.url, databaseSettings.user, databaseSettings.password)
+        .dataSource(dataSource)
         .locations("classpath:db/migration")
         .baselineOnMigrate(true)
         .baselineVersion("1")
@@ -92,29 +104,47 @@ private data class DatabaseSettings(
 )
 
 private fun resolveDatabaseSettings(config: ApplicationConfig): DatabaseSettings {
-    val railwayUrl = System.getenv("DATABASE_PRIVATE_URL")
-        ?: System.getProperty("DATABASE_PRIVATE_URL")
-        ?: System.getenv("DATABASE_URL")
+    val railwayUrl = System.getenv("DATABASE_URL")
         ?: System.getProperty("DATABASE_URL")
+    val railwayPrivateUrl = System.getenv("DATABASE_PRIVATE_URL")
+        ?: System.getProperty("DATABASE_PRIVATE_URL")
+    val railwayPublicUrl = System.getenv("DATABASE_PUBLIC_URL")
+        ?: System.getProperty("DATABASE_PUBLIC_URL")
 
     val parsedRailway = railwayUrl?.let(::parseDatabaseUrl)
+    val parsedPrivateRailway = railwayPrivateUrl?.let(::parseDatabaseUrl)
+    val parsedPublicRailway = railwayPublicUrl?.let(::parseDatabaseUrl)
+    val configuredUrl = System.getenv("DB_URL")
+        ?: System.getProperty("DB_URL")
+        ?: config.property("database.url").getString()
+    val configuredUser = System.getenv("DB_USER")
+        ?: System.getProperty("DB_USER")
+        ?: config.property("database.user").getString()
+    val configuredPassword = System.getenv("DB_PASSWORD")
+        ?: System.getProperty("DB_PASSWORD")
+        ?: config.propertyOrNull("database.password")?.getString()
+        ?: ""
 
     return DatabaseSettings(
-        url = System.getenv("DB_URL")
-            ?: System.getProperty("DB_URL")
-            ?: parsedRailway?.url
-            ?: config.property("database.url").getString(),
-        user = System.getenv("DB_USER")
-            ?: System.getProperty("DB_USER")
-            ?: parsedRailway?.user
-            ?: config.property("database.user").getString(),
-        password = System.getenv("DB_PASSWORD")
-            ?: System.getProperty("DB_PASSWORD")
+        url = parsedPrivateRailway?.url ?: parsedRailway?.url ?: configuredUrl.takeUnless { railwayPublicUrl != null } ?: parsedPublicRailway?.url ?: configuredUrl,
+        user = parsedPrivateRailway?.user?.takeIf { it.isNotBlank() }
+            ?: parsedRailway?.user?.takeIf { it.isNotBlank() }
+            ?: configuredUser.takeUnless { railwayPublicUrl != null }
+            ?: parsedPublicRailway?.user
+            ?: configuredUser,
+        password = parsedPrivateRailway?.password
             ?: parsedRailway?.password
-            ?: config.propertyOrNull("database.password")?.getString()
-            ?: ""
+            ?: configuredPassword.takeUnless { railwayPublicUrl != null }
+            ?: parsedPublicRailway?.password
+            ?: configuredPassword
     )
 }
+
+private fun systemInt(key: String, default: Int): Int =
+    (System.getenv(key) ?: System.getProperty(key))?.toIntOrNull() ?: default
+
+private fun systemLong(key: String, default: Long): Long =
+    (System.getenv(key) ?: System.getProperty(key))?.toLongOrNull() ?: default
 
 private fun parseDatabaseUrl(rawUrl: String): DatabaseSettings? {
     if (rawUrl.startsWith("jdbc:postgresql://")) {
@@ -141,12 +171,19 @@ private val supportedDotEnvKeys = setOf(
     "DB_PASSWORD",
     "DATABASE_URL",
     "DATABASE_PRIVATE_URL",
+    "DATABASE_PUBLIC_URL",
     "JWT_SECRET",
     "SETUP_BOOTSTRAP_TOKEN",
     "FIREBASE_SERVICE_ACCOUNT_PATH",
     "NOTIFICATIONS_TEST_ENABLED",
     "UPLOADS_DIR",
-    "PORT"
+    "PORT",
+    "DB_POOL_MAX_SIZE",
+    "DB_POOL_MIN_IDLE",
+    "DB_POOL_CONNECTION_TIMEOUT_MS",
+    "DB_POOL_VALIDATION_TIMEOUT_MS",
+    "DB_POOL_IDLE_TIMEOUT_MS",
+    "DB_POOL_MAX_LIFETIME_MS"
 )
 
 private fun loadDotEnvIntoSystemProperties(dotEnvPath: Path = Path(".env")) {

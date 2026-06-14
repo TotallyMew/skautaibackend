@@ -358,8 +358,25 @@ class ReservationService {
                 }
             }
 
-            val items = activeItems.map { item ->
-                val reservedQuantity = overlappingReservedQuantity(item[Items.id], start, end)
+            val activeItemRows = activeItems.toList()
+            val activeItemIds = activeItemRows.map { it[Items.id] }
+            val reservedByItemId = if (activeItemIds.isEmpty()) {
+                emptyMap()
+            } else {
+                Reservations
+                    .select(Reservations.itemId, Reservations.quantity)
+                    .where {
+                        (Reservations.itemId inList activeItemIds) and
+                            (Reservations.status inList listOf("APPROVED", "ACTIVE")) and
+                            (Reservations.startDate lessEq end) and
+                            (Reservations.endDate greaterEq start)
+                    }
+                    .groupBy { it[Reservations.itemId] }
+                    .mapValues { (_, rows) -> rows.sumOf { it[Reservations.quantity] } }
+            }
+
+            val items = activeItemRows.map { item ->
+                val reservedQuantity = reservedByItemId[item[Items.id]] ?: 0
                 val totalQuantity = item[Items.quantity]
                 ReservationAvailabilityItemResponse(
                     itemId = item[Items.id].toString(),
@@ -1050,6 +1067,22 @@ class ReservationService {
                 .associateBy { it[OrganizationalUnits.id] }
         }
         val movementTotals = movementTotals(groupId)
+        val reservationItemIds = rows.map { it[Reservations.itemId] }
+        val overlappingOtherByItemId = if (reservationItemIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Reservations
+                .select(Reservations.itemId, Reservations.quantity)
+                .where {
+                    (Reservations.itemId inList reservationItemIds) and
+                        (Reservations.groupId neq groupId) and
+                        (Reservations.status inList listOf("APPROVED", "ACTIVE")) and
+                        (Reservations.startDate lessEq endDate) and
+                        (Reservations.endDate greaterEq startDate)
+                }
+                .groupBy { it[Reservations.itemId] }
+                .mapValues { (_, overlapRows) -> overlapRows.sumOf { it[Reservations.quantity] } }
+        }
         val locationIds = buildSet {
             first[Reservations.pickupLocationId]?.let(::add)
             first[Reservations.returnLocationId]?.let(::add)
@@ -1068,16 +1101,7 @@ class ReservationService {
             val item = itemsById[itemId]
             val custodianId = item?.get(Items.custodianId)
             val totals = movementTotals[itemId] ?: MovementTotals()
-            val overlappingOtherQuantity = Reservations
-                .select(Reservations.quantity)
-                .where {
-                    (Reservations.itemId eq itemId) and
-                        (Reservations.groupId neq groupId) and
-                        (Reservations.status inList listOf("APPROVED", "ACTIVE")) and
-                        (Reservations.startDate lessEq endDate) and
-                        (Reservations.endDate greaterEq startDate)
-                }
-                .sumOf { it[Reservations.quantity] }
+            val overlappingOtherQuantity = overlappingOtherByItemId[itemId] ?: 0
             val remainingAfterReservation = item?.let {
                 (it[Items.quantity] - overlappingOtherQuantity - row[Reservations.quantity]).coerceAtLeast(0)
             }

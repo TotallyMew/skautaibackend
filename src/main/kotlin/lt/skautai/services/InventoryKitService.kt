@@ -35,8 +35,10 @@ class InventoryKitService {
                 }
             }
             .orderBy(InventoryKits.name to SortOrder.ASC)
-            .map { toResponse(it) }
-        Result.success(InventoryKitListResponse(kits, kits.size))
+            .toList()
+        val hydration = buildKitListHydration(kits)
+        val responses = kits.map { toResponse(it, hydration) }
+        Result.success(InventoryKitListResponse(responses, responses.size))
     }
 
     fun getKit(kitId: UUID, tuntasId: UUID): Result<InventoryKitResponse> = transaction {
@@ -271,15 +273,83 @@ class InventoryKitService {
             }
     }
 
-    private fun toResponse(row: ResultRow): InventoryKitResponse {
+    private data class KitListHydration(
+        val locationNodesByTuntasId: Map<UUID, Map<UUID, LocationNode>>,
+        val unitNames: Map<UUID, String>,
+        val userNames: Map<UUID, String>,
+        val itemsByKitId: Map<UUID, List<InventoryKitItemResponse>>
+    )
+
+    private fun buildKitListHydration(rows: List<ResultRow>): KitListHydration {
+        if (rows.isEmpty()) {
+            return KitListHydration(emptyMap(), emptyMap(), emptyMap(), emptyMap())
+        }
+        val tuntasIds = rows.map { it[InventoryKits.tuntasId] }.distinct()
+        val locationNodesByTuntasId = tuntasIds.associateWith { tuntasId ->
+            Locations.selectAll()
+                .where { Locations.tuntasId eq tuntasId }
+                .associate { it[Locations.id] to LocationNode(it[Locations.name], it[Locations.parentLocationId]) }
+        }
+        val unitIds = rows.mapNotNull { it[InventoryKits.custodianId] }.distinct()
+        val unitNames = if (unitIds.isEmpty()) {
+            emptyMap()
+        } else {
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id inList unitIds }
+                .associate { it[OrganizationalUnits.id] to it[OrganizationalUnits.name] }
+        }
+        val userIds = rows.flatMap { listOfNotNull(it[InventoryKits.responsibleUserId], it[InventoryKits.createdByUserId]) }.distinct()
+        val userNames = if (userIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Users.selectAll()
+                .where { Users.id inList userIds }
+                .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
+        }
+        val kitIds = rows.map { it[InventoryKits.id] }
+        val kitItemRows = InventoryKitItems.selectAll()
+            .where { InventoryKitItems.kitId inList kitIds }
+            .toList()
+        val itemIds = kitItemRows.map { it[InventoryKitItems.itemId] }.distinct()
+        val itemRowsById = if (itemIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Items.selectAll()
+                .where { Items.id inList itemIds }
+                .associateBy { it[Items.id] }
+        }
+        val kitTuntasById = rows.associate { it[InventoryKits.id] to it[InventoryKits.tuntasId] }
+        val itemsByKitId = kitItemRows.mapNotNull { kitItem ->
+            val kitId = kitItem[InventoryKitItems.kitId]
+            val item = itemRowsById[kitItem[InventoryKitItems.itemId]] ?: return@mapNotNull null
+            val itemLocationId = item[Items.locationId]
+            val locationNodes = locationNodesByTuntasId[kitTuntasById[kitId]].orEmpty()
+            kitId to InventoryKitItemResponse(
+                id = kitItem[InventoryKitItems.id].toString(),
+                itemId = item[Items.id].toString(),
+                itemName = item[Items.name],
+                itemCondition = item[Items.condition],
+                itemStatus = item[Items.status],
+                availableQuantity = item[Items.quantity],
+                quantity = item[Items.quantity],
+                locationId = itemLocationId?.toString(),
+                locationName = itemLocationId?.let { locationNodes[it]?.name },
+                locationPath = itemLocationId?.let { buildLocationPath(it, locationNodes) },
+                notes = kitItem[InventoryKitItems.notes]
+            )
+        }.groupBy({ it.first }, { it.second })
+        return KitListHydration(locationNodesByTuntasId, unitNames, userNames, itemsByKitId)
+    }
+
+    private fun toResponse(row: ResultRow, hydration: KitListHydration? = null): InventoryKitResponse {
         val kitId = row[InventoryKits.id]
-        val locationNodes = Locations.selectAll()
+        val locationNodes = hydration?.locationNodesByTuntasId?.get(row[InventoryKits.tuntasId]) ?: Locations.selectAll()
             .where { Locations.tuntasId eq row[InventoryKits.tuntasId] }
             .associate { it[Locations.id] to LocationNode(it[Locations.name], it[Locations.parentLocationId]) }
         val locationId = row[InventoryKits.locationId]
         val locationName = locationId?.let { locationNodes[it]?.name }
         val locationPath = locationId?.let { buildLocationPath(it, locationNodes) }
-        val items = InventoryKitItems.selectAll()
+        val items = hydration?.itemsByKitId?.get(kitId) ?: InventoryKitItems.selectAll()
             .where { InventoryKitItems.kitId eq kitId }
             .mapNotNull { kitItem ->
                 val item = Items.selectAll()
@@ -305,7 +375,7 @@ class InventoryKitService {
             id = kitId.toString(),
             tuntasId = row[InventoryKits.tuntasId].toString(),
             custodianId = row[InventoryKits.custodianId]?.toString(),
-            custodianName = row[InventoryKits.custodianId]?.let(::unitName),
+            custodianName = row[InventoryKits.custodianId]?.let { hydration?.unitNames?.get(it) } ?: row[InventoryKits.custodianId]?.let(::unitName),
             name = row[InventoryKits.name],
             description = row[InventoryKits.description],
             locationId = locationId?.toString(),
@@ -313,9 +383,9 @@ class InventoryKitService {
             locationPath = locationPath,
             temporaryStorageLabel = row[InventoryKits.temporaryStorageLabel],
             responsibleUserId = row[InventoryKits.responsibleUserId]?.toString(),
-            responsibleUserName = userName(row[InventoryKits.responsibleUserId]),
+            responsibleUserName = row[InventoryKits.responsibleUserId]?.let { hydration?.userNames?.get(it) } ?: userName(row[InventoryKits.responsibleUserId]),
             createdByUserId = row[InventoryKits.createdByUserId]?.toString(),
-            createdByUserName = userName(row[InventoryKits.createdByUserId]),
+            createdByUserName = row[InventoryKits.createdByUserId]?.let { hydration?.userNames?.get(it) } ?: userName(row[InventoryKits.createdByUserId]),
             status = row[InventoryKits.status],
             createdAt = row[InventoryKits.createdAt].toString(),
             updatedAt = row[InventoryKits.updatedAt].toString(),

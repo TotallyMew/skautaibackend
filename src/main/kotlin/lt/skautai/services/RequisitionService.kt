@@ -68,8 +68,9 @@ class RequisitionService {
                 }
             }
 
-            val query = DraugoveRequisitions.selectAll().where { filter }
-            val requests = query.map { toResponse(it) }
+            val rows = DraugoveRequisitions.selectAll().where { filter }.toList()
+            val hydration = buildListHydration(rows)
+            val requests = rows.map { toResponse(it, hydration) }
             Result.success(RequisitionListResponse(requests = requests, total = requests.size))
         }
     }
@@ -701,26 +702,54 @@ class RequisitionService {
             }
     }
 
+    private data class RequisitionListHydration(
+        val unitNames: Map<UUID, String>,
+        val itemsByRequisitionId: Map<UUID, List<RequisitionItemResponse>>
+    )
+
+    private fun buildListHydration(rows: List<ResultRow>): RequisitionListHydration {
+        if (rows.isEmpty()) {
+            return RequisitionListHydration(emptyMap(), emptyMap())
+        }
+        val unitIds = rows.mapNotNull { it[DraugoveRequisitions.organizationalUnitId] }.distinct()
+        val unitNames = if (unitIds.isEmpty()) {
+            emptyMap()
+        } else {
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id inList unitIds }
+                .associate { it[OrganizationalUnits.id] to it[OrganizationalUnits.name] }
+        }
+        val requisitionIds = rows.map { it[DraugoveRequisitions.id] }
+        val itemsByRequisitionId = DraugoveRequisitionItems.selectAll()
+            .where { DraugoveRequisitionItems.requisitionId inList requisitionIds }
+            .map { row ->
+                row[DraugoveRequisitionItems.requisitionId] to toItemResponse(row)
+            }
+            .groupBy({ it.first }, { it.second })
+        return RequisitionListHydration(unitNames, itemsByRequisitionId)
+    }
+
     private fun loadItems(requisitionId: UUID): List<RequisitionItemResponse> {
         return DraugoveRequisitionItems.selectAll()
             .where { DraugoveRequisitionItems.requisitionId eq requisitionId }
-            .map { row ->
-                RequisitionItemResponse(
-                    id = row[DraugoveRequisitionItems.id].toString(),
-                    itemId = row[DraugoveRequisitionItems.itemId]?.toString(),
-                    requestType = row[DraugoveRequisitionItems.requestType],
-                    existingItemId = row[DraugoveRequisitionItems.existingItemId]?.toString(),
-                    itemName = row[DraugoveRequisitionItems.itemName]
-                        ?: row[DraugoveRequisitionItems.itemId]?.toString()
-                        ?: "Neivardytas daiktas",
-                    itemDescription = row[DraugoveRequisitionItems.itemDescription],
-                    quantityRequested = row[DraugoveRequisitionItems.quantityRequested],
-                    quantityApproved = row[DraugoveRequisitionItems.quantityApproved],
-                    rejectionReason = row[DraugoveRequisitionItems.rejectionReason],
-                    notes = row[DraugoveRequisitionItems.notes]
-                )
-            }
+            .map(::toItemResponse)
     }
+
+    private fun toItemResponse(row: ResultRow): RequisitionItemResponse =
+        RequisitionItemResponse(
+            id = row[DraugoveRequisitionItems.id].toString(),
+            itemId = row[DraugoveRequisitionItems.itemId]?.toString(),
+            requestType = row[DraugoveRequisitionItems.requestType],
+            existingItemId = row[DraugoveRequisitionItems.existingItemId]?.toString(),
+            itemName = row[DraugoveRequisitionItems.itemName]
+                ?: row[DraugoveRequisitionItems.itemId]?.toString()
+                ?: "Neivardytas daiktas",
+            itemDescription = row[DraugoveRequisitionItems.itemDescription],
+            quantityRequested = row[DraugoveRequisitionItems.quantityRequested],
+            quantityApproved = row[DraugoveRequisitionItems.quantityApproved],
+            rejectionReason = row[DraugoveRequisitionItems.rejectionReason],
+            notes = row[DraugoveRequisitionItems.notes]
+        )
 
     private fun approveAllItems(requisitionId: UUID) {
         DraugoveRequisitionItems.selectAll()
@@ -732,15 +761,16 @@ class RequisitionService {
             }
     }
 
-    private fun toResponse(row: ResultRow): RequisitionResponse {
+    private fun toResponse(row: ResultRow, hydration: RequisitionListHydration? = null): RequisitionResponse {
         val requestingUnitId = row[DraugoveRequisitions.organizationalUnitId]
-        val requestingUnitName = requestingUnitId?.let {
+        val requestingUnitName = requestingUnitId?.let { hydration?.unitNames?.get(it) } ?: requestingUnitId?.let {
             OrganizationalUnits.selectAll()
                 .where { OrganizationalUnits.id eq it }
                 .firstOrNull()
                 ?.get(OrganizationalUnits.name)
         }
-        val items = loadItems(row[DraugoveRequisitions.id])
+        val items = hydration?.itemsByRequisitionId?.get(row[DraugoveRequisitions.id])
+            ?: loadItems(row[DraugoveRequisitions.id])
         val neededByDate = row[DraugoveRequisitions.notes]
             ?.lineSequence()
             ?.firstOrNull { it.startsWith("neededByDate=") }
