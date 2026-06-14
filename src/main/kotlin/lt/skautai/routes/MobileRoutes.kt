@@ -8,15 +8,6 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
-import lt.skautai.database.tables.BendrasInventoryRequests
-import lt.skautai.database.tables.DraugoveRequisitions
-import lt.skautai.database.tables.Events
-import lt.skautai.database.tables.Items
-import lt.skautai.database.tables.Locations
-import lt.skautai.database.tables.OrganizationalUnits
-import lt.skautai.database.tables.Reservations
-import lt.skautai.database.tables.UserTuntasMemberships
-import lt.skautai.database.tables.Users
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MobileCacheStateResourceResponse
 import lt.skautai.models.responses.MobileCacheStateResponse
@@ -31,11 +22,8 @@ import lt.skautai.services.PermissionContext
 import lt.skautai.services.PermissionContextService
 import lt.skautai.services.RequisitionService
 import lt.skautai.services.ReservationService
-import org.jetbrains.exposed.sql.ResultRow
-import org.jetbrains.exposed.sql.and
-import org.jetbrains.exposed.sql.innerJoin
-import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.transactions.TransactionManager
 import java.util.UUID
 
 fun Route.mobileRoutes(
@@ -348,46 +336,67 @@ private fun canApproveAnyReservation(permissions: Set<String>): Boolean =
     "reservations.approve:ALL" in permissions || "reservations.approve:OWN_UNIT" in permissions
 
 private fun buildCacheState(tuntasId: UUID): List<MobileCacheStateResourceResponse> = transaction {
-    val itemRows = Items.selectAll().where { Items.tuntasId eq tuntasId }.toList()
-    val reservationRows = Reservations.selectAll().where { Reservations.tuntasId eq tuntasId }.toList()
-    val requestRows = BendrasInventoryRequests.selectAll().where { BendrasInventoryRequests.tuntasId eq tuntasId }.toList()
-    val requisitionRows = DraugoveRequisitions.selectAll().where { DraugoveRequisitions.tuntasId eq tuntasId }.toList()
-    val eventRows = Events.selectAll().where { Events.tuntasId eq tuntasId }.toList()
-    val locationRows = Locations.selectAll().where { Locations.tuntasId eq tuntasId }.toList()
-    val unitRows = OrganizationalUnits.selectAll().where { OrganizationalUnits.tuntasId eq tuntasId }.toList()
-    val memberRows = Users
-        .innerJoin(UserTuntasMemberships, { id }, { userId })
-        .selectAll()
-        .where {
-            (UserTuntasMemberships.tuntasId eq tuntasId) and
-                UserTuntasMemberships.leftAt.isNull()
-        }
-        .toList()
-
     listOf(
-        resourceState("items", itemRows) { it[Items.updatedAt].toString() },
-        resourceState("reservations", reservationRows) { it[Reservations.updatedAt].toString() },
-        resourceState("requests", requestRows) { it[BendrasInventoryRequests.updatedAt].toString() },
-        resourceState("requisitions", requisitionRows) { it[DraugoveRequisitions.updatedAt].toString() },
-        resourceState("events", eventRows) { it[Events.updatedAt].toString() },
-        resourceState("locations", locationRows) { it[Locations.updatedAt].toString() },
-        resourceState("organizational_units", unitRows) { it[OrganizationalUnits.updatedAt].toString() },
-        resourceState("members", memberRows) { row ->
-            listOf(row[Users.updatedAt].toString(), row[UserTuntasMemberships.joinedAt].toString()).maxOrNull().orEmpty()
-        }
+        resourceState("items", tableStateSql("items", "updated_at", tuntasId)),
+        resourceState("reservations", tableStateSql("reservations", "updated_at", tuntasId)),
+        resourceState("requests", tableStateSql("bendras_inventory_requests", "updated_at", tuntasId)),
+        resourceState("requisitions", tableStateSql("draugove_requisitions", "updated_at", tuntasId)),
+        resourceState("events", tableStateSql("events", "updated_at", tuntasId)),
+        resourceState("locations", tableStateSql("locations", "updated_at", tuntasId)),
+        resourceState("organizational_units", tableStateSql("organizational_units", "updated_at", tuntasId)),
+        resourceState(
+            "members",
+            stateSql(
+                """
+                SELECT COUNT(*)::int AS total,
+                       MAX(GREATEST(users.updated_at, user_tuntas_memberships.joined_at))::text AS max_updated_at
+                FROM users
+                INNER JOIN user_tuntas_memberships ON users.id = user_tuntas_memberships.user_id
+                WHERE user_tuntas_memberships.tuntas_id = '${tuntasId}'
+                  AND user_tuntas_memberships.left_at IS NULL
+                """.trimIndent()
+            )
+        )
     )
+}
+
+private data class ResourceStateData(
+    val total: Int,
+    val maxUpdatedAt: String?
+)
+
+private fun tableStateSql(table: String, updatedAtColumn: String, tuntasId: UUID): ResourceStateData =
+    stateSql(
+        """
+        SELECT COUNT(*)::int AS total,
+               MAX($updatedAtColumn)::text AS max_updated_at
+        FROM $table
+        WHERE tuntas_id = '${tuntasId}'
+        """.trimIndent()
+    )
+
+private fun stateSql(sql: String): ResourceStateData {
+    var state = ResourceStateData(total = 0, maxUpdatedAt = null)
+    TransactionManager.current().exec(sql) { rs ->
+        if (rs.next()) {
+            state = ResourceStateData(
+                total = rs.getInt("total"),
+                maxUpdatedAt = rs.getString("max_updated_at")
+            )
+        }
+    }
+    return state
 }
 
 private fun resourceState(
     resource: String,
-    rows: List<ResultRow>,
-    updatedAt: (ResultRow) -> String
+    state: ResourceStateData
 ): MobileCacheStateResourceResponse {
-    val maxUpdatedAt = rows.map(updatedAt).maxOrNull()
+    val maxUpdatedAt = state.maxUpdatedAt
     return MobileCacheStateResourceResponse(
         resource = resource,
         maxUpdatedAt = maxUpdatedAt,
-        total = rows.size,
-        versionKey = "$resource:${maxUpdatedAt ?: "empty"}:${rows.size}"
+        total = state.total,
+        versionKey = "$resource:${maxUpdatedAt ?: "empty"}:${state.total}"
     )
 }

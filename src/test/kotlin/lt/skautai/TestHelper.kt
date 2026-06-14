@@ -30,6 +30,7 @@ import lt.skautai.routes.organizationalUnitRoutes
 import lt.skautai.services.LocationService
 import lt.skautai.services.MemberService
 import lt.skautai.routes.memberRoutes
+import lt.skautai.routes.mobileRoutes
 import lt.skautai.routes.myTaskRoutes
 import lt.skautai.routes.rolesRoutes
 import lt.skautai.routes.requisitionRoutes
@@ -166,6 +167,15 @@ object TestHelper {
                 requisitionRoutes(requisitionService, firebaseNotificationService, notificationRecipientService)
                 inventoryTemplateRoutes(inventoryTemplateService)
                 inventoryKitRoutes(inventoryKitService)
+                mobileRoutes(
+                    itemService,
+                    reservationService,
+                    bendrasInventoryRequestService,
+                    requisitionService,
+                    eventService,
+                    organizationalUnitService,
+                    myTaskService
+                )
                 myTaskRoutes(myTaskService)
                 userRoutes()
                 rolesRoutes()

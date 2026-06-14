@@ -34,6 +34,7 @@ import org.jetbrains.exposed.sql.innerJoin
 import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.transactions.TransactionManager
 import java.util.UUID
 
 class MyTaskService {
@@ -112,8 +113,9 @@ class MyTaskService {
             .toList()
             .groupBy { it[Reservations.groupId] }
 
+        val itemCustodians = itemCustodianIds(rows.values.flatten().map { it[Reservations.itemId] }.toSet())
         val pending = rows.values.count { groupRows ->
-            reservationNeedsMyApproval(groupRows, userId, permissionContext)
+            reservationNeedsMyApproval(groupRows, userId, permissionContext, itemCustodians)
         }
         if (pending == 0) return
         tasks += task(
@@ -145,11 +147,12 @@ class MyTaskService {
             .toList()
             .groupBy { it[Reservations.groupId] }
 
+        val movementTotals = movementTotals(groups.keys)
         val overdue = mutableListOf<ResultRow>()
         val dueToday = mutableListOf<ResultRow>()
         groups.values.forEach { rows ->
             val first = rows.first()
-            if (remainingToReturn(rows) <= 0) return@forEach
+            if (remainingToReturn(rows, movementTotals[first[Reservations.groupId]].orEmpty()) <= 0) return@forEach
             val dueDate = first[Reservations.returnAt]?.toLocalDateTime(TimeZone.currentSystemDefault())?.date
                 ?: first[Reservations.endDate]
             when {
@@ -207,15 +210,29 @@ class MyTaskService {
             .toList()
             .groupBy { it[Reservations.groupId] }
 
+        val movementTotals = movementTotals(groups.keys)
+        val itemCustodians = itemCustodianIds(groups.values.flatten().map { it[Reservations.itemId] }.toSet())
         val relevant = groups.values.filter { rows ->
-            reservationHasOpenMovement(rows, permissionContext)
+            val groupId = rows.first()[Reservations.groupId]
+            reservationHasOpenMovement(
+                rows = rows,
+                permissionContext = permissionContext,
+                totals = movementTotals[groupId].orEmpty(),
+                itemCustodians = itemCustodians
+            )
         }
         if (relevant.isEmpty()) return
 
-        val dueDates = relevant.mapNotNull { earliestMovementDueDate(it) }
+        val dueDates = relevant.mapNotNull { rows ->
+            val groupId = rows.first()[Reservations.groupId]
+            earliestMovementDueDate(rows, movementTotals[groupId].orEmpty())
+        }
         val hasOverdue = dueDates.any { it < today }
         val hasToday = dueDates.any { it == today }
-        val dueAt = relevant.mapNotNull { earliestMovementDueInstant(it) }.minOrNull()
+        val dueAt = relevant.mapNotNull { rows ->
+            val groupId = rows.first()[Reservations.groupId]
+            earliestMovementDueInstant(rows, movementTotals[groupId].orEmpty())
+        }.minOrNull()
         val bucket = when {
             hasOverdue -> "URGENT"
             hasToday -> "TODAY"
@@ -249,18 +266,32 @@ class MyTaskService {
         now: Instant
     ) {
         val reviewableUnitIds = resolveReviewableUnitIds(userId, tuntasId)
-        val count = DraugoveRequisitions.selectAll()
-            .where { DraugoveRequisitions.tuntasId eq tuntasId }
-            .count { row ->
-                val waitsForUnit = row[DraugoveRequisitions.createdByUserId] != userId &&
-                    row[DraugoveRequisitions.organizationalUnitId] in reviewableUnitIds &&
-                    row[DraugoveRequisitions.unitReviewStatus] == "PENDING" &&
-                    (permissionContext.has("items.request.approve.unit") || permissionContext.has("items.request.forward.bendras"))
-                val waitsForTopLevel = row[DraugoveRequisitions.createdByUserId] != userId &&
-                    permissionContext.hasAll("requisitions.approve") &&
-                    row[DraugoveRequisitions.topLevelReviewStatus] == "PENDING"
-                waitsForUnit || waitsForTopLevel
+        val clauses = buildList {
+            if (
+                reviewableUnitIds.isNotEmpty() &&
+                (permissionContext.has("items.request.approve.unit") || permissionContext.has("items.request.forward.bendras"))
+            ) {
+                add(
+                    """
+                    organizational_unit_id IN (${reviewableUnitIds.sqlUuidList()})
+                    AND unit_review_status = 'PENDING'
+                    """.trimIndent()
+                )
             }
+            if (permissionContext.hasAll("requisitions.approve")) {
+                add("top_level_review_status = 'PENDING'")
+            }
+        }
+        if (clauses.isEmpty()) return
+        val count = countSql(
+            """
+            SELECT COUNT(*)
+            FROM draugove_requisitions
+            WHERE tuntas_id = '${tuntasId}'
+              AND created_by_user_id <> '${userId}'
+              AND (${clauses.joinToString(" OR ") { "($it)" }})
+            """.trimIndent()
+        )
         if (count == 0) return
         tasks += task(
             type = "REQUISITION_REVIEW_PENDING",
@@ -283,12 +314,15 @@ class MyTaskService {
         now: Instant
     ) {
         if (!permissionContext.hasAll("items.request.approve.bendras")) return
-        val count = BendrasInventoryRequests.selectAll()
-            .where {
-                (BendrasInventoryRequests.tuntasId eq tuntasId) and
-                    (BendrasInventoryRequests.topLevelStatus eq "PENDING")
-            }
-            .count { it[BendrasInventoryRequests.requestedByUserId] != userId }
+        val count = countSql(
+            """
+            SELECT COUNT(*)
+            FROM bendras_inventory_requests
+            WHERE tuntas_id = '${tuntasId}'
+              AND top_level_status = 'PENDING'
+              AND requested_by_user_id <> '${userId}'
+            """.trimIndent()
+        )
         if (count == 0) return
         tasks += task(
             type = "SHARED_PICKUP_REVIEW_PENDING",
@@ -310,12 +344,15 @@ class MyTaskService {
         now: Instant
     ) {
         if (!isTopLevelLeader(userId, tuntasId)) return
-        val count = LeadershipChangeRequests.selectAll()
-            .where {
-                (LeadershipChangeRequests.tuntasId eq tuntasId) and
-                    (LeadershipChangeRequests.status eq "PENDING")
-            }
-            .count { it[LeadershipChangeRequests.requesterUserId] != userId }
+        val count = countSql(
+            """
+            SELECT COUNT(*)
+            FROM leadership_change_requests
+            WHERE tuntas_id = '${tuntasId}'
+              AND status = 'PENDING'
+              AND requester_user_id <> '${userId}'
+            """.trimIndent()
+        )
         if (count == 0) return
         tasks += task(
             type = "LEADERSHIP_CHANGE_REVIEW_PENDING",
@@ -337,9 +374,10 @@ class MyTaskService {
         now: Instant
     ) {
         val eventRows = actionableEventRows(tuntasId, userId, eventInventoryTaskRoles)
+        val openLogisticsEventIds = eventsWithOpenLogistics(eventRows.map { it[Events.id] })
         val relevant = eventRows.filter { event ->
             event[Events.status] in listOf("PLANNING", "ACTIVE", "WRAP_UP") &&
-                eventHasOpenLogistics(event[Events.id])
+                event[Events.id] in openLogisticsEventIds
         }
         if (relevant.isEmpty()) return
         val single = relevant.singleOrNull()
@@ -364,9 +402,10 @@ class MyTaskService {
         now: Instant
     ) {
         val eventRows = actionableEventRows(tuntasId, userId, eventInventoryTaskRoles)
+        val openReconciliationEventIds = eventsWithOpenReconciliation(eventRows.map { it[Events.id] })
         val relevant = eventRows.filter { event ->
             event[Events.status] in listOf("WRAP_UP", "COMPLETED") &&
-                eventHasOpenReconciliation(event[Events.id])
+                event[Events.id] in openReconciliationEventIds
         }
         if (relevant.isEmpty()) return
         val single = relevant.singleOrNull()
@@ -392,20 +431,25 @@ class MyTaskService {
         now: Instant
     ) {
         val eventRows = actionableEventRows(tuntasId, userId, eventInventoryTaskRoles)
+        val eventIds = eventRows.map { it[Events.id] }
+        val eventsWithInventoryPlan = eventsWithInventoryPlan(eventIds)
+        val eventsWithPackingList = eventsWithPackingList(eventIds)
+        val eventsWithOpenPacking = eventsWithOpenPacking(eventIds)
+        val eventsWithOpenPackingReturns = eventsWithOpenPackingReturns(eventIds)
         val needsGeneration = eventRows.filter { event ->
             event[Events.status] in listOf("PLANNING", "ACTIVE") &&
                 today.daysUntil(event[Events.startDate]) in 0..7 &&
-                eventHasInventoryPlan(event[Events.id]) &&
-                !eventHasPackingList(event[Events.id])
+                event[Events.id] in eventsWithInventoryPlan &&
+                event[Events.id] !in eventsWithPackingList
         }
         val openBeforeStart = eventRows.filter { event ->
             event[Events.status] in listOf("PLANNING", "ACTIVE") &&
                 today.daysUntil(event[Events.startDate]) <= 2 &&
-                eventHasOpenPacking(event[Events.id])
+                event[Events.id] in eventsWithOpenPacking
         }
         val openReturns = eventRows.filter { event ->
             event[Events.status] in listOf("WRAP_UP", "COMPLETED") &&
-                eventHasOpenPackingReturns(event[Events.id])
+                event[Events.id] in eventsWithOpenPackingReturns
         }
 
         val generationSingle = needsGeneration.singleOrNull()
@@ -468,12 +512,13 @@ class MyTaskService {
         now: Instant
     ) {
         if (!permissionContext.has("items.view")) return
-        val sessions = ItemCheckSessions.selectAll()
+        val sessionsQuery = ItemCheckSessions.selectAll()
             .where {
                 (ItemCheckSessions.tuntasId eq tuntasId) and
                     (ItemCheckSessions.status eq "OPEN")
             }
             .orderBy(ItemCheckSessions.createdAt, SortOrder.ASC)
+        val sessions = sessionsQuery
             .toList()
             .filter { session ->
                 session[ItemCheckSessions.startedByUserId] == userId ||
@@ -499,11 +544,12 @@ class MyTaskService {
     private fun reservationNeedsMyApproval(
         rows: List<ResultRow>,
         userId: UUID,
-        permissionContext: PermissionContext
+        permissionContext: PermissionContext,
+        itemCustodians: Map<UUID, UUID?>
     ): Boolean {
         val first = rows.first()
         if (first[Reservations.reservedByUserId] == userId) return false
-        val itemCustodianIds = itemCustodianIds(rows)
+        val itemCustodianIds = rows.mapNotNull { itemCustodians[it[Reservations.itemId]] }.toSet()
         val unitPending = (first[Reservations.unitReviewStatus] == "PENDING" ||
             (first[Reservations.unitReviewStatus] == "NOT_REQUIRED" && itemCustodianIds.isNotEmpty())) &&
             itemCustodianIds.any { permissionContext.targetAllowed("reservations.approve", it) }
@@ -513,13 +559,15 @@ class MyTaskService {
         return unitPending || topLevelPending
     }
 
-    private fun reservationHasOpenMovement(rows: List<ResultRow>, permissionContext: PermissionContext): Boolean {
-        val first = rows.first()
-        val groupId = first[Reservations.groupId]
-        val totals = movementTotals(groupId)
+    private fun reservationHasOpenMovement(
+        rows: List<ResultRow>,
+        permissionContext: PermissionContext,
+        totals: Map<UUID, MovementTotals>,
+        itemCustodians: Map<UUID, UUID?>
+    ): Boolean {
         val itemRows = rows.associateBy { it[Reservations.itemId] }
         return itemRows.any { (itemId, reservationRow) ->
-            val custodianId = itemCustodianId(itemId)
+            val custodianId = itemCustodians[itemId]
             val canManage = if (custodianId == null) {
                 permissionContext.hasAll("reservations.approve")
             } else {
@@ -535,72 +583,75 @@ class MyTaskService {
         }
     }
 
-    private fun remainingToReturn(rows: List<ResultRow>): Int {
-        val totals = movementTotals(rows.first()[Reservations.groupId])
+    private fun remainingToReturn(rows: List<ResultRow>, totals: Map<UUID, MovementTotals>): Int {
         return rows.sumOf { row ->
             val movement = totals[row[Reservations.itemId]] ?: MovementTotals()
             (movement.issued - movement.returned).coerceAtLeast(0)
         }
     }
 
-    private fun earliestMovementDueDate(rows: List<ResultRow>): kotlinx.datetime.LocalDate? =
+    private fun earliestMovementDueDate(
+        rows: List<ResultRow>,
+        totals: Map<UUID, MovementTotals>
+    ): kotlinx.datetime.LocalDate? =
         rows.mapNotNull { row ->
             when {
-                row[Reservations.pickupAt] != null && remainingToIssueForRow(rows.first()[Reservations.groupId], row) > 0 ->
+                row[Reservations.pickupAt] != null && remainingToIssueForRow(row, totals) > 0 ->
                     row[Reservations.pickupAt]!!.toLocalDateTime(TimeZone.currentSystemDefault()).date
-                row[Reservations.returnAt] != null && remainingToReturnForRow(rows.first()[Reservations.groupId], row) > 0 ->
+                row[Reservations.returnAt] != null && remainingToReturnForRow(row, totals) > 0 ->
                     row[Reservations.returnAt]!!.toLocalDateTime(TimeZone.currentSystemDefault()).date
                 else -> null
             }
         }.minOrNull()
 
-    private fun earliestMovementDueInstant(rows: List<ResultRow>): Instant? =
+    private fun earliestMovementDueInstant(
+        rows: List<ResultRow>,
+        totals: Map<UUID, MovementTotals>
+    ): Instant? =
         rows.mapNotNull { row ->
             when {
-                row[Reservations.pickupAt] != null && remainingToIssueForRow(rows.first()[Reservations.groupId], row) > 0 ->
+                row[Reservations.pickupAt] != null && remainingToIssueForRow(row, totals) > 0 ->
                     row[Reservations.pickupAt]!!
-                row[Reservations.returnAt] != null && remainingToReturnForRow(rows.first()[Reservations.groupId], row) > 0 ->
+                row[Reservations.returnAt] != null && remainingToReturnForRow(row, totals) > 0 ->
                     row[Reservations.returnAt]!!
                 else -> null
             }
         }.minOrNull()
 
-    private fun remainingToIssueForRow(groupId: UUID, row: ResultRow): Int {
-        val movement = movementTotals(groupId)[row[Reservations.itemId]] ?: MovementTotals()
+    private fun remainingToIssueForRow(row: ResultRow, totals: Map<UUID, MovementTotals>): Int {
+        val movement = totals[row[Reservations.itemId]] ?: MovementTotals()
         return (row[Reservations.quantity] - movement.issued).coerceAtLeast(0)
     }
 
-    private fun remainingToReturnForRow(groupId: UUID, row: ResultRow): Int {
-        val movement = movementTotals(groupId)[row[Reservations.itemId]] ?: MovementTotals()
+    private fun remainingToReturnForRow(row: ResultRow, totals: Map<UUID, MovementTotals>): Int {
+        val movement = totals[row[Reservations.itemId]] ?: MovementTotals()
         return (movement.issued - movement.returned).coerceAtLeast(0)
     }
 
-    private fun movementTotals(groupId: UUID): Map<UUID, MovementTotals> =
-        ReservationMovements.selectAll()
-            .where { ReservationMovements.reservationGroupId eq groupId }
-            .groupBy { it[ReservationMovements.itemId] }
-            .mapValues { (_, rows) ->
-                MovementTotals(
-                    issued = rows.filter { it[ReservationMovements.type] == "ISSUE" }.sumOf { it[ReservationMovements.quantity] },
-                    returnedMarked = rows.filter { it[ReservationMovements.type] == "RETURN_MARKED" }.sumOf { it[ReservationMovements.quantity] },
-                    returned = rows.filter { it[ReservationMovements.type] == "RETURN" }.sumOf { it[ReservationMovements.quantity] }
-                )
+    private fun movementTotals(groupIds: Set<UUID>): Map<UUID, Map<UUID, MovementTotals>> {
+        if (groupIds.isEmpty()) return emptyMap()
+        return ReservationMovements.selectAll()
+            .where { ReservationMovements.reservationGroupId inList groupIds.toList() }
+            .groupBy { it[ReservationMovements.reservationGroupId] }
+            .mapValues { (_, groupRows) ->
+                groupRows
+                    .groupBy { it[ReservationMovements.itemId] }
+                    .mapValues { (_, itemRows) ->
+                        MovementTotals(
+                            issued = itemRows.filter { it[ReservationMovements.type] == "ISSUE" }.sumOf { it[ReservationMovements.quantity] },
+                            returnedMarked = itemRows.filter { it[ReservationMovements.type] == "RETURN_MARKED" }.sumOf { it[ReservationMovements.quantity] },
+                            returned = itemRows.filter { it[ReservationMovements.type] == "RETURN" }.sumOf { it[ReservationMovements.quantity] }
+                        )
+                    }
             }
-
-    private fun itemCustodianIds(rows: List<ResultRow>): Set<UUID> {
-        val itemIds = rows.map { it[Reservations.itemId] }
-        if (itemIds.isEmpty()) return emptySet()
-        return Items.select(Items.custodianId)
-            .where { Items.id inList itemIds }
-            .mapNotNull { it[Items.custodianId] }
-            .toSet()
     }
 
-    private fun itemCustodianId(itemId: UUID): UUID? =
-        Items.select(Items.custodianId)
-            .where { Items.id eq itemId }
-            .firstOrNull()
-            ?.get(Items.custodianId)
+    private fun itemCustodianIds(itemIds: Set<UUID>): Map<UUID, UUID?> {
+        if (itemIds.isEmpty()) return emptyMap()
+        return Items.select(Items.id, Items.custodianId)
+            .where { Items.id inList itemIds.toList() }
+            .associate { it[Items.id] to it[Items.custodianId] }
+    }
 
     private fun resolveReviewableUnitIds(userId: UUID, tuntasId: UUID): Set<UUID> {
         val unitLeaderRoles = listOf(
@@ -666,6 +717,86 @@ class MyTaskService {
                     (Events.id inList eventRoleEventIds)
             }
             .toList()
+    }
+
+    private fun eventsWithOpenLogistics(eventIds: List<UUID>): Set<UUID> {
+        if (eventIds.isEmpty()) return emptySet()
+        return uuidSetSql(
+            """
+            SELECT DISTINCT event_id
+            FROM event_inventory_items
+            WHERE event_id IN (${eventIds.sqlUuidList()})
+              AND (needs_purchase = TRUE OR planned_quantity > available_quantity)
+            """.trimIndent()
+        )
+    }
+
+    private fun eventsWithInventoryPlan(eventIds: List<UUID>): Set<UUID> {
+        if (eventIds.isEmpty()) return emptySet()
+        return uuidSetSql(
+            """
+            SELECT DISTINCT event_id
+            FROM event_inventory_items
+            WHERE event_id IN (${eventIds.sqlUuidList()})
+            """.trimIndent()
+        )
+    }
+
+    private fun eventsWithPackingList(eventIds: List<UUID>): Set<UUID> {
+        if (eventIds.isEmpty()) return emptySet()
+        return uuidSetSql(
+            """
+            SELECT DISTINCT event_id
+            FROM event_packing_lines
+            WHERE event_id IN (${eventIds.sqlUuidList()})
+            """.trimIndent()
+        )
+    }
+
+    private fun eventsWithOpenPacking(eventIds: List<UUID>): Set<UUID> {
+        if (eventIds.isEmpty()) return emptySet()
+        return uuidSetSql(
+            """
+            SELECT DISTINCT event_id
+            FROM event_packing_lines
+            WHERE event_id IN (${eventIds.sqlUuidList()})
+              AND status NOT IN ('PACKED', 'LOADED', 'RETURNED')
+            """.trimIndent()
+        )
+    }
+
+    private fun eventsWithOpenPackingReturns(eventIds: List<UUID>): Set<UUID> {
+        if (eventIds.isEmpty()) return emptySet()
+        return uuidSetSql(
+            """
+            SELECT DISTINCT event_id
+            FROM event_packing_lines
+            WHERE event_id IN (${eventIds.sqlUuidList()})
+              AND status IN ('PICKED', 'PACKED', 'LOADED')
+            """.trimIndent()
+        )
+    }
+
+    private fun eventsWithOpenReconciliation(eventIds: List<UUID>): Set<UUID> {
+        if (eventIds.isEmpty()) return emptySet()
+        return uuidSetSql(
+            """
+            SELECT DISTINCT event_inventory_items.event_id
+            FROM event_inventory_custody
+            INNER JOIN event_inventory_items
+                ON event_inventory_custody.event_inventory_item_id = event_inventory_items.id
+            WHERE event_inventory_items.event_id IN (${eventIds.sqlUuidList()})
+              AND event_inventory_custody.status = 'OPEN'
+              AND event_inventory_custody.quantity > event_inventory_custody.returned_quantity
+            UNION
+            SELECT DISTINCT event_purchases.event_id
+            FROM event_purchase_items
+            INNER JOIN event_purchases
+                ON event_purchase_items.purchase_id = event_purchases.id
+            WHERE event_purchases.event_id IN (${eventIds.sqlUuidList()})
+              AND event_purchase_items.added_to_inventory = FALSE
+            """.trimIndent()
+        )
     }
 
     private fun eventHasOpenLogistics(eventId: UUID): Boolean =
@@ -761,6 +892,27 @@ class MyTaskService {
         "LOW" -> 1
         else -> 0
     }
+
+    private fun countSql(sql: String): Int {
+        var count = 0
+        TransactionManager.current().exec(sql) { rs ->
+            if (rs.next()) count = rs.getInt(1)
+        }
+        return count
+    }
+
+    private fun uuidSetSql(sql: String): Set<UUID> {
+        val ids = mutableSetOf<UUID>()
+        TransactionManager.current().exec(sql) { rs ->
+            while (rs.next()) {
+                ids += rs.getObject(1, UUID::class.java)
+            }
+        }
+        return ids
+    }
+
+    private fun Collection<UUID>.sqlUuidList(): String =
+        joinToString(",") { "'$it'" }
 
     private data class MovementTotals(
         val issued: Int = 0,

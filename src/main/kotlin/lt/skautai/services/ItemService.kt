@@ -6,6 +6,7 @@ import lt.skautai.database.tables.ItemConditionLog
 import lt.skautai.database.tables.ItemHistory
 import lt.skautai.database.tables.ItemCustomFields
 import lt.skautai.database.tables.ItemTransfers
+import lt.skautai.database.tables.InventoryKitItems
 import lt.skautai.database.tables.InventoryKits
 import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
@@ -36,6 +37,7 @@ import lt.skautai.models.responses.ItemListResponse
 import lt.skautai.models.responses.ItemResponse
 import lt.skautai.models.responses.ItemTransferListResponse
 import lt.skautai.models.responses.ItemTransferResponse
+import lt.skautai.models.responses.ItemDistributionResponse
 import lt.skautai.util.UploadStorage
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
@@ -125,7 +127,9 @@ class ItemService {
                 query = query.andWhere { Items.updatedAt greater since }
             }
 
-            val items = query.map { toItemResponse(it) }
+            val itemRows = query.toList()
+            val hydration = buildItemListHydration(itemRows, tuntasId)
+            val items = itemRows.map { toItemResponse(it, hydration) }
             Result.success(ItemListResponse(items = items, total = items.size))
         }
     }
@@ -1366,20 +1370,119 @@ class ItemService {
         return leadershipUnitIds + memberUnitIds
     }
 
-    private fun toItemResponse(row: ResultRow): ItemResponse {
+    private data class KitSummary(
+        val id: UUID,
+        val name: String
+    )
+
+    private data class ItemListHydration(
+        val orgUnitNames: Map<UUID, String>,
+        val userNames: Map<UUID, String>,
+        val quantityBreakdowns: Map<UUID, List<ItemDistributionResponse>>,
+        val locationNodes: Map<UUID, LocationNodeData>,
+        val activeKits: Map<UUID, KitSummary>,
+        val customFields: Map<UUID, List<ItemCustomFieldResponse>>
+    )
+
+    private fun buildItemListHydration(rows: List<ResultRow>, tuntasId: UUID): ItemListHydration {
+        if (rows.isEmpty()) {
+            return ItemListHydration(emptyMap(), emptyMap(), emptyMap(), emptyMap(), emptyMap(), emptyMap())
+        }
+
+        val itemIds = rows.map { it[Items.id] }.toSet()
+        val custodianIds = rows.mapNotNull { it[Items.custodianId] }.toMutableSet()
+        val userIds = rows.flatMap {
+            listOfNotNull(it[Items.createdByUserId], it[Items.responsibleUserId], it[Items.submittedByUserId])
+        }.toMutableSet()
+        val locationIds = rows.mapNotNull { it[Items.locationId] }.toSet()
+
+        val linkedRows = Items.selectAll()
+            .where {
+                (Items.sourceSharedItemId inList itemIds.toList()) and
+                    (Items.status eq "ACTIVE")
+            }
+            .toList()
+        custodianIds += linkedRows.mapNotNull { it[Items.custodianId] }
+
+        val orgUnitNames = if (custodianIds.isEmpty()) {
+            emptyMap()
+        } else {
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id inList custodianIds.toList() }
+                .associate { it[OrganizationalUnits.id] to it[OrganizationalUnits.name] }
+        }
+        val userNames = if (userIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Users.selectAll()
+                .where { Users.id inList userIds.toList() }
+                .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}" }
+        }
+        val quantityBreakdowns = linkedRows
+            .mapNotNull { linked ->
+                val sourceId = linked[Items.sourceSharedItemId] ?: return@mapNotNull null
+                val linkedCustodianId = linked[Items.custodianId] ?: return@mapNotNull null
+                val holderName = orgUnitNames[linkedCustodianId] ?: return@mapNotNull null
+                sourceId to ItemDistributionResponse(holderName = holderName, quantity = linked[Items.quantity])
+            }
+            .groupBy({ it.first }, { it.second })
+        val locationNodes = if (locationIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Locations.selectAll()
+                .where { Locations.tuntasId eq tuntasId }
+                .associate { it[Locations.id] to it.toLocationNodeData() }
+        }
+        val activeKits = InventoryKitItems
+            .innerJoin(InventoryKits, { kitId }, { id })
+            .selectAll()
+            .where {
+                (InventoryKitItems.itemId inList itemIds.toList()) and
+                    (InventoryKits.status eq "ACTIVE")
+            }
+            .associate {
+                it[InventoryKitItems.itemId] to KitSummary(
+                    id = it[InventoryKits.id],
+                    name = it[InventoryKits.name]
+                )
+            }
+        val customFields = ItemCustomFields.selectAll()
+            .where { ItemCustomFields.itemId inList itemIds.toList() }
+            .orderBy(ItemCustomFields.fieldName to SortOrder.ASC)
+            .map {
+                it[ItemCustomFields.itemId] to ItemCustomFieldResponse(
+                    id = it[ItemCustomFields.id].toString(),
+                    fieldName = it[ItemCustomFields.fieldName],
+                    fieldValue = it[ItemCustomFields.fieldValue]
+                )
+            }
+            .groupBy({ it.first }, { it.second })
+
+        return ItemListHydration(
+            orgUnitNames = orgUnitNames,
+            userNames = userNames,
+            quantityBreakdowns = quantityBreakdowns,
+            locationNodes = locationNodes,
+            activeKits = activeKits,
+            customFields = customFields
+        )
+    }
+
+    private fun toItemResponse(row: ResultRow, hydration: ItemListHydration? = null): ItemResponse {
         val custodianId = row[Items.custodianId]
-        val custodianName = custodianId?.let {
+        val custodianName = custodianId?.let { hydration?.orgUnitNames?.get(it) } ?: custodianId?.let {
             OrganizationalUnits.selectAll()
                 .where { OrganizationalUnits.id eq it }
                 .firstOrNull()
                 ?.get(OrganizationalUnits.name)
         }
-        val createdByUserName = row[Items.createdByUserId]?.let { userId ->
+        val createdByUserName = row[Items.createdByUserId]?.let { hydration?.userNames?.get(it) } ?: row[Items.createdByUserId]?.let { userId ->
             userDisplayName(userId)
         }
-        val responsibleUserName = userDisplayName(row[Items.responsibleUserId])
+        val responsibleUserName = row[Items.responsibleUserId]?.let { hydration?.userNames?.get(it) }
+            ?: userDisplayName(row[Items.responsibleUserId])
 
-        val quantityBreakdown = if (custodianId == null) {
+        val quantityBreakdown = hydration?.quantityBreakdowns?.get(row[Items.id]) ?: if (custodianId == null) {
             Items.selectAll()
                 .where {
                     (Items.sourceSharedItemId eq row[Items.id]) and
@@ -1392,7 +1495,7 @@ class ItemService {
                         .firstOrNull()
                         ?.get(OrganizationalUnits.name)
                         ?: return@mapNotNull null
-                    lt.skautai.models.responses.ItemDistributionResponse(
+                    ItemDistributionResponse(
                         holderName = holderName,
                         quantity = linked[Items.quantity]
                     )
@@ -1402,18 +1505,20 @@ class ItemService {
         }
         val totalQuantityAcrossCustodians = row[Items.quantity] + quantityBreakdown.sumOf { it.quantity }
         val locationId = row[Items.locationId]
-        val locationRows = if (locationId != null) {
+        val locationNodes = hydration?.locationNodes ?: if (locationId != null) {
             Locations.selectAll()
                 .where { Locations.tuntasId eq row[Items.tuntasId] }
-                .toList()
+                .associate { it[Locations.id] to it.toLocationNodeData() }
         } else {
-            emptyList()
+            emptyMap()
         }
-        val locationNodes = locationRows.associate { it[Locations.id] to it.toLocationNodeData() }
         val locationName = locationId?.let { id -> locationNodes[id]?.name }
         val locationPath = locationId?.let { id -> buildLocationPath(id, locationNodes) }
-        val activeKit = InventoryKitService.activeKitForItem(row[Items.id])
-        val customFields = ItemCustomFields.selectAll()
+        val activeKit = hydration?.activeKits?.get(row[Items.id])
+            ?: InventoryKitService.activeKitForItem(row[Items.id])?.let {
+                KitSummary(id = it[InventoryKits.id], name = it[InventoryKits.name])
+            }
+        val customFields = hydration?.customFields?.get(row[Items.id]) ?: ItemCustomFields.selectAll()
             .where { ItemCustomFields.itemId eq row[Items.id] }
             .orderBy(ItemCustomFields.fieldName to SortOrder.ASC)
             .map {
@@ -1446,8 +1551,8 @@ class ItemService {
             locationName = locationName,
             locationPath = locationPath,
               temporaryStorageLabel = row[Items.temporaryStorageLabel],
-            kitId = activeKit?.get(InventoryKits.id)?.toString(),
-            kitName = activeKit?.get(InventoryKits.name),
+            kitId = activeKit?.id?.toString(),
+            kitName = activeKit?.name,
               sourceSharedItemId = row[Items.sourceSharedItemId]?.toString(),
               responsibleUserId = row[Items.responsibleUserId]?.toString(),
               responsibleUserName = responsibleUserName,
@@ -1462,7 +1567,8 @@ class ItemService {
             totalQuantityAcrossCustodians = totalQuantityAcrossCustodians,
             status = row[Items.status],
             submittedByUserId = row[Items.submittedByUserId]?.toString(),
-            submittedByUserName = userDisplayName(row[Items.submittedByUserId]),
+            submittedByUserName = row[Items.submittedByUserId]?.let { hydration?.userNames?.get(it) }
+                ?: userDisplayName(row[Items.submittedByUserId]),
             targetScope = row[Items.targetScope],
             reviewedByUserId = row[Items.reviewedByUserId]?.toString(),
             rejectionReason = row[Items.rejectionReason],
