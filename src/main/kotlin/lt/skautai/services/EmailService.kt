@@ -1,0 +1,83 @@
+package lt.skautai.services
+
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.time.Duration
+
+interface EmailService {
+    fun sendPasswordReset(to: String, name: String, resetUrl: String): Result<Unit>
+}
+
+class ResendEmailService : EmailService {
+    private val logger = LoggerFactory.getLogger(ResendEmailService::class.java)
+    private val json = Json { encodeDefaults = false }
+    private val client = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(10))
+        .build()
+
+    override fun sendPasswordReset(to: String, name: String, resetUrl: String): Result<Unit> = runCatching {
+        val apiKey = setting("RESEND_API_KEY")
+            ?: error("RESEND_API_KEY is not configured")
+        val from = setting("PASSWORD_RESET_EMAIL_FROM")
+            ?: error("PASSWORD_RESET_EMAIL_FROM is not configured")
+        val safeName = escapeHtml(name)
+        val safeUrl = escapeHtml(resetUrl)
+        val payload = ResendEmailRequest(
+            from = from,
+            to = listOf(to),
+            subject = "Slaptažodžio atkūrimas",
+            html = """
+                <p>Sveiki, $safeName,</p>
+                <p>Gavome prašymą atkurti jūsų „Skautų inventoriaus“ paskyros slaptažodį.</p>
+                <p><a href="$safeUrl">Atkurti slaptažodį</a></p>
+                <p>Nuoroda galioja 1 valandą ir gali būti panaudota tik vieną kartą.</p>
+                <p>Jeigu šio prašymo nepateikėte, laišką galite ignoruoti.</p>
+            """.trimIndent(),
+            text = """
+                Sveiki, $name,
+
+                Atkurkite slaptažodį naudodami šią nuorodą:
+                $resetUrl
+
+                Nuoroda galioja 1 valandą ir gali būti panaudota tik vieną kartą.
+                Jeigu šio prašymo nepateikėte, laišką galite ignoruoti.
+            """.trimIndent()
+        )
+        val request = HttpRequest.newBuilder(URI("https://api.resend.com/emails"))
+            .timeout(Duration.ofSeconds(20))
+            .header("Authorization", "Bearer $apiKey")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(json.encodeToString(payload)))
+            .build()
+        val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+        if (response.statusCode() !in 200..299) {
+            error("Email provider rejected password reset email with status ${response.statusCode()}")
+        }
+        logger.info("Password reset email accepted by provider for recipient domain={}", to.substringAfter('@', "unknown"))
+    }
+
+    private fun setting(name: String): String? =
+        (System.getenv(name) ?: System.getProperty(name))?.trim()?.takeIf(String::isNotBlank)
+
+    private fun escapeHtml(value: String): String = value
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&#39;")
+}
+
+@Serializable
+private data class ResendEmailRequest(
+    val from: String,
+    val to: List<String>,
+    val subject: String,
+    val html: String,
+    val text: String
+)

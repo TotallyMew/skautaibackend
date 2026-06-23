@@ -17,6 +17,8 @@ object UploadStorage {
 
     fun documentsDir(): File = File(root, "documents").canonicalFile
 
+    fun rootDir(): File = root
+
     fun resolveImage(fileName: String): File? = resolve(imagesDir(), fileName)
 
     fun resolveDocument(fileName: String): File? = resolve(documentsDir(), fileName)

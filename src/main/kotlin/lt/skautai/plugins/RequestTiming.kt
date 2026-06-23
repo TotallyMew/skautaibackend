@@ -7,6 +7,7 @@ import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
 import io.ktor.util.AttributeKey
 import org.slf4j.LoggerFactory
+import lt.skautai.services.OperationalMetrics
 
 fun Application.configureRequestTiming() {
     install(RequestTiming)
@@ -21,6 +22,7 @@ private val RequestTiming = createApplicationPlugin(name = "RequestTiming") {
         ?: 1_500L
 
     onCall { call ->
+        OperationalMetrics.requestStarted()
         call.attributes.put(RequestStartNanosKey, System.nanoTime())
     }
 
@@ -30,6 +32,7 @@ private val RequestTiming = createApplicationPlugin(name = "RequestTiming") {
         val method = call.request.httpMethod.value
         val path = call.request.path()
         val status = call.response.status()?.value ?: 200
+        OperationalMetrics.requestCompleted(status, durationMs)
         val message = "request method=$method path=$path status=$status durationMs=$durationMs"
         if (durationMs >= slowRequestWarnMs) {
             requestTimingLogger.warn(message)

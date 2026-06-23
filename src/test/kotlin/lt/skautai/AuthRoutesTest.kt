@@ -10,6 +10,9 @@ import lt.skautai.TestHelper.registerAndActivateTuntininkas
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.junit.jupiter.api.*
 import org.junit.jupiter.api.Assertions.*
+import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class AuthRoutesTest {
@@ -428,6 +431,187 @@ class AuthRoutesTest {
         }
 
         assertEquals(HttpStatusCode.Created, response.status)
+    }
+
+    @Test
+    fun `refresh token rotates and old token cannot be reused`() = testApplication {
+        configureFullApp()
+        val registration = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """
+                {
+                    "name": "Refresh",
+                    "surname": "User",
+                    "email": "refresh@test.com",
+                    "password": "testas123",
+                    "tuntasName": "Refresh Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+                """.trimIndent()
+            )
+        }
+        val originalRefreshToken = Json.parseToJsonElement(registration.bodyAsText())
+            .jsonObject["refreshToken"]!!.jsonPrimitive.content
+
+        val refreshed = client.post("/api/auth/refresh") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"refreshToken":"$originalRefreshToken"}""")
+        }
+        assertEquals(HttpStatusCode.OK, refreshed.status)
+        val rotatedRefreshToken = Json.parseToJsonElement(refreshed.bodyAsText())
+            .jsonObject["refreshToken"]!!.jsonPrimitive.content
+        assertNotEquals(originalRefreshToken, rotatedRefreshToken)
+
+        val replay = client.post("/api/auth/refresh") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"refreshToken":"$originalRefreshToken"}""")
+        }
+        assertEquals(HttpStatusCode.Unauthorized, replay.status)
+    }
+
+    @Test
+    fun `logout revokes refresh token`() = testApplication {
+        configureFullApp()
+        val registration = client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """
+                {
+                    "name": "Logout",
+                    "surname": "User",
+                    "email": "logout@test.com",
+                    "password": "testas123",
+                    "tuntasName": "Logout Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+                """.trimIndent()
+            )
+        }
+        val refreshToken = Json.parseToJsonElement(registration.bodyAsText())
+            .jsonObject["refreshToken"]!!.jsonPrimitive.content
+
+        val logout = client.post("/api/auth/logout") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"refreshToken":"$refreshToken"}""")
+        }
+        assertEquals(HttpStatusCode.NoContent, logout.status)
+
+        val refresh = client.post("/api/auth/refresh") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"refreshToken":"$refreshToken"}""")
+        }
+        assertEquals(HttpStatusCode.Unauthorized, refresh.status)
+    }
+
+    @Test
+    fun `login throttling survives new service instances through database state`() = testApplication {
+        configureFullApp()
+        client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """
+                {
+                    "name": "Rate",
+                    "surname": "Limited",
+                    "email": "rate@test.com",
+                    "password": "testas123",
+                    "tuntasName": "Rate Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+                """.trimIndent()
+            )
+        }
+
+        repeat(5) {
+            val failed = client.post("/api/auth/login") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"email":"rate@test.com","password":"wrong123"}""")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, failed.status)
+        }
+
+        val blocked = client.post("/api/auth/login") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"email":"rate@test.com","password":"testas123"}""")
+        }
+        assertEquals(HttpStatusCode.Unauthorized, blocked.status)
+        assertTrue(blocked.bodyAsText().contains("vėliau", ignoreCase = true))
+    }
+
+    @Test
+    fun `health endpoints report live and ready`() = testApplication {
+        configureFullApp()
+
+        assertEquals(HttpStatusCode.OK, client.get("/health/live").status)
+        assertEquals(HttpStatusCode.OK, client.get("/health/ready").status)
+        assertEquals(HttpStatusCode.OK, client.get("/metrics").status)
+    }
+
+    @Test
+    fun `forgot password sends single use link and resets password`() = testApplication {
+        configureFullApp()
+        client.post("/api/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """
+                {
+                    "name": "Reset",
+                    "surname": "User",
+                    "email": "reset@test.com",
+                    "password": "oldpass123",
+                    "tuntasName": "Reset Tuntas",
+                    "tuntasKrastas": "Vilniaus"
+                }
+                """.trimIndent()
+            )
+        }
+
+        val forgot = client.post("/api/auth/forgot-password") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"email":"reset@test.com"}""")
+        }
+        assertEquals(HttpStatusCode.OK, forgot.status)
+        val link = TestHelper.lastPasswordResetLink
+        assertNotNull(link)
+        val token = URLDecoder.decode(
+            URI(link).rawQuery.substringAfter("token="),
+            StandardCharsets.UTF_8
+        )
+
+        val reset = client.post("/api/auth/reset-password") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"token":"$token","newPassword":"newpass123"}""")
+        }
+        assertEquals(HttpStatusCode.OK, reset.status)
+
+        val oldLogin = client.post("/api/auth/login") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"email":"reset@test.com","password":"oldpass123"}""")
+        }
+        assertEquals(HttpStatusCode.Unauthorized, oldLogin.status)
+        val newLogin = client.post("/api/auth/login") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"email":"reset@test.com","password":"newpass123"}""")
+        }
+        assertEquals(HttpStatusCode.OK, newLogin.status)
+
+        val reused = client.post("/api/auth/reset-password") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"token":"$token","newPassword":"another123"}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, reused.status)
+    }
+
+    @Test
+    fun `forgot password does not reveal whether account exists`() = testApplication {
+        configureFullApp()
+        val response = client.post("/api/auth/forgot-password") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"email":"missing@test.com"}""")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertNull(TestHelper.lastPasswordResetLink)
     }
 
     @Test

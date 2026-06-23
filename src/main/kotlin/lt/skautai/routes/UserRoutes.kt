@@ -12,6 +12,7 @@ import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.UserRanks
 import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.database.tables.Users
+import lt.skautai.database.tables.AuthRefreshSessions
 import lt.skautai.models.requests.ChangeMyPasswordRequest
 import lt.skautai.models.requests.UpdateMyProfileRequest
 import lt.skautai.models.responses.ErrorResponse
@@ -151,6 +152,14 @@ fun Route.userRoutes() {
                     Users.update({ Users.id eq userId }) {
                         it[passwordHash] = BCrypt.hashpw(request.newPassword, BCrypt.gensalt())
                         it[updatedAt] = Clock.System.now()
+                    }
+                    AuthRefreshSessions.update({
+                        (AuthRefreshSessions.subjectId eq userId) and
+                            (AuthRefreshSessions.subjectType eq "user") and
+                            (AuthRefreshSessions.revokedAt.isNull())
+                    }) {
+                        it[revokedAt] = Clock.System.now()
+                        it[lastUsedAt] = Clock.System.now()
                     }
                     Result.success(Unit)
                 }

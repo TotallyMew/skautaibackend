@@ -5,24 +5,36 @@ import com.auth0.jwt.algorithms.Algorithm
 import io.ktor.server.application.*
 import lt.skautai.database.tables.*
 import lt.skautai.models.requests.LoginRequest
+import lt.skautai.models.requests.ForgotPasswordRequest
+import lt.skautai.models.requests.ResetPasswordRequest
 import lt.skautai.models.requests.RegisterTuntininkasRequest
 import lt.skautai.models.requests.RegisterWithInviteRequest
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.models.responses.TokenResponse
 import lt.skautai.models.responses.TuntasInfo
 import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.mindrot.jbcrypt.BCrypt
-import java.util.concurrent.ConcurrentHashMap
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.*
 import lt.skautai.database.tables.UnitAssignments
-class AuthService(private val environment: ApplicationEnvironment) {
+class AuthService(
+    private val environment: ApplicationEnvironment,
+    private val emailService: EmailService = ResendEmailService()
+) {
     companion object {
         private const val accessTokenLifetimeMs = 8 * 60 * 60 * 1000L
         private const val refreshTokenLifetimeMs = 30L * 24 * 60 * 60 * 1000
         private const val maxFailedAttempts = 5
         private const val rateLimitWindowMs = 15 * 60 * 1000L
         private const val blockDurationMs = 15 * 60 * 1000L
+        private const val passwordResetLifetimeMs = 60 * 60 * 1000L
+        private const val passwordResetRequestWindowMs = 15 * 60 * 1000L
+        private const val maxPasswordResetRequestsPerWindow = 3
         private const val nameMinLength = 2
         private const val nameMaxLength = 100
         private const val surnameMinLength = 2
@@ -34,8 +46,6 @@ class AuthService(private val environment: ApplicationEnvironment) {
         private const val tuntasNameMinLength = 2
         private const val tuntasNameMaxLength = 100
         private const val inviteCodeMaxLength = 20
-        private val failedLoginAttempts = ConcurrentHashMap<String, MutableList<Long>>()
-        private val blockedUntil = ConcurrentHashMap<String, Long>()
     }
 
     private val secret = environment.config.property("jwt.secret").getString()
@@ -163,7 +173,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
             )
 
             val token = generateAccessToken(userId.toString(), email, "user")
-            val refreshToken = generateRefreshToken(userId.toString(), email, "user")
+            val refreshToken = issueRefreshToken(userId, email, "user")
             Result.success(
                 TokenResponse(
                     token = token,
@@ -288,7 +298,7 @@ class AuthService(private val environment: ApplicationEnvironment) {
             }
 
             val token = generateAccessToken(userId.toString(), email, "user")
-            val refreshToken = generateRefreshToken(userId.toString(), email, "user")
+            val refreshToken = issueRefreshToken(userId, email, "user")
             val tuntai = getActiveTuntaiForUser(userId)
             Result.success(
                 TokenResponse(
@@ -319,8 +329,8 @@ class AuthService(private val environment: ApplicationEnvironment) {
                     user[Users.email],
                     "user"
                 )
-                val refreshToken = generateRefreshToken(
-                    user[Users.id].toString(),
+                val refreshToken = issueRefreshToken(
+                    user[Users.id],
                     user[Users.email],
                     "user"
                 )
@@ -347,8 +357,8 @@ class AuthService(private val environment: ApplicationEnvironment) {
                     admin[SuperAdmins.email],
                     "super_admin"
                 )
-                val refreshToken = generateRefreshToken(
-                    admin[SuperAdmins.id].toString(),
+                val refreshToken = issueRefreshToken(
+                    admin[SuperAdmins.id],
                     admin[SuperAdmins.email],
                     "super_admin"
                 )
@@ -394,8 +404,8 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 admin[SuperAdmins.email],
                 "super_admin"
             )
-            val refreshToken = generateRefreshToken(
-                admin[SuperAdmins.id].toString(),
+            val refreshToken = issueRefreshToken(
+                admin[SuperAdmins.id],
                 admin[SuperAdmins.email],
                 "super_admin"
             )
@@ -442,7 +452,30 @@ class AuthService(private val environment: ApplicationEnvironment) {
         val userUuid = runCatching { UUID.fromString(userId) }.getOrNull()
             ?: return Result.failure(Exception("Invalid refresh token"))
 
+        val sessionId = decoded.id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+            ?: return Result.failure(Exception("Invalid refresh token"))
+        val tokenHash = hashToken(refreshToken)
+
         return transaction {
+            val now = kotlinx.datetime.Clock.System.now()
+            val session = AuthRefreshSessions.selectAll()
+                .where {
+                    (AuthRefreshSessions.id eq sessionId) and
+                        (AuthRefreshSessions.subjectId eq userUuid) and
+                        (AuthRefreshSessions.subjectType eq type) and
+                        (AuthRefreshSessions.tokenHash eq tokenHash)
+                }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Invalid refresh token"))
+
+            if (
+                session[AuthRefreshSessions.revokedAt] != null ||
+                session[AuthRefreshSessions.expiresAt] <= now
+            ) {
+                return@transaction Result.failure(Exception("Invalid refresh token"))
+            }
+
             when (type) {
                 "user" -> {
                     val user = Users.selectAll()
@@ -451,10 +484,12 @@ class AuthService(private val environment: ApplicationEnvironment) {
                         ?: return@transaction Result.failure(Exception("User not found"))
 
                     val tuntai = getActiveTuntaiForUser(userUuid)
+                    val rotatedRefreshToken = issueRefreshToken(userUuid, user[Users.email], type)
+                    revokeSession(sessionId, rotatedRefreshToken, now)
                     Result.success(
                         TokenResponse(
                             token = generateAccessToken(userId, email, type),
-                            refreshToken = generateRefreshToken(userId, email, type),
+                            refreshToken = rotatedRefreshToken,
                             userId = userId,
                             email = user[Users.email],
                             name = user[Users.name],
@@ -470,10 +505,12 @@ class AuthService(private val environment: ApplicationEnvironment) {
                         .firstOrNull()
                         ?: return@transaction Result.failure(Exception("Super admin not found"))
 
+                    val rotatedRefreshToken = issueRefreshToken(userUuid, admin[SuperAdmins.email], type)
+                    revokeSession(sessionId, rotatedRefreshToken, now)
                     Result.success(
                         TokenResponse(
                             token = generateAccessToken(userId, email, type),
-                            refreshToken = generateRefreshToken(userId, email, type),
+                            refreshToken = rotatedRefreshToken,
                             userId = userId,
                             email = admin[SuperAdmins.email],
                             name = admin[SuperAdmins.name],
@@ -483,6 +520,162 @@ class AuthService(private val environment: ApplicationEnvironment) {
                 }
 
                 else -> Result.failure(Exception("Invalid refresh token"))
+            }
+        }
+    }
+
+    fun logout(refreshToken: String): Result<Unit> {
+        val decoded = runCatching {
+            JWT.require(Algorithm.HMAC256(secret))
+                .withAudience(audience)
+                .withIssuer(issuer)
+                .build()
+                .verify(refreshToken)
+        }.getOrNull() ?: return Result.success(Unit)
+
+        val sessionId = decoded.id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+            ?: return Result.success(Unit)
+        val tokenHash = hashToken(refreshToken)
+        transaction {
+            AuthRefreshSessions.update({
+                (AuthRefreshSessions.id eq sessionId) and
+                    (AuthRefreshSessions.tokenHash eq tokenHash) and
+                    (AuthRefreshSessions.revokedAt.isNull())
+            }) {
+                it[revokedAt] = kotlinx.datetime.Clock.System.now()
+                it[lastUsedAt] = kotlinx.datetime.Clock.System.now()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    fun requestPasswordReset(request: ForgotPasswordRequest): Result<Unit> {
+        val email = normalizeEmail(request.email)
+        validateEmail(email)?.let { return Result.failure(Exception(it)) }
+
+        data class ResetSubject(val id: UUID, val type: String, val name: String)
+        val subject = transaction {
+            Users.selectAll().where { Users.email eq email }.firstOrNull()?.let {
+                ResetSubject(it[Users.id], "user", it[Users.name])
+            } ?: SuperAdmins.selectAll().where { SuperAdmins.email eq email }.firstOrNull()?.let {
+                ResetSubject(it[SuperAdmins.id], "super_admin", it[SuperAdmins.name])
+            }
+        } ?: return Result.success(Unit)
+
+        val now = kotlinx.datetime.Clock.System.now()
+        val windowStart = kotlinx.datetime.Instant.fromEpochMilliseconds(
+            now.toEpochMilliseconds() - passwordResetRequestWindowMs
+        )
+        val tooManyRequests = transaction {
+            PasswordResetTokens.selectAll().where {
+                (PasswordResetTokens.subjectId eq subject.id) and
+                    (PasswordResetTokens.subjectType eq subject.type) and
+                    (PasswordResetTokens.createdAt greaterEq windowStart)
+            }.count() >= maxPasswordResetRequestsPerWindow
+        }
+        if (tooManyRequests) return Result.success(Unit)
+
+        val rawToken = randomUrlToken()
+        val tokenId = UUID.randomUUID()
+        transaction {
+            PasswordResetTokens.update({
+                (PasswordResetTokens.subjectId eq subject.id) and
+                    (PasswordResetTokens.subjectType eq subject.type) and
+                    (PasswordResetTokens.usedAt.isNull())
+            }) {
+                it[usedAt] = now
+            }
+            PasswordResetTokens.insert {
+                it[id] = tokenId
+                it[subjectId] = subject.id
+                it[subjectType] = subject.type
+                it[tokenHash] = hashToken(rawToken)
+                it[expiresAt] = kotlinx.datetime.Instant.fromEpochMilliseconds(
+                    now.toEpochMilliseconds() + passwordResetLifetimeMs
+                )
+                it[createdAt] = now
+            }
+        }
+
+        val publicBaseUrl = setting("PASSWORD_RESET_PUBLIC_BASE_URL")
+        if (publicBaseUrl == null) {
+            transaction { PasswordResetTokens.deleteWhere { id eq tokenId } }
+            environment.log.error("Password reset requested but PASSWORD_RESET_PUBLIC_BASE_URL is not configured")
+            return Result.success(Unit)
+        }
+        val resetUrl = "${publicBaseUrl.trimEnd('/')}/password-reset/open?token=${
+            URLEncoder.encode(rawToken, StandardCharsets.UTF_8)
+        }"
+        emailService.sendPasswordReset(email, subject.name, resetUrl)
+            .onFailure {
+                transaction { PasswordResetTokens.deleteWhere { id eq tokenId } }
+                environment.log.error("Failed to deliver password reset email", it)
+            }
+        return Result.success(Unit)
+    }
+
+    fun resetPassword(request: ResetPasswordRequest): Result<Unit> {
+        val token = request.token.trim()
+        if (token.isBlank()) return Result.failure(Exception("Password reset token is required"))
+        validatePassword(request.newPassword)?.let { return Result.failure(Exception(it)) }
+        val now = kotlinx.datetime.Clock.System.now()
+
+        return transaction {
+            val row = PasswordResetTokens.selectAll()
+                .where { PasswordResetTokens.tokenHash eq hashToken(token) }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Password reset link is invalid or expired"))
+            if (row[PasswordResetTokens.usedAt] != null || row[PasswordResetTokens.expiresAt] <= now) {
+                return@transaction Result.failure(Exception("Password reset link is invalid or expired"))
+            }
+
+            val subjectId = row[PasswordResetTokens.subjectId]
+            val subjectType = row[PasswordResetTokens.subjectType]
+            val passwordHash = BCrypt.hashpw(request.newPassword, BCrypt.gensalt())
+            val changed = when (subjectType) {
+                "user" -> Users.update({ Users.id eq subjectId }) {
+                    it[Users.passwordHash] = passwordHash
+                    it[updatedAt] = now
+                }
+                "super_admin" -> SuperAdmins.update({ SuperAdmins.id eq subjectId }) {
+                    it[SuperAdmins.passwordHash] = passwordHash
+                }
+                else -> 0
+            }
+            if (changed == 0) {
+                return@transaction Result.failure(Exception("Password reset link is invalid or expired"))
+            }
+
+            PasswordResetTokens.update({
+                (PasswordResetTokens.subjectId eq subjectId) and
+                    (PasswordResetTokens.subjectType eq subjectType) and
+                    (PasswordResetTokens.usedAt.isNull())
+            }) {
+                it[usedAt] = now
+            }
+            AuthRefreshSessions.update({
+                (AuthRefreshSessions.subjectId eq subjectId) and
+                    (AuthRefreshSessions.subjectType eq subjectType) and
+                    (AuthRefreshSessions.revokedAt.isNull())
+            }) {
+                it[revokedAt] = now
+                it[lastUsedAt] = now
+            }
+            Result.success(Unit)
+        }
+    }
+
+    fun revokeAllSessions(subjectId: UUID, subjectType: String) {
+        transaction {
+            val now = kotlinx.datetime.Clock.System.now()
+            AuthRefreshSessions.update({
+                (AuthRefreshSessions.subjectId eq subjectId) and
+                    (AuthRefreshSessions.subjectType eq subjectType) and
+                    (AuthRefreshSessions.revokedAt.isNull())
+            }) {
+                it[revokedAt] = now
+                it[lastUsedAt] = now
             }
         }
     }
@@ -644,44 +837,109 @@ class AuthService(private val environment: ApplicationEnvironment) {
             .sign(Algorithm.HMAC256(secret))
     }
 
-    private fun generateRefreshToken(userId: String, email: String, type: String): String {
-        return JWT.create()
+    private fun issueRefreshToken(userId: UUID, email: String, type: String): String {
+        val sessionId = UUID.randomUUID()
+        val now = kotlinx.datetime.Clock.System.now()
+        val expiresAt = kotlinx.datetime.Instant.fromEpochMilliseconds(now.toEpochMilliseconds() + refreshTokenLifetimeMs)
+        val token = JWT.create()
             .withAudience(audience)
             .withIssuer(issuer)
-            .withClaim("userId", userId)
+            .withJWTId(sessionId.toString())
+            .withClaim("userId", userId.toString())
             .withClaim("email", email)
             .withClaim("type", type)
             .withClaim("tokenUse", "refresh")
-            .withExpiresAt(Date(System.currentTimeMillis() + refreshTokenLifetimeMs))
+            .withExpiresAt(Date(expiresAt.toEpochMilliseconds()))
             .sign(Algorithm.HMAC256(secret))
+        AuthRefreshSessions.insert {
+            it[id] = sessionId
+            it[subjectId] = userId
+            it[subjectType] = type
+            it[tokenHash] = hashToken(token)
+            it[AuthRefreshSessions.expiresAt] = expiresAt
+            it[createdAt] = now
+        }
+        return token
+    }
+
+    private fun revokeSession(
+        sessionId: UUID,
+        replacementToken: String,
+        now: kotlinx.datetime.Instant
+    ) {
+        val replacementId = JWT.decode(replacementToken).id?.let(UUID::fromString)
+        AuthRefreshSessions.update({ AuthRefreshSessions.id eq sessionId }) {
+            it[revokedAt] = now
+            it[lastUsedAt] = now
+            it[replacedBySessionId] = replacementId
+        }
+    }
+
+    private fun hashToken(token: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(token.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
+    private fun randomUrlToken(): String {
+        val bytes = ByteArray(32)
+        SecureRandom().nextBytes(bytes)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+    }
+
+    private fun setting(name: String): String? =
+        (System.getenv(name) ?: System.getProperty(name))?.trim()?.takeIf(String::isNotBlank)
+
+    private fun nowPlus(milliseconds: Long): kotlinx.datetime.Instant {
+        val now = kotlinx.datetime.Clock.System.now()
+        return kotlinx.datetime.Instant.fromEpochMilliseconds(now.toEpochMilliseconds() + milliseconds)
     }
 
     private fun loginRateLimitError(rateLimitKey: String): String? {
-        val now = System.currentTimeMillis()
-        val blockedAt = blockedUntil[rateLimitKey]
-        if (blockedAt != null && blockedAt > now) {
-            return "Too many failed login attempts. Please try again later."
+        return transaction {
+            val now = kotlinx.datetime.Clock.System.now()
+            val row = AuthLoginThrottles.selectAll()
+                .where { AuthLoginThrottles.key eq rateLimitKey }
+                .firstOrNull()
+                ?: return@transaction null
+            val blockedUntil = row[AuthLoginThrottles.blockedUntil]
+            if (blockedUntil != null && blockedUntil > now) {
+                "Too many failed login attempts. Please try again later."
+            } else {
+                if (blockedUntil != null) {
+                    AuthLoginThrottles.deleteWhere { AuthLoginThrottles.key eq rateLimitKey }
+                }
+                null
+            }
         }
-        if (blockedAt != null && blockedAt <= now) {
-            blockedUntil.remove(rateLimitKey)
-        }
-        return null
     }
 
     private fun recordLoginFailure(rateLimitKey: String) {
-        val now = System.currentTimeMillis()
-        val attempts = failedLoginAttempts.computeIfAbsent(rateLimitKey) { mutableListOf() }
-        synchronized(attempts) {
-            attempts.removeAll { now - it > rateLimitWindowMs }
-            attempts.add(now)
-            if (attempts.size >= maxFailedAttempts) {
-                blockedUntil[rateLimitKey] = now + blockDurationMs
+        transaction {
+            val now = kotlinx.datetime.Clock.System.now()
+            AuthLoginThrottles.insertIgnore {
+                it[key] = rateLimitKey
+                it[failedCount] = 0
+                it[windowStartedAt] = now
+                it[updatedAt] = now
+            }
+            val row = AuthLoginThrottles.selectAll()
+                .where { AuthLoginThrottles.key eq rateLimitKey }
+                .forUpdate()
+                .first()
+            val windowExpired = now.toEpochMilliseconds() - row[AuthLoginThrottles.windowStartedAt].toEpochMilliseconds() > rateLimitWindowMs
+            val newCount = if (windowExpired) 1 else row[AuthLoginThrottles.failedCount] + 1
+            AuthLoginThrottles.update({ AuthLoginThrottles.key eq rateLimitKey }) {
+                it[failedCount] = newCount
+                it[windowStartedAt] = if (windowExpired) now else row[AuthLoginThrottles.windowStartedAt]
+                it[blockedUntil] = if (newCount >= maxFailedAttempts) nowPlus(blockDurationMs) else null
+                it[updatedAt] = now
             }
         }
     }
 
     private fun clearLoginFailures(rateLimitKey: String) {
-        failedLoginAttempts.remove(rateLimitKey)
-        blockedUntil.remove(rateLimitKey)
+        transaction {
+            AuthLoginThrottles.deleteWhere { AuthLoginThrottles.key eq rateLimitKey }
+        }
     }
 }

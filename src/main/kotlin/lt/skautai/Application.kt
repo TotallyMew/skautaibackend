@@ -7,6 +7,8 @@ import io.ktor.server.netty.*
 import io.ktor.server.plugins.defaultheaders.*
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
+import io.ktor.server.request.httpMethod
+import io.ktor.server.request.path
 import lt.skautai.database.tables.Tuntai
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.plugins.configureCompression
@@ -17,6 +19,7 @@ import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
 import lt.skautai.services.PermissionSeeder
 import lt.skautai.services.VadovasRankSupport
+import lt.skautai.services.OperationalMetrics
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.flywaydb.core.Flyway
@@ -36,6 +39,7 @@ fun main(args: Array<String>) {
 }
 
 fun Application.module() {
+    val applicationLogger = log
     loadDotEnvIntoSystemProperties()
     configureDatabases()
     configureSerialization()
@@ -49,7 +53,14 @@ fun Application.module() {
         header("Referrer-Policy", "strict-origin-when-cross-origin")
     }
     install(StatusPages) {
-        exception<Throwable> { call, _ ->
+        exception<Throwable> { call, cause ->
+            OperationalMetrics.unhandledError()
+            applicationLogger.error(
+                "Unhandled request error method={} path={}",
+                call.request.httpMethod.value,
+                call.request.path(),
+                cause
+            )
             call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Internal server error"))
         }
     }
@@ -89,9 +100,7 @@ fun Application.configureDatabases() {
     Flyway.configure()
         .dataSource(dataSource)
         .locations("classpath:db/migration")
-        .baselineOnMigrate(true)
-        .baselineVersion("1")
-        .baselineDescription("Existing schema baseline")
+        .validateMigrationNaming(true)
         .load()
         .migrate()
 
@@ -188,6 +197,10 @@ private val supportedDotEnvKeys = setOf(
     "DB_POOL_VALIDATION_TIMEOUT_MS",
     "DB_POOL_IDLE_TIMEOUT_MS",
     "DB_POOL_MAX_LIFETIME_MS"
+    ,"METRICS_TOKEN"
+    ,"RESEND_API_KEY"
+    ,"PASSWORD_RESET_EMAIL_FROM"
+    ,"PASSWORD_RESET_PUBLIC_BASE_URL"
 )
 
 private fun loadDotEnvIntoSystemProperties(dotEnvPath: Path = Path(".env")) {

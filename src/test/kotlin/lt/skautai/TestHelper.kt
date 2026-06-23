@@ -36,6 +36,7 @@ import lt.skautai.routes.rolesRoutes
 import lt.skautai.routes.requisitionRoutes
 import lt.skautai.routes.reservationRoutes
 import lt.skautai.routes.uploadRoutes
+import lt.skautai.routes.operationalRoutes
 import lt.skautai.services.ReservationService
 import lt.skautai.routes.eventRoutes
 import lt.skautai.routes.userRoutes
@@ -45,6 +46,7 @@ import java.nio.file.Files
 import java.util.UUID
 
 object TestHelper {
+    var lastPasswordResetLink: String? = null
 
     fun buildTestConfig(): MapApplicationConfig {
         val config = com.typesafe.config.ConfigFactory.load("test")
@@ -99,6 +101,8 @@ object TestHelper {
         transaction {
             exec("""
                 TRUNCATE TABLE
+                    password_reset_tokens,
+                    auth_refresh_sessions, auth_login_throttles,
                     users, tuntai, bendras_inventory_requests, super_admins,
                     leadership_change_requests, item_check_sessions,
                     reservation_movements,
@@ -114,6 +118,7 @@ object TestHelper {
                 CASCADE
             """.trimIndent())
         }
+        lastPasswordResetLink = null
         cleanUploadDirectories()
     }
 
@@ -132,7 +137,16 @@ object TestHelper {
         application {
             configureSecurity()
             configureSerialization()
-            val authService = AuthService(environment)
+            System.setProperty("PASSWORD_RESET_PUBLIC_BASE_URL", "https://api.example.test")
+            val authService = AuthService(
+                environment,
+                object : EmailService {
+                    override fun sendPasswordReset(to: String, name: String, resetUrl: String): Result<Unit> {
+                        lastPasswordResetLink = resetUrl
+                        return Result.success(Unit)
+                    }
+                }
+            )
             val invitationService = InvitationService()
             val itemService = ItemService()
             val itemCheckService = ItemCheckService()
@@ -154,6 +168,7 @@ object TestHelper {
             val notificationRecipientService = NotificationRecipientService()
             PermissionSeeder.seedPermissions()
             routing {
+                operationalRoutes()
                 authRoutes(authService)
                 invitationRoutes(invitationService)
                 superAdminRoutes(memberService, organizationalUnitService, firebaseNotificationService, notificationRecipientService)

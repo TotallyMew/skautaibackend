@@ -48,6 +48,7 @@ import lt.skautai.services.FirebaseNotificationService
 import lt.skautai.services.RequisitionService
 import lt.skautai.routes.rolesRoutes
 import lt.skautai.routes.uploadRoutes
+import lt.skautai.routes.operationalRoutes
 
 fun Application.configureRouting() {
     val authService = AuthService(environment)
@@ -73,6 +74,7 @@ fun Application.configureRouting() {
     val notificationRecipientService = NotificationRecipientService()
 
     routing {
+        operationalRoutes()
         authRoutes(authService)
         invitationRoutes(invitationService)
         superAdminRoutes(
