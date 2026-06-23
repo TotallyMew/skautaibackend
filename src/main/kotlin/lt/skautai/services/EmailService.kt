@@ -9,6 +9,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import lt.skautai.util.LithuanianNameVocativeFormatter
 
 interface EmailService {
     fun sendPasswordReset(to: String, name: String, resetUrl: String): Result<Unit>
@@ -26,7 +27,8 @@ class ResendEmailService : EmailService {
             ?: error("RESEND_API_KEY is not configured")
         val from = setting("PASSWORD_RESET_EMAIL_FROM")
             ?: error("PASSWORD_RESET_EMAIL_FROM is not configured")
-        val safeName = escapeHtml(name)
+        val vocativeName = LithuanianNameVocativeFormatter.firstNameVocative(name)
+        val safeName = escapeHtml(vocativeName)
         val safeUrl = escapeHtml(resetUrl)
         val payload = ResendEmailRequest(
             from = from,
@@ -40,7 +42,7 @@ class ResendEmailService : EmailService {
                 <p>Jeigu šio prašymo nepateikėte, laišką galite ignoruoti.</p>
             """.trimIndent(),
             text = """
-                Sveiki, $name,
+                Sveiki, $vocativeName,
 
                 Atkurkite slaptažodį naudodami šią nuorodą:
                 $resetUrl
