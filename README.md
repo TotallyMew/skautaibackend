@@ -162,6 +162,14 @@ The backend serves the public pages required for the Google Play account-deletio
 
 The in-app deletion flow requires the current password, sends a one-time email link, and only deletes the account after an explicit confirmation on the web page.
 
+Public contacts:
+
+```text
+General support: support@skautuinventorius.lt
+Privacy requests: privacy@skautuinventorius.lt
+Automated email sender: noreply@skautuinventorius.lt
+```
+
 Production environment:
 
 ```text

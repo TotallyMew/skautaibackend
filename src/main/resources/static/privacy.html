@@ -1,17 +1,117 @@
 <!doctype html>
-<html lang="lt"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Privatumo politika – Skautų inventorius</title><link rel="stylesheet" href="styles.css"></head>
-<body><header><strong>Skautų inventorius</strong><nav><a href="index.html">Pradžia</a><a href="delete-account.html">Ištrinti paskyrą</a></nav></header>
-<main><h1>Privatumo politika</h1><p class="muted">Paskutinį kartą atnaujinta: 2026 m. birželio 23 d.</p>
-<h2>Kokius duomenis tvarkome</h2>
-<p>Paskyros vardą, pavardę, el. paštą, pasirenkamą telefono numerį, organizacines narystes ir roles; programėlėje sukurtus inventoriaus, rezervacijų, renginių bei užduočių duomenis; įkeltus inventoriaus dokumentus ir nuotraukas; įrenginio pranešimų žetoną, diagnostikos ir programėlės strigčių informaciją.</p>
-<h2>Kodėl juos tvarkome</h2>
-<p>Prisijungimui, teisių valdymui, skautų organizacijų inventoriaus ir renginių procesams vykdyti, pranešimams siųsti, saugumui, gedimų diagnostikai ir paslaugos patikimumui.</p>
-<h2>Paslaugų teikėjai</h2>
-<p>Duomenų infrastruktūrai naudojame Railway ir PostgreSQL, el. laiškams – Resend, pranešimams ir diagnostikai – Firebase paslaugas. Teikėjams perduodami tik jų funkcijai būtini duomenys.</p>
-<h2>Saugojimas ir ištrynimas</h2>
-<p>Paskyros duomenys saugomi, kol paskyra aktyvi. Ištrynus paskyrą asmens tapatybės ir prisijungimo duomenys pašalinami. Anonimizuoti veiklos bei audito įrašai gali būti išsaugoti bendro turto apskaitos vientisumui ar teisėtiems įsipareigojimams.</p>
-<h2>Jūsų pasirinkimai</h2>
-<p>Profilio duomenis galite taisyti programėlėje. Paskyrą galite ištrinti programėlėje arba <a href="delete-account.html">paskyros ištrynimo puslapyje</a>.</p>
-<h2>Kontaktai</h2><p>Dėl privatumo klausimų kreipkitės el. paštu <a href="mailto:noreply@skautuinventorius.lt">noreply@skautuinventorius.lt</a>.</p>
-</main><footer class="muted">© 2026 Skautų inventorius</footer></body></html>
+<html lang="lt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Privatumo politika – Skautų inventorius</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <strong>Skautų inventorius</strong>
+  <nav><a href="index.html">Pradžia</a><a href="delete-account.html">Ištrinti paskyrą</a></nav>
+</header>
+<main>
+  <h1>Privatumo politika</h1>
+  <p class="muted">Paskutinį kartą atnaujinta: 2026 m. birželio 23 d.</p>
+
+  <p>Šioje privatumo politikoje paaiškinama, kaip mobilioji programėlė „Skautų inventorius“ renka, naudoja, saugo ir pašalina asmens duomenis.</p>
+
+  <h2>1. Duomenų valdytojas ir kontaktai</h2>
+  <p>Programėlės leidėjas ir techninės paslaugos valdytojas – <strong>Augustas Česnavičius („Skautų inventorius“)</strong>.</p>
+  <p>Privatumo klausimais ir norėdami pasinaudoti savo teisėmis kreipkitės:
+    <a href="mailto:privacy@skautuinventorius.lt">privacy@skautuinventorius.lt</a>.
+  </p>
+  <p>Skautų organizacija ar jos padalinys, kuris programėlėje tvarko savo narių ir veiklos duomenis, gali veikti kaip atskiras tų duomenų valdytojas. Dėl konkretaus tunto įvestų duomenų taip pat galite kreiptis į savo tunto vadovybę.</p>
+
+  <h2>2. Kokius duomenis tvarkome</h2>
+  <ul>
+    <li><strong>Paskyros duomenys:</strong> vardas, pavardė, el. pašto adresas, pasirinktinai telefono numeris ir užšifruotas slaptažodžio atvaizdas.</li>
+    <li><strong>Organizaciniai duomenys:</strong> tuntas, padalinys, narystė, pareigos, rolės, rangai ir suteiktos prieigos teisės.</li>
+    <li><strong>Naudojimosi programėle duomenys:</strong> inventoriaus, rinkinių, rezervacijų, prašymų, patikrų, renginių, užduočių ir susijusių veiksmų įrašai.</li>
+    <li><strong>Naudotojo pateiktas turinys:</strong> inventoriaus nuotraukos, sąskaitos, dokumentai, pastabos ir pasirinktiniai laukai.</li>
+    <li><strong>Įrenginio ir techniniai duomenys:</strong> pranešimų įrenginio žetonas, programėlės versija, operacinės sistemos ir įrenginio diagnostinė informacija, strigčių žurnalai.</li>
+    <li><strong>Saugumo duomenys:</strong> prisijungimo sesijos, nesėkmingų prisijungimų skaičius, slaptažodžio atkūrimo ir paskyros ištrynimo vienkartiniai žetonai.</li>
+  </ul>
+  <p>Programėlė naudoja kamerą tik QR kodams nuskaityti. Vaizdas apdorojamas įrenginyje ir nėra automatiškai išsaugomas ar siunčiamas į serverį. Pranešimų leidimas naudojamas tik programėlės veiklos pranešimams.</p>
+
+  <h2>3. Iš kur gauname duomenis</h2>
+  <p>Duomenis gauname tiesiogiai iš jūsų, jūsų įrenginio, jūsų tunto įgaliotų vadovų arba automatiškai, kai naudojatės programėle. Organizaciniai vadovai gali įvesti ar atnaujinti narių roles, rangus ir priskyrimus pagal jiems suteiktas teises.</p>
+
+  <h2>4. Kodėl ir kokiu pagrindu tvarkome duomenis</h2>
+  <table>
+    <thead><tr><th>Tikslas</th><th>Teisinis pagrindas</th></tr></thead>
+    <tbody>
+      <tr><td>Sukurti paskyrą, autentifikuoti naudotoją ir teikti pagrindines programėlės funkcijas.</td><td>Sutarties vykdymas arba veiksmai jūsų prašymu prieš pradedant naudotis paslauga.</td></tr>
+      <tr><td>Valdyti organizacines teises, inventorių, rezervacijas, renginius ir užduotis.</td><td>Paslaugos teikimas ir organizacijos teisėtas interesas valdyti jai patikėtą turtą bei veiklą.</td></tr>
+      <tr><td>Siųsti būtinus paskyros, saugumo ir veiklos pranešimus.</td><td>Paslaugos teikimas ir teisėtas interesas informuoti apie svarbius veiksmus; įrenginio pranešimai priklauso nuo jūsų leidimo.</td></tr>
+      <tr><td>Apsaugoti paskyras, tirti piktnaudžiavimą ir išlaikyti veiksmų auditą.</td><td>Teisėtas interesas užtikrinti paslaugos ir bendro inventoriaus saugumą.</td></tr>
+      <tr><td>Nustatyti bei taisyti programėlės gedimus.</td><td>Teisėtas interesas užtikrinti paslaugos patikimumą.</td></tr>
+      <tr><td>Vykdyti teisines prievoles ir ginti teisinius reikalavimus.</td><td>Teisinė prievolė arba teisėtas interesas pareikšti, vykdyti ar apginti reikalavimus.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. Ar duomenis pateikti privaloma</h2>
+  <p>Vardas, pavardė, el. paštas ir slaptažodis būtini paskyrai bei prisijungimui. Telefono numeris, nuotraukos, dokumentai ir dalis kitų laukų pateikiami pasirinktinai, nebent jūsų organizacija jų pagrįstai reikalauja konkrečiam procesui. Nepateikus būtinų duomenų negalėsime suteikti atitinkamos funkcijos.</p>
+
+  <h2>6. Kam perduodami duomenys</h2>
+  <p>Duomenis pagal būtinybę gali tvarkyti:</p>
+  <ul>
+    <li><strong>Railway</strong> – programėlės serverio ir duomenų bazės infrastruktūra;</li>
+    <li><strong>Resend</strong> – paskyros saugumo ir atkūrimo el. laiškų pristatymas;</li>
+    <li><strong>Google Firebase Cloud Messaging</strong> – įrenginio pranešimų pristatymas;</li>
+    <li><strong>Google Firebase Crashlytics</strong> – programėlės strigčių ir techninės diagnostikos analizė;</li>
+    <li>jūsų tunto ar organizacinio padalinio įgalioti naudotojai – tik pagal jiems suteiktas roles ir prieigos teises;</li>
+    <li>institucijos ar kiti gavėjai, kai tai privaloma pagal teisės aktus.</li>
+  </ul>
+  <p>Šie technologijų teikėjai veikia kaip paslaugų teikėjai ir duomenis tvarko savo infrastruktūroje pagal taikomas sutartines bei saugumo sąlygas. Duomenys neparduodami ir nenaudojami reklamai.</p>
+
+  <h2>7. Duomenų perdavimas už Europos ekonominės erdvės ribų</h2>
+  <p>Kai kurie technologijų teikėjai gali tvarkyti duomenis už Europos ekonominės erdvės ribų. Tokiais atvejais perdavimas grindžiamas taikomais teisėtais perdavimo mechanizmais, pavyzdžiui, Europos Komisijos standartinėmis sutarčių sąlygomis ar kitu pagal BDAR pripažintu pagrindu.</p>
+
+  <h2>8. Kiek laiko saugome duomenis</h2>
+  <ul>
+    <li>Paskyros ir aktyvios narystės duomenys saugomi, kol paskyra naudojama arba kol ji ištrinama.</li>
+    <li>Slaptažodžio atkūrimo ir paskyros ištrynimo nuorodos galioja 1 valandą; panaudoti ar pasibaigę įrašai vėliau gali būti pašalinami techninės priežiūros metu.</li>
+    <li>Prisijungimo atnaujinimo sesijos galioja iki 30 dienų arba panaikinamos atsijungus, pakeitus slaptažodį ar ištrynus paskyrą.</li>
+    <li>Įrenginio pranešimų duomenys saugomi, kol įrenginys susietas su paskyra arba paskyra ištrinama.</li>
+    <li>Techninės diagnostikos duomenys saugomi pagal paslaugos teikėjo nustatymus tiek, kiek būtina gedimams nustatyti ir paslaugai apsaugoti.</li>
+    <li>Inventoriaus, rezervacijų, renginių, finansiniai ir veiksmų audito įrašai gali būti saugomi ilgiau, kol jie būtini organizacijos turto apskaitai, ginčams ar teisės aktų reikalavimams. Ištrynus paskyrą šie įrašai atsiejami nuo jūsų kontaktinių duomenų ir rodomi kaip ištrinto naudotojo veiksmai.</li>
+  </ul>
+
+  <h2>9. Paskyros ir duomenų ištrynimas</h2>
+  <p>Paskyros ištrynimo galite paprašyti programėlėje pasirinkę <strong>Profilis → Paskyros ištrynimas</strong> arba naudodami
+    <a href="delete-account.html">viešą paskyros ištrynimo puslapį</a>. Prašymas patvirtinamas vienkartine nuoroda, siunčiama su paskyra susietu el. paštu.
+  </p>
+  <p>Patvirtinus ištrynimą pašalinami prisijungimo ir kontaktiniai duomenys, aktyvios narystės, rolės, įrenginių žetonai bei aktyvūs asmeniniai priskyrimai. Bendro organizacijos turto apskaitai reikalingi veiksmų įrašai gali likti anonimizuoti.</p>
+
+  <h2>10. Jūsų teisės</h2>
+  <p>Pagal taikomus duomenų apsaugos teisės aktus galite turėti teisę:</p>
+  <ul>
+    <li>gauti informaciją ir susipažinti su savo duomenimis;</li>
+    <li>ištaisyti netikslius ar papildyti neišsamius duomenis;</li>
+    <li>prašyti ištrinti duomenis arba apriboti jų tvarkymą;</li>
+    <li>nesutikti su teisėtu interesu grindžiamu tvarkymu;</li>
+    <li>gauti savo pateiktus duomenis struktūrizuotu, įprastai naudojamu formatu, kai taikoma teisė į duomenų perkeliamumą;</li>
+    <li>atšaukti sutikimą, kai konkretus tvarkymas grindžiamas sutikimu.</li>
+  </ul>
+  <p>Į pagrįstą prašymą atsakysime ne vėliau kaip per vieną mėnesį. Prieš vykdydami prašymą galime paprašyti patvirtinti tapatybę.</p>
+
+  <h2>11. Skundai</h2>
+  <p>Jeigu manote, kad jūsų duomenys tvarkomi netinkamai, pirmiausia kviečiame susisiekti su mumis. Taip pat turite teisę pateikti skundą
+    <a href="https://vdai.lrv.lt/" rel="noopener noreferrer">Valstybinei duomenų apsaugos inspekcijai</a>.
+  </p>
+
+  <h2>12. Vaikų ir nepilnamečių duomenys</h2>
+  <p>Programėlė skirta įgaliotiems skautų organizacijų nariams. Kai organizacija suteikia paskyrą nepilnamečiui arba įveda jo duomenis, ji privalo užtikrinti, kad tam turi tinkamą teisinį pagrindą ir, kai būtina, tėvų ar globėjų sutikimą. Programėlė sąmoningai nenaudoja nepilnamečių duomenų reklamai ar profiliavimui.</p>
+
+  <h2>13. Automatizuoti sprendimai</h2>
+  <p>Programėlė nepriima vien automatizuotu duomenų tvarkymu grindžiamų sprendimų, kurie naudotojui sukeltų teisines ar panašiai reikšmingas pasekmes, ir nevykdo reklaminio profiliavimo.</p>
+
+  <h2>14. Saugumas ir politikos pakeitimai</h2>
+  <p>Taikome prieigos kontrolę, slaptažodžių maišą, šifruotą duomenų perdavimą, riboto galiojimo sesijas ir kitas technines bei organizacines saugumo priemones. Vis dėlto nė viena sistema negali užtikrinti absoliutaus saugumo.</p>
+  <p>Šią politiką galime atnaujinti pasikeitus programėlės funkcijoms, paslaugų teikėjams ar teisės reikalavimams. Naujausia versija visuomet skelbiama šiame puslapyje, nurodant atnaujinimo datą.</p>
+</main>
+<footer class="muted">© 2026 Skautų inventorius · Privatumas: <a href="mailto:privacy@skautuinventorius.lt">privacy@skautuinventorius.lt</a> · Pagalba: <a href="mailto:support@skautuinventorius.lt">support@skautuinventorius.lt</a></footer>
+</body>
+</html>
