@@ -37,6 +37,8 @@ import lt.skautai.routes.requisitionRoutes
 import lt.skautai.routes.reservationRoutes
 import lt.skautai.routes.uploadRoutes
 import lt.skautai.routes.operationalRoutes
+import lt.skautai.routes.accountDeletionRoutes
+import lt.skautai.routes.publicSiteRoutes
 import lt.skautai.services.ReservationService
 import lt.skautai.routes.eventRoutes
 import lt.skautai.routes.userRoutes
@@ -47,6 +49,7 @@ import java.util.UUID
 
 object TestHelper {
     var lastPasswordResetLink: String? = null
+    var lastAccountDeletionLink: String? = null
 
     fun buildTestConfig(): MapApplicationConfig {
         val config = com.typesafe.config.ConfigFactory.load("test")
@@ -102,6 +105,7 @@ object TestHelper {
             exec("""
                 TRUNCATE TABLE
                     password_reset_tokens,
+                    account_deletion_requests,
                     auth_refresh_sessions, auth_login_throttles,
                     users, tuntai, bendras_inventory_requests, super_admins,
                     leadership_change_requests, item_check_sessions,
@@ -119,6 +123,7 @@ object TestHelper {
             """.trimIndent())
         }
         lastPasswordResetLink = null
+        lastAccountDeletionLink = null
         cleanUploadDirectories()
     }
 
@@ -138,15 +143,27 @@ object TestHelper {
             configureSecurity()
             configureSerialization()
             System.setProperty("PASSWORD_RESET_PUBLIC_BASE_URL", "https://api.example.test")
+            System.setProperty("ACCOUNT_DELETION_PUBLIC_BASE_URL", "https://api.example.test")
+            val testEmailService = object : EmailService {
+                override fun sendPasswordReset(to: String, name: String, resetUrl: String): Result<Unit> {
+                    lastPasswordResetLink = resetUrl
+                    return Result.success(Unit)
+                }
+
+                override fun sendAccountDeletionConfirmation(
+                    to: String,
+                    name: String,
+                    confirmationUrl: String
+                ): Result<Unit> {
+                    lastAccountDeletionLink = confirmationUrl
+                    return Result.success(Unit)
+                }
+            }
             val authService = AuthService(
                 environment,
-                object : EmailService {
-                    override fun sendPasswordReset(to: String, name: String, resetUrl: String): Result<Unit> {
-                        lastPasswordResetLink = resetUrl
-                        return Result.success(Unit)
-                    }
-                }
+                testEmailService
             )
+            val accountDeletionService = AccountDeletionService(testEmailService)
             val invitationService = InvitationService()
             val itemService = ItemService()
             val itemCheckService = ItemCheckService()
@@ -169,6 +186,8 @@ object TestHelper {
             PermissionSeeder.seedPermissions()
             routing {
                 operationalRoutes()
+                publicSiteRoutes()
+                accountDeletionRoutes(accountDeletionService)
                 authRoutes(authService)
                 invitationRoutes(invitationService)
                 superAdminRoutes(memberService, organizationalUnitService, firebaseNotificationService, notificationRecipientService)

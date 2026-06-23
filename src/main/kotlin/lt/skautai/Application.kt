@@ -201,6 +201,7 @@ private val supportedDotEnvKeys = setOf(
     ,"RESEND_API_KEY"
     ,"PASSWORD_RESET_EMAIL_FROM"
     ,"PASSWORD_RESET_PUBLIC_BASE_URL"
+    ,"ACCOUNT_DELETION_PUBLIC_BASE_URL"
 )
 
 private fun loadDotEnvIntoSystemProperties(dotEnvPath: Path = Path(".env")) {

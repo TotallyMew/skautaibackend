@@ -153,3 +153,23 @@ Po to tuo paciu el. pastu ir slaptazodziu galima jungtis per Android superadmin 
 - `items.origin` skiria vieneto isigyta inventoriu nuo is tunto perduoto inventoriaus; kode naudojamos reiksmes, pvz. `UNIT_ACQUIRED` ir `TRANSFERRED_FROM_TUNTAS`.
 - `item_transfers` naudoja `from_custodian_id` ir `to_custodian_id`; senu `from_owner_type`, `from_owner_id`, `to_owner_type`, `to_owner_id` lauku nera.
 - Requisitions, bendro inventoriaus prasymai ir rezervacijos naudoja `requestingUnitId` / `requestingUnitName`.
+# Google Play account deletion
+
+The backend serves the public pages required for the Google Play account-deletion and privacy disclosures:
+
+- `/delete-account.html`
+- `/privacy.html`
+
+The in-app deletion flow requires the current password, sends a one-time email link, and only deletes the account after an explicit confirmation on the web page.
+
+Production environment:
+
+```text
+ACCOUNT_DELETION_PUBLIC_BASE_URL=https://skautaibackend-production.up.railway.app
+```
+
+After attaching the custom domain to the Railway service, change the value to `https://skautuinventorius.lt`. The Play Console account-deletion URL can then be:
+
+```text
+https://skautuinventorius.lt/delete-account.html
+```

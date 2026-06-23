@@ -40,12 +40,28 @@ CREATE TABLE users (
                        password_hash VARCHAR(255) NOT NULL,
                        phone VARCHAR(20),
                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                       deleted_at TIMESTAMP
 );
 
 CREATE TRIGGER update_users_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TABLE account_deletion_requests (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    requested_via VARCHAR(20) NOT NULL CHECK (requested_via IN ('APP', 'WEB')),
+    expires_at TIMESTAMP NOT NULL,
+    confirmed_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_account_deletion_requests_user
+    ON account_deletion_requests(user_id, created_at DESC);
+CREATE INDEX idx_account_deletion_requests_expiry
+    ON account_deletion_requests(expires_at);
 
 -- User tuntas memberships
 CREATE TABLE user_tuntas_memberships (

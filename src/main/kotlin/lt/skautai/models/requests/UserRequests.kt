@@ -15,3 +15,13 @@ data class ChangeMyPasswordRequest(
     val currentPassword: String,
     val newPassword: String
 )
+
+@Serializable
+data class RequestAccountDeletionRequest(
+    val password: String
+)
+
+@Serializable
+data class PublicAccountDeletionRequest(
+    val email: String
+)

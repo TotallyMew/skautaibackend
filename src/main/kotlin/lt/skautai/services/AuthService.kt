@@ -320,7 +320,7 @@ class AuthService(
 
         return transaction {
             val user = Users.selectAll()
-                .where { Users.email eq email }
+                .where { (Users.email eq email) and Users.deletedAt.isNull() }
                 .firstOrNull()
 
             if (user != null && BCrypt.checkpw(request.password, user[Users.passwordHash])) {
@@ -479,7 +479,7 @@ class AuthService(
             when (type) {
                 "user" -> {
                     val user = Users.selectAll()
-                        .where { Users.id eq userUuid }
+                        .where { (Users.id eq userUuid) and Users.deletedAt.isNull() }
                         .firstOrNull()
                         ?: return@transaction Result.failure(Exception("User not found"))
 
@@ -555,7 +555,7 @@ class AuthService(
 
         data class ResetSubject(val id: UUID, val type: String, val name: String)
         val subject = transaction {
-            Users.selectAll().where { Users.email eq email }.firstOrNull()?.let {
+            Users.selectAll().where { (Users.email eq email) and Users.deletedAt.isNull() }.firstOrNull()?.let {
                 ResetSubject(it[Users.id], "user", it[Users.name])
             } ?: SuperAdmins.selectAll().where { SuperAdmins.email eq email }.firstOrNull()?.let {
                 ResetSubject(it[SuperAdmins.id], "super_admin", it[SuperAdmins.name])

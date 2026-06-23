@@ -49,6 +49,9 @@ import lt.skautai.services.RequisitionService
 import lt.skautai.routes.rolesRoutes
 import lt.skautai.routes.uploadRoutes
 import lt.skautai.routes.operationalRoutes
+import lt.skautai.routes.accountDeletionRoutes
+import lt.skautai.routes.publicSiteRoutes
+import lt.skautai.services.AccountDeletionService
 
 fun Application.configureRouting() {
     val authService = AuthService(environment)
@@ -72,9 +75,12 @@ fun Application.configureRouting() {
     val firebaseNotificationService = FirebaseNotificationService(deviceService, notificationService)
     val eventInventoryReminderService = EventInventoryReminderService(firebaseNotificationService)
     val notificationRecipientService = NotificationRecipientService()
+    val accountDeletionService = AccountDeletionService()
 
     routing {
         operationalRoutes()
+        publicSiteRoutes()
+        accountDeletionRoutes(accountDeletionService)
         authRoutes(authService)
         invitationRoutes(invitationService)
         superAdminRoutes(

@@ -12,6 +12,7 @@ object Users : Table("users") {
     val phone = varchar("phone", 20).nullable()
     val createdAt = timestamp("created_at")
     val updatedAt = timestamp("updated_at")
+    val deletedAt = timestamp("deleted_at").nullable()
 
     override val primaryKey = PrimaryKey(id)
 }

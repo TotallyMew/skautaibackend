@@ -37,7 +37,13 @@ fun Application.configureSecurity() {
                 if (userId == null || tokenType != "user" || tokenUse != "access") {
                     return@validate null
                 }
-                runCatching { UUID.fromString(userId) }.getOrNull() ?: return@validate null
+                val parsedUserId = runCatching { UUID.fromString(userId) }.getOrNull() ?: return@validate null
+                val activeUser = transaction {
+                    Users.selectAll()
+                        .where { (Users.id eq parsedUserId) and Users.deletedAt.isNull() }
+                        .firstOrNull() != null
+                }
+                if (!activeUser) return@validate null
                 JWTPrincipal(credential.payload)
             }
             challenge { _, _ ->
