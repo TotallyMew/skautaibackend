@@ -417,6 +417,10 @@ CREATE TABLE event_inventory_requests (
                                           target_group VARCHAR(30),
                                           requested_by_user_id UUID NOT NULL REFERENCES users(id),
                                           quantity INTEGER NOT NULL CHECK (quantity > 0),
+                                          provider VARCHAR(20) NOT NULL DEFAULT 'UKVEDYS' CHECK (provider IN ('UNIT', 'UKVEDYS')),
+                                          due_at TIMESTAMP,
+                                          responsible_user_id UUID REFERENCES users(id),
+                                          reminder_sent_at TIMESTAMP,
                                           status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'FULFILLED', 'SELF_PROVIDED')),
                                           notes TEXT,
                                           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -424,6 +428,26 @@ CREATE TABLE event_inventory_requests (
                                           reviewed_at TIMESTAMP,
                                           fulfilled_at TIMESTAMP,
                                           resolved_by_user_id UUID REFERENCES users(id)
+);
+
+CREATE TABLE event_inventory_request_history (
+                                                   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                                   request_id UUID NOT NULL REFERENCES event_inventory_requests(id) ON DELETE CASCADE,
+                                                   from_provider VARCHAR(20) CHECK (from_provider IS NULL OR from_provider IN ('UNIT', 'UKVEDYS')),
+                                                   to_provider VARCHAR(20) NOT NULL CHECK (to_provider IN ('UNIT', 'UKVEDYS')),
+                                                   changed_by_user_id UUID NOT NULL REFERENCES users(id),
+                                                   notes TEXT,
+                                                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE senior_unit_access_audit (
+                                         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                         tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                                         unit_id UUID NOT NULL REFERENCES organizational_units(id) ON DELETE CASCADE,
+                                         actor_user_id UUID NOT NULL REFERENCES users(id),
+                                         action VARCHAR(50) NOT NULL,
+                                         access_mode VARCHAR(20) NOT NULL CHECK (access_mode IN ('INTERNAL', 'PUBLIC')),
+                                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE event_inventory_movements (
@@ -442,6 +466,22 @@ CREATE TABLE event_inventory_movements (
                                            client_request_id VARCHAR(100),
                                            notes TEXT,
                                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE event_inventory_transfer_requests (
+                                                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                                    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                                                    source_custody_id UUID NOT NULL REFERENCES event_inventory_custody(id),
+                                                    event_inventory_item_id UUID NOT NULL REFERENCES event_inventory_items(id),
+                                                    requested_by_user_id UUID NOT NULL REFERENCES users(id),
+                                                    requested_from_user_id UUID NOT NULL REFERENCES users(id),
+                                                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                                                    status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')),
+                                                    notes TEXT,
+                                                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                                    responded_at TIMESTAMP,
+                                                    responded_by_user_id UUID REFERENCES users(id),
+                                                    movement_id UUID REFERENCES event_inventory_movements(id)
 );
 
 -- Event purchases: one receipt/invoice can cover multiple missing event inventory lines
@@ -783,6 +823,7 @@ CREATE TABLE unit_assignments (
                                   organizational_unit_id UUID NOT NULL REFERENCES organizational_units(id) ON DELETE CASCADE,
                                   tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
                                   assignment_type VARCHAR(30) NOT NULL DEFAULT 'MEMBER',
+                                  is_publicly_visible BOOLEAN NOT NULL DEFAULT FALSE,
                                   assigned_by_user_id UUID REFERENCES users(id),
                                   joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                                   left_at TIMESTAMP
@@ -872,7 +913,12 @@ CREATE INDEX idx_event_inventory_allocations_item ON event_inventory_allocations
 CREATE INDEX idx_event_inventory_allocations_bucket ON event_inventory_allocations(bucket_id);
 CREATE INDEX idx_event_inventory_custody_parent ON event_inventory_custody(parent_custody_id);
 CREATE INDEX idx_event_inventory_requests_event ON event_inventory_requests(event_id);
+CREATE INDEX idx_event_inventory_requests_provider_status ON event_inventory_requests(event_id, provider, status, created_at);
 CREATE UNIQUE INDEX idx_event_inventory_movements_client_request ON event_inventory_movements(event_id, client_request_id) WHERE client_request_id IS NOT NULL;
+CREATE INDEX idx_event_transfer_requests_event_status ON event_inventory_transfer_requests(event_id, status, created_at);
+CREATE INDEX idx_event_transfer_requests_from_user ON event_inventory_transfer_requests(requested_from_user_id, status, created_at);
+CREATE INDEX idx_event_transfer_requests_requester ON event_inventory_transfer_requests(requested_by_user_id, status, created_at);
+CREATE UNIQUE INDEX idx_event_transfer_requests_pending_unique ON event_inventory_transfer_requests(source_custody_id, requested_by_user_id) WHERE status = 'PENDING';
 CREATE INDEX idx_event_purchases_event ON event_purchases(event_id);
 CREATE INDEX idx_event_purchase_invoices_purchase_id ON event_purchase_invoices(purchase_id);
 CREATE INDEX idx_event_extra_costs_event ON event_extra_costs(event_id);
@@ -909,6 +955,7 @@ CREATE INDEX idx_events_tuntas_updated_at ON events(tuntas_id, updated_at);
 CREATE INDEX idx_user_tuntas_memberships_active_user_tuntas ON user_tuntas_memberships(user_id, tuntas_id) WHERE left_at IS NULL;
 CREATE INDEX idx_user_leadership_roles_active_user_tuntas ON user_leadership_roles(user_id, tuntas_id, role_id, organizational_unit_id) WHERE term_status = 'ACTIVE' AND left_at IS NULL;
 CREATE INDEX idx_unit_assignments_active_user_tuntas ON unit_assignments(user_id, tuntas_id, organizational_unit_id) WHERE left_at IS NULL;
+CREATE INDEX idx_unit_assignments_public_visibility ON unit_assignments(organizational_unit_id, is_publicly_visible) WHERE left_at IS NULL;
 CREATE INDEX idx_item_check_sessions_tuntas_context ON item_check_sessions(tuntas_id, context_type);
 CREATE INDEX idx_item_check_sessions_event ON item_check_sessions(event_id);
 CREATE INDEX idx_item_check_sessions_tuntas_status_scope ON item_check_sessions(tuntas_id, status, scope_custodian_id);

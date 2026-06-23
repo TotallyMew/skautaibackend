@@ -38,7 +38,10 @@ data class EventResponse(
 @Serializable
 data class EventListResponse(
     val events: List<EventResponse>,
-    val total: Int
+    val total: Int,
+    val limit: Int? = null,
+    val offset: Int = 0,
+    val hasMore: Boolean = false
 )
 
 @Serializable
@@ -229,7 +232,10 @@ data class EventPurchaseResponse(
 @Serializable
 data class EventPurchaseListResponse(
     val purchases: List<EventPurchaseResponse>,
-    val total: Int
+    val total: Int,
+    val limit: Int? = null,
+    val offset: Int = 0,
+    val hasMore: Boolean = false
 )
 
 @Serializable
@@ -321,6 +327,32 @@ data class EventInventoryMovementListResponse(
 )
 
 @Serializable
+data class EventInventoryTransferRequestResponse(
+    val id: String,
+    val eventId: String,
+    val sourceCustodyId: String,
+    val eventInventoryItemId: String,
+    val itemName: String,
+    val requestedByUserId: String,
+    val requestedByUserName: String? = null,
+    val requestedFromUserId: String,
+    val requestedFromUserName: String? = null,
+    val quantity: Int,
+    val status: String,
+    val notes: String? = null,
+    val createdAt: String,
+    val respondedAt: String? = null,
+    val respondedByUserId: String? = null,
+    val movementId: String? = null
+)
+
+@Serializable
+data class EventInventoryTransferRequestListResponse(
+    val requests: List<EventInventoryTransferRequestResponse>,
+    val total: Int
+)
+
+@Serializable
 data class EventInventoryRequestResponse(
     val id: String,
     val eventId: String,
@@ -341,13 +373,49 @@ data class EventInventoryRequestResponse(
     val reviewedByUserName: String? = null,
     val fulfilledAt: String? = null,
     val resolvedByUserId: String? = null,
-    val resolvedByUserName: String? = null
+    val resolvedByUserName: String? = null,
+    val provider: String = "UKVEDYS",
+    val dueAt: String? = null,
+    val responsibleUserId: String? = null,
+    val responsibleUserName: String? = null,
+    val providerHistory: List<EventInventoryRequestProviderHistoryResponse> = emptyList()
+)
+
+@Serializable
+data class EventInventoryRequestProviderHistoryResponse(
+    val id: String,
+    val fromProvider: String? = null,
+    val toProvider: String,
+    val changedByUserId: String,
+    val changedByUserName: String? = null,
+    val notes: String? = null,
+    val createdAt: String
 )
 
 @Serializable
 data class EventInventoryRequestListResponse(
     val requests: List<EventInventoryRequestResponse>,
     val total: Int
+)
+
+@Serializable
+data class EventInventoryConflictResponse(
+    val itemId: String,
+    val itemName: String,
+    val availableQuantity: Int,
+    val requestedQuantity: Int,
+    val overlappingEvents: List<String>
+)
+
+@Serializable
+data class EventInventoryReadinessResponse(
+    val readinessPercent: Int,
+    val totalQuantity: Int,
+    val completedQuantity: Int,
+    val openQuantity: Int,
+    val overdueCount: Int,
+    val unassignedCount: Int,
+    val conflicts: List<EventInventoryConflictResponse>
 )
 
 @Serializable

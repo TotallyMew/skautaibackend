@@ -8,16 +8,51 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import lt.skautai.models.requests.*
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.models.responses.EventInventoryRequestResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.plugins.resolveUserPermissions
 import lt.skautai.services.EventService
 import lt.skautai.services.EventPackingService
+import lt.skautai.services.FirebaseNotificationService
 import lt.skautai.services.MemberService
 import lt.skautai.util.UploadStorage
 import java.util.*
 
-fun Route.eventRoutes(eventService: EventService, memberService: MemberService, eventPackingService: EventPackingService) {
+private fun notifyInventoryRequestAssignment(
+    firebaseNotificationService: FirebaseNotificationService,
+    tuntasId: UUID,
+    response: EventInventoryRequestResponse,
+    assignmentChanged: Boolean
+) {
+    if (!assignmentChanged) return
+    val responsibleUserId = response.responsibleUserId
+        ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        ?: return
+    firebaseNotificationService.sendToUser(
+        userId = responsibleUserId,
+        title = "Priskirtas renginio poreikis",
+        body = buildString {
+            append(response.itemName)
+            response.pastovykleName?.let { append(" (${it})") }
+            response.dueAt?.take(10)?.let { append(", terminas $it") }
+        },
+        data = mapOf(
+            "resource" to "event_inventory_request",
+            "entityId" to response.id,
+            "requestId" to response.id,
+            "eventId" to response.eventId,
+            "tuntasId" to tuntasId.toString()
+        )
+    )
+}
+
+fun Route.eventRoutes(
+    eventService: EventService,
+    memberService: MemberService,
+    eventPackingService: EventPackingService,
+    firebaseNotificationService: FirebaseNotificationService
+) {
     authenticate("auth-jwt") {
         route("/api/events") {
 
@@ -32,10 +67,20 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService, 
                 val type = call.request.queryParameters["type"]
                 val status = call.request.queryParameters["status"]
                 val updatedAfter = call.request.queryParameters["updatedAfter"]?.let(::parseInstantOrNull)
+                val limit = call.request.queryParameters["limit"]?.let { raw ->
+                    raw.toIntOrNull()?.takeIf { it in 1..200 }
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("limit must be between 1 and 200"))
+                }
+                val offset = call.request.queryParameters["offset"]?.let { raw ->
+                    raw.toIntOrNull()?.takeIf { it >= 0 }
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("offset must be zero or greater"))
+                } ?: 0
 
                 val result = when {
-                    eventService.canViewEvents(userId, tuntasUUID) -> eventService.getVisibleEvents(tuntasUUID, userId, type, status, updatedAfter)
-                    eventService.hasResponsiblePastovykle(userId, tuntasUUID) -> eventService.getResponsibleEvents(tuntasUUID, userId, type, status, updatedAfter)
+                    eventService.canViewEvents(userId, tuntasUUID) ->
+                        eventService.getVisibleEvents(tuntasUUID, userId, type, status, updatedAfter, limit, offset)
+                    eventService.hasResponsiblePastovykle(userId, tuntasUUID) ->
+                        eventService.getResponsibleEvents(tuntasUUID, userId, type, status, updatedAfter, limit, offset)
                     else -> {
                         call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                         return@get
@@ -292,6 +337,30 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService, 
                             call.respond(status, ErrorResponse(e.message ?: "Failed to create inventory request"))
                         }
                 }
+
+                put("{requestId}") {
+                    val userId = currentUserId() ?: return@put
+                    val tuntasUUID = parseTuntasId() ?: return@put
+                    val eventUUID = parseEventId() ?: return@put
+                    val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@put
+                    if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
+                    val request = call.receive<UpdateEventInventoryRequestRequest>()
+                    eventService.updateInventoryRequest(eventUUID, requestUUID, tuntasUUID, userId, request)
+                        .onSuccess {
+                            notifyInventoryRequestAssignment(firebaseNotificationService, tuntasUUID, it, request.responsibleUserId != null)
+                            call.respond(HttpStatusCode.OK, it)
+                        }
+                        .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update inventory request")) }
+                }
+            }
+
+            get("{id}/inventory-readiness") {
+                val tuntasUUID = parseTuntasId() ?: return@get
+                val eventUUID = parseEventId() ?: return@get
+                if (!canViewEventInventory(eventService, tuntasUUID, eventUUID)) return@get
+                eventService.getInventoryReadiness(eventUUID, tuntasUUID)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch inventory readiness")) }
             }
 
             route("{id}/inventory-buckets") {
@@ -486,12 +555,113 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService, 
                 }
             }
 
+            route("{id}/inventory-transfer-requests") {
+                get {
+                    val userId = currentUserId() ?: return@get
+                    val tuntasUUID = parseTuntasId() ?: return@get
+                    val eventUUID = parseEventId() ?: return@get
+                    if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
+                    val includeAll = eventService.canManageEventInventory(eventUUID, tuntasUUID, userId)
+                    eventService.getInventoryTransferRequests(eventUUID, tuntasUUID, userId, includeAll)
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { e ->
+                            call.respond(
+                                HttpStatusCode.BadRequest,
+                                ErrorResponse(e.message ?: "Failed to fetch transfer requests")
+                            )
+                        }
+                }
+
+                post {
+                    val userId = currentUserId() ?: return@post
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    if (!eventService.isTuntasMember(userId, tuntasUUID)) {
+                        return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
+                    }
+                    val request = call.receive<CreateEventInventoryTransferRequest>()
+                    eventService.createInventoryTransferRequest(eventUUID, tuntasUUID, userId, request)
+                        .onSuccess { response ->
+                            firebaseNotificationService.sendToUser(
+                                userId = UUID.fromString(response.requestedFromUserId),
+                                title = "Inventoriaus perdavimo prašymas",
+                                body = "${response.requestedByUserName ?: "Renginio dalyvis"} prašo perduoti ${response.itemName} (${response.quantity}).",
+                                data = mapOf(
+                                    "resource" to "event_inventory_transfer_request",
+                                    "entityId" to response.id,
+                                    "eventId" to response.eventId,
+                                    "tuntasId" to tuntasUUID.toString()
+                                )
+                            )
+                            call.respond(HttpStatusCode.Created, response)
+                        }
+                        .onFailure { e ->
+                            call.respond(
+                                HttpStatusCode.BadRequest,
+                                ErrorResponse(e.message ?: "Failed to create transfer request")
+                            )
+                        }
+                }
+
+                post("{requestId}/respond") {
+                    val userId = currentUserId() ?: return@post
+                    val tuntasUUID = parseTuntasId() ?: return@post
+                    val eventUUID = parseEventId() ?: return@post
+                    val requestUUID = parseUuidParameter("requestId", "Invalid transfer request ID") ?: return@post
+                    val canManageInventory = eventService.canManageEventInventory(eventUUID, tuntasUUID, userId)
+                    val request = call.receive<RespondEventInventoryTransferRequest>()
+                    eventService.respondToInventoryTransferRequest(
+                        eventUUID,
+                        requestUUID,
+                        tuntasUUID,
+                        userId,
+                        canManageInventory,
+                        request
+                    )
+                        .onSuccess { response ->
+                            firebaseNotificationService.sendToUser(
+                                userId = UUID.fromString(response.requestedByUserId),
+                                title = if (request.approve) "Inventorius perduotas" else "Perdavimo prašymas atmestas",
+                                body = if (request.approve) {
+                                    "${response.requestedFromUserName ?: "Turėtojas"} perdavė ${response.itemName} (${response.quantity})."
+                                } else {
+                                    "${response.requestedFromUserName ?: "Turėtojas"} atmetė prašymą dėl ${response.itemName}."
+                                },
+                                data = mapOf(
+                                    "resource" to "event_inventory_transfer_request",
+                                    "entityId" to response.id,
+                                    "eventId" to response.eventId,
+                                    "tuntasId" to tuntasUUID.toString()
+                                )
+                            )
+                            call.respond(HttpStatusCode.OK, response)
+                        }
+                        .onFailure { e ->
+                            val message = e.message ?: "Failed to respond to transfer request"
+                            val status = if ("Only the current holder" in message) {
+                                HttpStatusCode.Forbidden
+                            } else {
+                                HttpStatusCode.BadRequest
+                            }
+                            call.respond(status, ErrorResponse(message))
+                        }
+                }
+            }
+
             route("{id}/purchases") {
                 get {
                     val tuntasUUID = parseTuntasId() ?: return@get
                     val eventUUID = parseEventId() ?: return@get
                     if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@get
-                    eventService.getPurchases(eventUUID, tuntasUUID)
+                    val limit = call.request.queryParameters["limit"]?.let { raw ->
+                        raw.toIntOrNull()?.takeIf { it in 1..200 }
+                            ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("limit must be between 1 and 200"))
+                    }
+                    val offset = call.request.queryParameters["offset"]?.let { raw ->
+                        raw.toIntOrNull()?.takeIf { it >= 0 }
+                            ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("offset must be zero or greater"))
+                    } ?: 0
+                    eventService.getPurchases(eventUUID, tuntasUUID, limit, offset)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch purchases")) }
                 }
@@ -1092,11 +1262,30 @@ fun Route.eventRoutes(eventService: EventService, memberService: MemberService, 
 
                         val request = call.receive<CreatePastovykleInventoryRequestRequest>()
                         eventService.createPastovykleRequest(eventUUID, pastovykleUUID, tuntasUUID, userId, request)
-                            .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                            .onSuccess {
+                                notifyInventoryRequestAssignment(firebaseNotificationService, tuntasUUID, it, request.responsibleUserId != null)
+                                call.respond(HttpStatusCode.Created, it)
+                            }
                             .onFailure { e ->
                                 val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
                                 call.respond(status, ErrorResponse(e.message ?: "Failed to create pastovykle request"))
                             }
+                    }
+
+                    put("{requestId}") {
+                        val userId = currentUserId() ?: return@put
+                        val tuntasUUID = parseTuntasId() ?: return@put
+                        val eventUUID = parseEventId() ?: return@put
+                        val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovykle ID") ?: return@put
+                        val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@put
+                        if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@put
+                        val request = call.receive<UpdateEventInventoryRequestRequest>()
+                        eventService.updateInventoryRequest(eventUUID, requestUUID, tuntasUUID, userId, request)
+                            .onSuccess {
+                                notifyInventoryRequestAssignment(firebaseNotificationService, tuntasUUID, it, request.responsibleUserId != null)
+                                call.respond(HttpStatusCode.OK, it)
+                            }
+                            .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update request")) }
                     }
 
                     post("{requestId}/approve") {

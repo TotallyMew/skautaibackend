@@ -40,38 +40,81 @@ class ReservationService {
         approvableUnitIds: List<UUID>,
         itemId: UUID? = null,
         status: String? = null,
-        updatedAfter: Instant? = null
+        updatedAfter: Instant? = null,
+        limit: Int? = null,
+        offset: Int = 0
     ): Result<ReservationListResponse> {
         return transaction {
-            var query = Reservations.selectAll()
-                .where { Reservations.tuntasId eq tuntasId }
+            var filters: Op<Boolean> = Op.build { Reservations.tuntasId eq tuntasId }
+            val protectedSeniorUnitIds = SeniorUnitPrivacyService.protectedUnitIdsFor(userId, tuntasId)
+            if (protectedSeniorUnitIds.isNotEmpty()) {
+                val protectedGroupIds = Reservations
+                    .innerJoin(Items, { Reservations.itemId }, { Items.id })
+                    .select(Reservations.groupId)
+                    .where {
+                        (Reservations.tuntasId eq tuntasId) and
+                            (Items.custodianId inList protectedSeniorUnitIds.toList()) and
+                            (Items.origin neq "TRANSFERRED_FROM_TUNTAS")
+                    }
+                    .map { it[Reservations.groupId] }
+                    .distinct()
+                if (protectedGroupIds.isNotEmpty()) {
+                    filters = filters and Op.build { Reservations.groupId notInList protectedGroupIds }
+                }
+            }
 
             when {
                 canViewAll -> {}
-                approvableUnitIds.isNotEmpty() -> query = query.andWhere {
+                approvableUnitIds.isNotEmpty() -> filters = filters and Op.build {
                     (Reservations.requestingUnitId inList approvableUnitIds) or
                         (Reservations.reservedByUserId eq userId)
                 }
-                else -> query = query.andWhere { Reservations.reservedByUserId eq userId }
+                else -> filters = filters and Op.build { Reservations.reservedByUserId eq userId }
             }
 
             if (updatedAfter == null) {
-                itemId?.let { query = query.andWhere { Reservations.itemId eq it } }
-                status?.let { query = query.andWhere { Reservations.status eq it } }
+                itemId?.let { filters = filters and Op.build { Reservations.itemId eq it } }
+                status?.let { filters = filters and Op.build { Reservations.status eq it } }
             }
-            updatedAfter?.let { since -> query = query.andWhere { Reservations.updatedAt greater since } }
+            updatedAfter?.let { since -> filters = filters and Op.build { Reservations.updatedAt greater since } }
 
-            val reservationRows = query
-                .orderBy(Reservations.createdAt, SortOrder.DESC)
-                .toList()
+            val latestCreatedAt = Reservations.createdAt.max()
+            val groupedQuery = Reservations
+                .select(Reservations.groupId, latestCreatedAt)
+                .where { filters }
+                .groupBy(Reservations.groupId)
+                .orderBy(latestCreatedAt, SortOrder.DESC)
+            val total = groupedQuery.count().toInt()
+            val pageGroupIds = (limit?.let { groupedQuery.limit(it, offset.toLong()) } ?: groupedQuery)
+                .map { it[Reservations.groupId] }
+
+            val pageGroupOrder = pageGroupIds.withIndex().associate { it.value to it.index }
+            val reservationRows = if (pageGroupIds.isEmpty()) {
+                emptyList()
+            } else {
+                Reservations.selectAll()
+                    .where { filters and (Reservations.groupId inList pageGroupIds) }
+                    .orderBy(Reservations.createdAt, SortOrder.DESC)
+                    .toList()
+            }
 
             val reservations = reservationRows
                 .groupBy { it[Reservations.groupId] }
-                .values
-                .map { toReservationResponse(it) }
-                .sortedByDescending { it.createdAt }
+                .toList()
+                .sortedBy { (groupId, _) -> pageGroupOrder[groupId] ?: Int.MAX_VALUE }
+            val hydration = buildReservationListHydration(reservations.map { it.second })
+            val reservationResponses = reservations
+                .map { (_, rows) -> toReservationResponse(rows, hydration) }
 
-            Result.success(ReservationListResponse(reservations = reservations, total = reservations.size))
+            Result.success(
+                ReservationListResponse(
+                    reservations = reservationResponses,
+                    total = total,
+                    limit = limit,
+                    offset = offset,
+                    hasMore = limit != null && offset + reservationResponses.size < total
+                )
+            )
         }
     }
 
@@ -86,6 +129,9 @@ class ReservationService {
             val rows = reservationRows(groupId, tuntasId)
 
             if (rows.isEmpty()) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
+            if (hasProtectedSeniorOwnedItem(rows, userId, tuntasId)) {
                 return@transaction Result.failure(Exception("Reservation not found"))
             }
             if (!canAccessReservation(rows, userId, canViewAll, approvableUnitIds)) {
@@ -480,6 +526,9 @@ class ReservationService {
             if (rows.isEmpty()) {
                 return@transaction Result.failure(Exception("Reservation not found"))
             }
+            if (hasProtectedSeniorOwnedItem(rows, reviewerUserId, tuntasId)) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
             if (rows.any { it[Reservations.status] !in listOf("PENDING", "APPROVED") }) {
                 return@transaction Result.failure(Exception("Only pending reservations can be reviewed"))
             }
@@ -554,6 +603,9 @@ class ReservationService {
             if (rows.isEmpty()) {
                 return@transaction Result.failure(Exception("Reservation not found"))
             }
+            if (hasProtectedSeniorOwnedItem(rows, userId, tuntasId)) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
             if (!canAccessReservation(rows, userId, canViewAll, approvableUnitIds)) {
                 return@transaction Result.failure(Exception("Insufficient permissions"))
             }
@@ -583,6 +635,9 @@ class ReservationService {
 
             val rows = reservationRows(groupId, tuntasId)
             if (rows.isEmpty()) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
+            if (hasProtectedSeniorOwnedItem(rows, userId, tuntasId)) {
                 return@transaction Result.failure(Exception("Reservation not found"))
             }
 
@@ -722,6 +777,9 @@ class ReservationService {
             if (rows.any { it[Reservations.status] !in listOf("APPROVED", "ACTIVE") }) {
                 return@transaction Result.failure(Exception("Pickup time can be set only for approved reservations"))
             }
+            if (hasProtectedSeniorOwnedItem(rows, userId, tuntasId)) {
+                return@transaction Result.failure(Exception("Reservation not found"))
+            }
             val canEditPickup = canAccessReservation(rows, userId, canManageTopLevel, approvableUnitIds)
             if (!canEditPickup) {
                 return@transaction Result.failure(Exception("Insufficient permissions"))
@@ -764,6 +822,9 @@ class ReservationService {
             }
             if (rows.any { it[Reservations.status] != "ACTIVE" }) {
                 return@transaction Result.failure(Exception("Return time can be set only for active reservations"))
+            }
+            if (hasProtectedSeniorOwnedItem(rows, userId, tuntasId)) {
+                return@transaction Result.failure(Exception("Reservation not found"))
             }
             if (!canAccessReservation(rows, userId, canManageTopLevel, approvableUnitIds)) {
                 return@transaction Result.failure(Exception("Insufficient permissions"))
@@ -868,6 +929,15 @@ class ReservationService {
         val returned: Int = 0
     )
 
+    private data class ReservationListHydration(
+        val itemsById: Map<UUID, ResultRow>,
+        val usersById: Map<UUID, ResultRow>,
+        val unitsById: Map<UUID, ResultRow>,
+        val locationNodesById: Map<UUID, LocationNodeData>,
+        val movementTotalsByGroupId: Map<UUID, Map<UUID, MovementTotals>>,
+        val overlappingOtherByGroupAndItemId: Map<Pair<UUID, UUID>, Int>
+    )
+
     private fun computeOverallStatus(unitReviewStatus: String, topLevelReviewStatus: String): String {
         val statuses = listOf(unitReviewStatus, topLevelReviewStatus)
         return when {
@@ -885,6 +955,107 @@ class ReservationService {
             }
             .orderBy(Reservations.createdAt, SortOrder.ASC)
             .toList()
+    }
+
+    private fun buildReservationListHydration(groupRows: List<List<ResultRow>>): ReservationListHydration {
+        if (groupRows.isEmpty()) {
+            return ReservationListHydration(
+                itemsById = emptyMap(),
+                usersById = emptyMap(),
+                unitsById = emptyMap(),
+                locationNodesById = emptyMap(),
+                movementTotalsByGroupId = emptyMap(),
+                overlappingOtherByGroupAndItemId = emptyMap()
+            )
+        }
+
+        val rows = groupRows.flatten()
+        val itemIds = rows.map { it[Reservations.itemId] }.distinct()
+        val groupIds = rows.map { it[Reservations.groupId] }.distinct()
+        val itemsById = Items.selectAll()
+            .where { Items.id inList itemIds }
+            .associateBy { it[Items.id] }
+        val usersById = Users.selectAll()
+            .where { Users.id inList rows.map { it[Reservations.reservedByUserId] }.distinct() }
+            .associateBy { it[Users.id] }
+        val unitIds = buildSet {
+            rows.mapNotNullTo(this) { it[Reservations.requestingUnitId] }
+            itemsById.values.mapNotNullTo(this) { it[Items.custodianId] }
+        }.toList()
+        val unitsById = if (unitIds.isEmpty()) {
+            emptyMap()
+        } else {
+            OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.id inList unitIds }
+                .associateBy { it[OrganizationalUnits.id] }
+        }
+        val locationIds = rows.flatMap {
+            listOfNotNull(it[Reservations.pickupLocationId], it[Reservations.returnLocationId])
+        }.distinct()
+        val locationNodesById = if (locationIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Locations.selectAll()
+                .where { Locations.id inList locationIds }
+                .associate { it[Locations.id] to it.toLocationNodeData() }
+        }
+        val movementRows = ReservationMovements.selectAll()
+            .where { ReservationMovements.reservationGroupId inList groupIds }
+            .toList()
+        val movementTotalsByGroupId = movementRows
+            .groupBy { it[ReservationMovements.reservationGroupId] }
+            .mapValues { (_, groupMovementRows) ->
+                groupMovementRows
+                    .groupBy { it[ReservationMovements.itemId] }
+                    .mapValues { (_, itemMovementRows) ->
+                        MovementTotals(
+                            issued = itemMovementRows.filter { it[ReservationMovements.type] == "ISSUE" }
+                                .sumOf { it[ReservationMovements.quantity] },
+                            returnedMarked = itemMovementRows.filter { it[ReservationMovements.type] == "RETURN_MARKED" }
+                                .sumOf { it[ReservationMovements.quantity] },
+                            returned = itemMovementRows.filter { it[ReservationMovements.type] == "RETURN" }
+                                .sumOf { it[ReservationMovements.quantity] }
+                        )
+                    }
+            }
+        val earliestStartDate = rows.minOf { it[Reservations.startDate] }
+        val latestEndDate = rows.maxOf { it[Reservations.endDate] }
+        val activeOverlaps = Reservations
+            .select(Reservations.itemId, Reservations.groupId, Reservations.startDate, Reservations.endDate, Reservations.quantity)
+            .where {
+                (Reservations.itemId inList itemIds) and
+                    (Reservations.status inList listOf("APPROVED", "ACTIVE")) and
+                    (Reservations.startDate lessEq latestEndDate) and
+                    (Reservations.endDate greaterEq earliestStartDate)
+            }
+            .toList()
+        val overlappingOtherByGroupAndItemId = groupRows
+            .flatMap { reservationRows ->
+                val first = reservationRows.first()
+                val groupId = first[Reservations.groupId]
+                val startDate = first[Reservations.startDate]
+                val endDate = first[Reservations.endDate]
+                reservationRows.map { reservationRow ->
+                    val itemId = reservationRow[Reservations.itemId]
+                    val quantity = activeOverlaps
+                        .asSequence()
+                        .filter { it[Reservations.itemId] == itemId }
+                        .filter { it[Reservations.groupId] != groupId }
+                        .filter { it[Reservations.startDate] <= endDate && it[Reservations.endDate] >= startDate }
+                        .sumOf { it[Reservations.quantity] }
+                    (groupId to itemId) to quantity
+                }
+            }
+            .toMap()
+
+        return ReservationListHydration(
+            itemsById = itemsById,
+            usersById = usersById,
+            unitsById = unitsById,
+            locationNodesById = locationNodesById,
+            movementTotalsByGroupId = movementTotalsByGroupId,
+            overlappingOtherByGroupAndItemId = overlappingOtherByGroupAndItemId
+        )
     }
 
     private fun updateTimeProposal(
@@ -986,6 +1157,23 @@ class ReservationService {
             .any { it in approvableUnitIds }
     }
 
+    private fun hasProtectedSeniorOwnedItem(
+        rows: List<ResultRow>,
+        userId: UUID,
+        tuntasId: UUID
+    ): Boolean {
+        val protectedUnitIds = SeniorUnitPrivacyService.protectedUnitIdsFor(userId, tuntasId)
+        if (protectedUnitIds.isEmpty()) return false
+        val itemIds = rows.map { it[Reservations.itemId] }.distinct()
+        return Items.selectAll()
+            .where {
+                (Items.id inList itemIds) and
+                    (Items.custodianId inList protectedUnitIds.toList()) and
+                    (Items.origin neq "TRANSFERRED_FROM_TUNTAS")
+            }
+            .firstOrNull() != null
+    }
+
     private fun movementTotals(groupId: UUID): Map<UUID, MovementTotals> {
         return ReservationMovements.selectAll()
             .where { ReservationMovements.reservationGroupId eq groupId }
@@ -1042,33 +1230,41 @@ class ReservationService {
         }
     }
 
-    private fun toReservationResponse(rows: List<ResultRow>): ReservationResponse {
+    private fun toReservationResponse(rows: List<ResultRow>, hydration: ReservationListHydration? = null): ReservationResponse {
         val first = rows.first()
         val groupId = first[Reservations.groupId]
         val startDate = first[Reservations.startDate]
         val endDate = first[Reservations.endDate]
-        val itemsById = Items.selectAll()
+        val itemsById = hydration?.itemsById ?: Items.selectAll()
             .where { Items.id inList rows.map { it[Reservations.itemId] } }
             .associateBy { it[Items.id] }
-        val reservedByUser = Users.selectAll()
-            .where { Users.id eq first[Reservations.reservedByUserId] }
-            .firstOrNull()
-        val requestingUnit = first[Reservations.requestingUnitId]?.let { unitId ->
-            OrganizationalUnits.selectAll()
-                .where { OrganizationalUnits.id eq unitId }
+        val reservedByUser = hydration?.usersById?.get(first[Reservations.reservedByUserId])
+            ?: Users.selectAll()
+                .where { Users.id eq first[Reservations.reservedByUserId] }
                 .firstOrNull()
+        val requestingUnit = first[Reservations.requestingUnitId]?.let { unitId ->
+            hydration?.unitsById?.get(unitId)
+                ?: OrganizationalUnits.selectAll()
+                    .where { OrganizationalUnits.id eq unitId }
+                    .firstOrNull()
         }
         val custodianIds = itemsById.values.mapNotNull { it[Items.custodianId] }.distinct()
-        val custodiansById = if (custodianIds.isEmpty()) {
+        val custodiansById = if (hydration != null) {
+            hydration.unitsById
+        } else if (custodianIds.isEmpty()) {
             emptyMap()
         } else {
             OrganizationalUnits.selectAll()
                 .where { OrganizationalUnits.id inList custodianIds }
                 .associateBy { it[OrganizationalUnits.id] }
         }
-        val movementTotals = movementTotals(groupId)
+        val movementTotals = hydration?.movementTotalsByGroupId?.get(groupId) ?: movementTotals(groupId)
         val reservationItemIds = rows.map { it[Reservations.itemId] }
-        val overlappingOtherByItemId = if (reservationItemIds.isEmpty()) {
+        val overlappingOtherByItemId = if (hydration != null) {
+            reservationItemIds.associateWith { itemId ->
+                hydration.overlappingOtherByGroupAndItemId[groupId to itemId] ?: 0
+            }
+        } else if (reservationItemIds.isEmpty()) {
             emptyMap()
         } else {
             Reservations
@@ -1083,17 +1279,21 @@ class ReservationService {
                 .groupBy { it[Reservations.itemId] }
                 .mapValues { (_, overlapRows) -> overlapRows.sumOf { it[Reservations.quantity] } }
         }
-        val locationIds = buildSet {
-            first[Reservations.pickupLocationId]?.let(::add)
-            first[Reservations.returnLocationId]?.let(::add)
-        }
-        val locationNodes = if (locationIds.isEmpty()) {
-            emptyMap()
+        val locationNodes = if (hydration != null) {
+            hydration.locationNodesById
         } else {
-            Locations.selectAll()
-                .where { Locations.id inList locationIds.toList() }
-                .toList()
-                .associate { it[Locations.id] to it.toLocationNodeData() }
+            val locationIds = buildSet {
+                first[Reservations.pickupLocationId]?.let(::add)
+                first[Reservations.returnLocationId]?.let(::add)
+            }
+            if (locationIds.isEmpty()) {
+                emptyMap()
+            } else {
+                Locations.selectAll()
+                    .where { Locations.id inList locationIds.toList() }
+                    .toList()
+                    .associate { it[Locations.id] to it.toLocationNodeData() }
+            }
         }
 
         val reservationItems = rows.map { row ->

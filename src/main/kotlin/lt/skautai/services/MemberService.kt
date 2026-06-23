@@ -42,9 +42,9 @@ class MemberService {
                 callerUserId = callerUserId,
                 callerVisibleUnitIds = callerContext?.visibleUnitIds.orEmpty()
             )
-            val members = memberRows.map { row ->
+            val members = memberRows.mapNotNull { row ->
                 val userId = row[UserTuntasMemberships.userId]
-                buildMemberResponse(
+                val member = buildMemberResponse(
                     userId = userId,
                     tuntasId = tuntasId,
                     membershipRow = row,
@@ -52,10 +52,12 @@ class MemberService {
                     callerVisibleUnitIds = callerContext?.visibleUnitIds.orEmpty(),
                     hydration = hydration
                 )
-            }
-                .filter { member ->
-                    callerContext == null || callerContext.canViewAllMembers || callerCanSeeMemberSummary(member, callerContext)
+                when {
+                    callerContext == null || callerCanSeeMemberSummary(member, callerContext) -> member
+                    isHiddenSeniorCandidate(member, callerContext) -> anonymizeCandidate(member)
+                    else -> null
                 }
+            }
 
             Result.success(MemberListResponse(members = members, total = members.size))
         }
@@ -89,7 +91,6 @@ class MemberService {
 
             if (
                 callerContext != null &&
-                !callerContext.canViewAllMembers &&
                 !callerCanSeeMemberSummary(member, callerContext)
             ) {
                 return@transaction Result.failure(Exception("Member not found in this tuntas"))
@@ -644,6 +645,7 @@ class MemberService {
                     organizationalUnitId = unitId.toString(),
                     organizationalUnitName = hydration?.orgUnitNamesById?.get(unitId) ?: row[OrganizationalUnits.name],
                     assignmentType = row[UnitAssignments.assignmentType],
+                    isPubliclyVisible = row[UnitAssignments.isPubliclyVisible],
                     joinedAt = row[UnitAssignments.joinedAt].toString()
                 )
             }
@@ -790,6 +792,8 @@ class MemberService {
 
         return CallerContext(
             userId = userId,
+            tuntasId = tuntasId,
+            seniorUnitIds = SeniorUnitPrivacyService.seniorUnitIds(tuntasId),
             visibleUnitIds = loadCallerVisibleUnitIds(userId, tuntasId),
             canViewAllMembers = resolvedPermissions.any {
                 it.permissionName == "members.view" && it.scope == "ALL"
@@ -799,6 +803,24 @@ class MemberService {
 
     private fun callerCanSeeMemberSummary(member: MemberResponse, callerContext: CallerContext): Boolean {
         if (member.userId == callerContext.userId.toString()) return true
+
+        val seniorAssignments = member.unitAssignments.filter { assignment ->
+            runCatching { UUID.fromString(assignment.organizationalUnitId) }.getOrNull()
+                ?.let { it in callerContext.seniorUnitIds } == true
+        }
+        if (seniorAssignments.isNotEmpty()) {
+            val hasInternalAccess = seniorAssignments.any { assignment ->
+                UUID.fromString(assignment.organizationalUnitId) in callerContext.visibleUnitIds
+            }
+            if (!hasInternalAccess) {
+                val isSeniorScout = member.ranks.any { it.roleName == "Vyr. skautas" }
+                val isApprovedCandidate = member.ranks.any { it.roleName == "Vyr. skautas kandidatas" } &&
+                    seniorAssignments.any { it.isPubliclyVisible }
+                if (!isSeniorScout && !isApprovedCandidate) return false
+            }
+        }
+
+        if (callerContext.canViewAllMembers) return true
         if (callerContext.visibleUnitIds.isEmpty()) return false
 
         val memberUnitIds = member.unitAssignments
@@ -811,6 +833,32 @@ class MemberService {
                 ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                 ?.let { it in callerContext.visibleUnitIds } == true
         }
+    }
+
+    private fun isHiddenSeniorCandidate(member: MemberResponse, callerContext: CallerContext): Boolean {
+        if (member.ranks.none { it.roleName == "Vyr. skautas kandidatas" }) return false
+        return member.unitAssignments.any { assignment ->
+            val unitId = runCatching { UUID.fromString(assignment.organizationalUnitId) }.getOrNull()
+                ?: return@any false
+            unitId in callerContext.seniorUnitIds &&
+                unitId !in callerContext.visibleUnitIds &&
+                !assignment.isPubliclyVisible
+        }
+    }
+
+    private fun anonymizeCandidate(member: MemberResponse): MemberResponse {
+        val assignmentId = member.unitAssignments.firstOrNull()?.id ?: member.userId
+        return member.copy(
+            userId = "hidden-$assignmentId",
+            name = "Kandidatas",
+            surname = "",
+            email = "",
+            phone = null,
+            leadershipRoles = emptyList(),
+            leadershipRoleHistory = emptyList(),
+            ranks = emptyList(),
+            isIdentityHidden = true
+        )
     }
 
     private fun canSeeMemberContacts(
@@ -1168,6 +1216,8 @@ class MemberService {
 
     private data class CallerContext(
         val userId: UUID,
+        val tuntasId: UUID,
+        val seniorUnitIds: Set<UUID>,
         val visibleUnitIds: Set<UUID>,
         val canViewAllMembers: Boolean
     )

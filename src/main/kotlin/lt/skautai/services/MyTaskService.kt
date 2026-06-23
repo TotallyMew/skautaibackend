@@ -10,6 +10,7 @@ import lt.skautai.database.tables.BendrasInventoryRequests
 import lt.skautai.database.tables.DraugoveRequisitions
 import lt.skautai.database.tables.EventInventoryCustody
 import lt.skautai.database.tables.EventInventoryItems
+import lt.skautai.database.tables.EventInventoryRequests
 import lt.skautai.database.tables.EventPackingLines
 import lt.skautai.database.tables.EventPurchaseItems
 import lt.skautai.database.tables.EventPurchases
@@ -54,6 +55,7 @@ class MyTaskService {
             addSharedPickupReviewTask(this, tuntasId, userId, permissionContext, now)
             addLeadershipChangeReviewTask(this, tuntasId, userId, now)
             addEventLogisticsTask(this, tuntasId, userId, now)
+            addAssignedEventInventoryRequestTasks(this, tuntasId, userId, now)
             addEventPackingTask(this, tuntasId, userId, today, now)
             addEventReconciliationTask(this, tuntasId, userId, now)
             addAuditSessionTask(this, tuntasId, userId, permissionContext, now)
@@ -393,6 +395,42 @@ class MyTaskService {
             createdAt = now,
             entityId = single?.get(Events.id)?.toString()
         )
+    }
+
+    private fun addAssignedEventInventoryRequestTasks(
+        tasks: MutableList<MyTaskResponse>,
+        tuntasId: UUID,
+        userId: UUID,
+        now: Instant
+    ) {
+        val rows = EventInventoryRequests
+            .innerJoin(Events, { EventInventoryRequests.eventId }, { Events.id })
+            .selectAll()
+            .where {
+                (Events.tuntasId eq tuntasId) and
+                    (EventInventoryRequests.responsibleUserId eq userId) and
+                    (EventInventoryRequests.status inList listOf("PENDING", "APPROVED"))
+            }
+            .toList()
+        if (rows.isEmpty()) return
+
+        rows.groupBy { it[EventInventoryRequests.eventId] }.forEach { (eventId, eventRows) ->
+            val dueAt = eventRows.mapNotNull { it[EventInventoryRequests.dueAt] }.minOrNull()
+            val overdue = dueAt?.let { it < now } == true
+            tasks += task(
+                type = "EVENT_INVENTORY_REQUEST_ASSIGNED",
+                title = if (eventRows.size == 1) "Parūpink renginio poreikį" else "Parūpink renginio poreikius",
+                subtitle = "${eventRows.first()[Events.name]}: ${eventRows.size} atviros eilutės.",
+                count = eventRows.size,
+                priority = if (overdue) 3 else 35,
+                urgency = if (overdue) "CRITICAL" else if (dueAt != null) "HIGH" else "MEDIUM",
+                bucket = if (overdue) "URGENT" else if (dueAt != null) "NEXT" else "WATCH",
+                routeTarget = "event_plan/$eventId",
+                createdAt = now,
+                dueAt = dueAt,
+                entityId = eventId.toString()
+            )
+        }
     }
 
     private fun addEventReconciliationTask(

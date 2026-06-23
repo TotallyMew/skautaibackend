@@ -9,6 +9,7 @@ import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
 import lt.skautai.database.tables.Tuntai
 import lt.skautai.models.responses.ErrorResponse
+import lt.skautai.plugins.configureCompression
 import lt.skautai.plugins.configureRouting
 import lt.skautai.plugins.configureLiveEventPublisher
 import lt.skautai.plugins.configureRequestTiming
@@ -39,6 +40,7 @@ fun Application.module() {
     configureDatabases()
     configureSerialization()
     configureSecurity()
+    configureCompression()
     configureRequestTiming()
     configureLiveEventPublisher()
     install(DefaultHeaders) {

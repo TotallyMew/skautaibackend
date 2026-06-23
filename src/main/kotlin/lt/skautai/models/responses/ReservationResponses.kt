@@ -76,7 +76,10 @@ data class ReservationResponse(
 @Serializable
 data class ReservationListResponse(
     val reservations: List<ReservationResponse>,
-    val total: Int
+    val total: Int,
+    val limit: Int? = null,
+    val offset: Int = 0,
+    val hasMore: Boolean = false
 )
 
 @Serializable

@@ -99,10 +99,12 @@ class EventService {
 
     fun canCreateEvent(userId: UUID, tuntasId: UUID, targetOrgUnitId: UUID?): Boolean = transaction {
         if (!isActiveTuntasMember(userId, tuntasId)) return@transaction false
-        if (hasAnyLeadershipRole(userId, tuntasId, globalEventRoleNames)) return@transaction true
 
         val rankNames = userRankNames(userId, tuntasId)
-        if (targetOrgUnitId == null) return@transaction vadovasRankName in rankNames
+        if (targetOrgUnitId == null) {
+            return@transaction hasAnyLeadershipRole(userId, tuntasId, globalEventRoleNames) ||
+                vadovasRankName in rankNames
+        }
 
         val targetUnit = OrganizationalUnits.selectAll()
             .where {
@@ -119,7 +121,7 @@ class EventService {
                     userLeadsUnit(userId, tuntasId, targetOrgUnitId)
                 isTargetUnitMember && (rankNames.any { it in seniorScoutRankNames } || vadovasRankName in rankNames)
             }
-            else -> false
+            else -> hasAnyLeadershipRole(userId, tuntasId, globalEventRoleNames)
         }
     }
 
@@ -208,7 +210,9 @@ class EventService {
         tuntasId: UUID,
         type: String? = null,
         status: String? = null,
-        updatedAfter: kotlinx.datetime.Instant? = null
+        updatedAfter: kotlinx.datetime.Instant? = null,
+        limit: Int? = null,
+        offset: Int = 0
     ): Result<EventListResponse> {
         return transaction {
             var query = Events.selectAll()
@@ -220,10 +224,8 @@ class EventService {
             }
             updatedAfter?.let { since -> query = query.andWhere { Events.updatedAt greater since } }
 
-            val rows = query.toList()
-            val hydration = buildEventListHydration(rows)
-            val events = rows.map { toEventResponse(it, hydration) }
-            Result.success(EventListResponse(events = events, total = events.size))
+            val rows = sortEventRows(query.toList())
+            Result.success(toEventListResponse(rows, limit, offset))
         }
     }
 
@@ -232,7 +234,9 @@ class EventService {
         userId: UUID,
         type: String? = null,
         status: String? = null,
-        updatedAfter: kotlinx.datetime.Instant? = null
+        updatedAfter: kotlinx.datetime.Instant? = null,
+        limit: Int? = null,
+        offset: Int = 0
     ): Result<EventListResponse> {
         return transaction {
             var query = Events.selectAll()
@@ -245,11 +249,8 @@ class EventService {
             updatedAfter?.let { since -> query = query.andWhere { Events.updatedAt greater since } }
 
             val access = resolveEventAccess(userId, tuntasId)
-            val rows = query
-                .filter { canViewEventRow(it, access) }
-            val hydration = buildEventListHydration(rows)
-            val events = rows.map { toEventResponse(it, hydration) }
-            Result.success(EventListResponse(events = events, total = events.size))
+            val rows = sortEventRows(query.filter { canViewEventRow(it, access) })
+            Result.success(toEventListResponse(rows, limit, offset))
         }
     }
 
@@ -258,7 +259,9 @@ class EventService {
         userId: UUID,
         type: String? = null,
         status: String? = null,
-        updatedAfter: kotlinx.datetime.Instant? = null
+        updatedAfter: kotlinx.datetime.Instant? = null,
+        limit: Int? = null,
+        offset: Int = 0
     ): Result<EventListResponse> {
         return transaction {
             var query = Events
@@ -275,11 +278,34 @@ class EventService {
             }
             updatedAfter?.let { since -> query = query.andWhere { Events.updatedAt greater since } }
 
-            val rows = query.toList().distinctBy { it[Events.id] }
-            val hydration = buildEventListHydration(rows)
-            val events = rows.map { toEventResponse(it, hydration) }
-            Result.success(EventListResponse(events = events, total = events.size))
+            val rows = sortEventRows(query.toList().distinctBy { it[Events.id] })
+            Result.success(toEventListResponse(rows, limit, offset))
         }
+    }
+
+    private fun sortEventRows(rows: List<ResultRow>): List<ResultRow> =
+        rows.sortedWith(
+            compareByDescending<ResultRow> { it[Events.startDate] }
+                .thenByDescending { it[Events.createdAt] }
+                .thenBy { it[Events.id].toString() }
+        )
+
+    private fun toEventListResponse(
+        rows: List<ResultRow>,
+        limit: Int?,
+        offset: Int
+    ): EventListResponse {
+        val total = rows.size
+        val pageRows = limit?.let { rows.drop(offset).take(it) } ?: rows
+        val hydration = buildEventListHydration(pageRows)
+        val events = pageRows.map { toEventResponse(it, hydration) }
+        return EventListResponse(
+            events = events,
+            total = total,
+            limit = limit,
+            offset = offset,
+            hasMore = limit != null && offset + events.size < total
+        )
     }
 
     fun getEvent(eventId: UUID, tuntasId: UUID): Result<EventResponse> {
@@ -866,6 +892,20 @@ class EventService {
                 .firstOrNull()
                 ?.let { user -> "${user[Users.name]} ${user[Users.surname]}".trim() }
         }
+        val providerHistory = EventInventoryRequestHistory.selectAll()
+            .where { EventInventoryRequestHistory.requestId eq row[EventInventoryRequests.id] }
+            .orderBy(EventInventoryRequestHistory.createdAt, SortOrder.DESC)
+            .map { history ->
+                EventInventoryRequestProviderHistoryResponse(
+                    id = history[EventInventoryRequestHistory.id].toString(),
+                    fromProvider = history[EventInventoryRequestHistory.fromProvider],
+                    toProvider = history[EventInventoryRequestHistory.toProvider],
+                    changedByUserId = history[EventInventoryRequestHistory.changedByUserId].toString(),
+                    changedByUserName = userName(history[EventInventoryRequestHistory.changedByUserId]),
+                    notes = history[EventInventoryRequestHistory.notes],
+                    createdAt = history[EventInventoryRequestHistory.createdAt].toString()
+                )
+            }
 
         return EventInventoryRequestResponse(
             id = row[EventInventoryRequests.id].toString(),
@@ -879,6 +919,7 @@ class EventService {
             requestedByUserId = row[EventInventoryRequests.requestedByUserId].toString(),
             requestedByName = userName(row[EventInventoryRequests.requestedByUserId]),
             quantity = row[EventInventoryRequests.quantity],
+            provider = row[EventInventoryRequests.provider],
             status = row[EventInventoryRequests.status],
             notes = row[EventInventoryRequests.notes],
             createdAt = row[EventInventoryRequests.createdAt].toString(),
@@ -887,7 +928,11 @@ class EventService {
             reviewedByUserName = userName(row[EventInventoryRequests.reviewedByUserId]),
             fulfilledAt = row[EventInventoryRequests.fulfilledAt]?.toString(),
             resolvedByUserId = row[EventInventoryRequests.resolvedByUserId]?.toString(),
-            resolvedByUserName = userName(row[EventInventoryRequests.resolvedByUserId])
+            resolvedByUserName = userName(row[EventInventoryRequests.resolvedByUserId]),
+            dueAt = row[EventInventoryRequests.dueAt]?.toString(),
+            responsibleUserId = row[EventInventoryRequests.responsibleUserId]?.toString(),
+            responsibleUserName = userName(row[EventInventoryRequests.responsibleUserId]),
+            providerHistory = providerHistory
         )
     }
 
@@ -1334,7 +1379,6 @@ class EventService {
             if (request.quantity < 1) {
                 return@transaction Result.failure(Exception("Quantity must be at least 1"))
             }
-
             val itemUUID = try { UUID.fromString(request.itemId) } catch (e: Exception) {
                 return@transaction Result.failure(Exception("Invalid item ID"))
             }
@@ -1497,6 +1541,21 @@ class EventService {
             if (request.quantity < 1) {
                 return@transaction Result.failure(Exception("Quantity must be at least 1"))
             }
+            val provider = request.provider.uppercase()
+            if (provider !in listOf("UNIT", "UKVEDYS")) {
+                return@transaction Result.failure(Exception("Provider must be UNIT or UKVEDYS"))
+            }
+            val dueAt = request.dueAt?.let {
+                runCatching { kotlinx.datetime.Instant.parse(it) }
+                    .getOrElse { return@transaction Result.failure(Exception("Invalid dueAt")) }
+            }
+            val responsibleUserId = request.responsibleUserId?.let {
+                runCatching { UUID.fromString(it) }
+                    .getOrElse { return@transaction Result.failure(Exception("Invalid responsible user ID")) }
+            }
+            if (responsibleUserId != null && !isActiveTuntasMember(responsibleUserId, tuntasId)) {
+                return@transaction Result.failure(Exception("Responsible user is not an active tuntas member"))
+            }
 
             val eventInventoryItemId = try {
                 UUID.fromString(request.eventInventoryItemId)
@@ -1515,6 +1574,9 @@ class EventService {
                 it[this.pastovykleId] = pastovykleId
                 it[this.requestedByUserId] = requestedByUserId
                 it[quantity] = request.quantity
+                it[this.provider] = provider
+                it[this.dueAt] = dueAt
+                it[this.responsibleUserId] = responsibleUserId
                 it[status] = "PENDING"
                 it[notes] = request.notes
                 it[createdAt] = kotlinx.datetime.Clock.System.now()
@@ -1528,6 +1590,162 @@ class EventService {
                 )
             )
         }
+    }
+
+    fun updateInventoryRequest(
+        eventId: UUID,
+        requestId: UUID,
+        tuntasId: UUID,
+        changedByUserId: UUID,
+        request: UpdateEventInventoryRequestRequest
+    ): Result<EventInventoryRequestResponse> = transaction {
+        val event = ensureEvent(eventId, tuntasId)
+            ?: return@transaction Result.failure(Exception("Event not found"))
+        ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+        val existing = EventInventoryRequests.selectAll()
+            .where {
+                (EventInventoryRequests.id eq requestId) and
+                    (EventInventoryRequests.eventId eq eventId)
+            }
+            .firstOrNull()
+            ?: return@transaction Result.failure(Exception("Request not found"))
+
+        val provider = request.provider?.uppercase()
+        if (provider != null && provider !in listOf("UNIT", "UKVEDYS")) {
+            return@transaction Result.failure(Exception("Provider must be UNIT or UKVEDYS"))
+        }
+        val dueAt = request.dueAt?.let {
+            runCatching { kotlinx.datetime.Instant.parse(it) }
+                .getOrElse { return@transaction Result.failure(Exception("Invalid dueAt")) }
+        }
+        val responsibleUserId = request.responsibleUserId?.let {
+            runCatching { UUID.fromString(it) }
+                .getOrElse { return@transaction Result.failure(Exception("Invalid responsible user ID")) }
+        }
+        if (responsibleUserId != null && !isActiveTuntasMember(responsibleUserId, tuntasId)) {
+            return@transaction Result.failure(Exception("Responsible user is not an active tuntas member"))
+        }
+
+        val previousProvider = existing[EventInventoryRequests.provider]
+        EventInventoryRequests.update({ EventInventoryRequests.id eq requestId }) {
+            provider?.let { value -> it[EventInventoryRequests.provider] = value }
+            when {
+                request.clearDueAt -> it[EventInventoryRequests.dueAt] = null
+                request.dueAt != null -> it[EventInventoryRequests.dueAt] = dueAt
+            }
+            when {
+                request.clearResponsibleUserId -> it[EventInventoryRequests.responsibleUserId] = null
+                request.responsibleUserId != null -> it[EventInventoryRequests.responsibleUserId] = responsibleUserId
+            }
+            if (
+                request.clearDueAt ||
+                request.dueAt != null ||
+                request.clearResponsibleUserId ||
+                request.responsibleUserId != null
+            ) {
+                it[EventInventoryRequests.reminderSentAt] = null
+            }
+            request.notes?.let { value -> it[EventInventoryRequests.notes] = value }
+        }
+        if (provider != null && provider != previousProvider) {
+            EventInventoryRequestHistory.insert {
+                it[EventInventoryRequestHistory.requestId] = requestId
+                it[EventInventoryRequestHistory.fromProvider] = previousProvider
+                it[EventInventoryRequestHistory.toProvider] = provider
+                it[EventInventoryRequestHistory.changedByUserId] = changedByUserId
+                it[EventInventoryRequestHistory.notes] = request.notes
+                it[EventInventoryRequestHistory.createdAt] = kotlinx.datetime.Clock.System.now()
+            }
+        }
+
+        Result.success(
+            toInventoryRequestResponse(
+                EventInventoryRequests.selectAll().where { EventInventoryRequests.id eq requestId }.first()
+            )
+        )
+    }
+
+    fun getInventoryReadiness(
+        eventId: UUID,
+        tuntasId: UUID
+    ): Result<EventInventoryReadinessResponse> = transaction {
+        val event = ensureEvent(eventId, tuntasId)
+            ?: return@transaction Result.failure(Exception("Event not found"))
+        val requests = EventInventoryRequests.selectAll()
+            .where { EventInventoryRequests.eventId eq eventId }
+            .toList()
+        val totalQuantity = requests.sumOf { it[EventInventoryRequests.quantity] }
+        val completedQuantity = requests
+            .filter { it[EventInventoryRequests.status] in listOf("FULFILLED", "SELF_PROVIDED") }
+            .sumOf { it[EventInventoryRequests.quantity] }
+        val now = kotlinx.datetime.Clock.System.now()
+        val overdueCount = requests.count {
+            it[EventInventoryRequests.status] !in listOf("FULFILLED", "SELF_PROVIDED", "REJECTED") &&
+                it[EventInventoryRequests.dueAt]?.let { dueAt -> dueAt < now } == true
+        }
+        val unassignedCount = requests.count {
+            it[EventInventoryRequests.status] !in listOf("FULFILLED", "SELF_PROVIDED", "REJECTED") &&
+                it[EventInventoryRequests.responsibleUserId] == null
+        }
+
+        val currentItems = EventInventoryItems.selectAll()
+            .where { EventInventoryItems.eventId eq eventId }
+            .filter { it[EventInventoryItems.itemId] != null }
+        val physicalItemIds = currentItems.mapNotNull { it[EventInventoryItems.itemId] }.distinct()
+        val overlappingEvents = Events.selectAll()
+            .where {
+                (Events.tuntasId eq tuntasId) and
+                    (Events.id neq eventId) and
+                    (Events.status notInList listOf("CANCELLED", "COMPLETED"))
+            }
+            .filter {
+                it[Events.startDate] <= event[Events.endDate] &&
+                    it[Events.endDate] >= event[Events.startDate]
+            }
+        val overlappingEventIds = overlappingEvents.map { it[Events.id] }
+        val overlappingNames = overlappingEvents.associate { it[Events.id] to it[Events.name] }
+        val overlappingItems = if (physicalItemIds.isEmpty() || overlappingEventIds.isEmpty()) {
+            emptyList()
+        } else {
+            EventInventoryItems.selectAll()
+                .where {
+                    (EventInventoryItems.eventId inList overlappingEventIds) and
+                        (EventInventoryItems.itemId inList physicalItemIds)
+                }
+                .toList()
+        }
+        val stockByItemId = if (physicalItemIds.isEmpty()) emptyMap() else {
+            Items.selectAll()
+                .where { Items.id inList physicalItemIds }
+                .associate { it[Items.id] to it[Items.quantity] }
+        }
+        val conflicts = currentItems.groupBy { it[EventInventoryItems.itemId]!! }
+            .mapNotNull { (itemId, rows) ->
+                val related = overlappingItems.filter { it[EventInventoryItems.itemId] == itemId }
+                val requested = rows.sumOf { it[EventInventoryItems.plannedQuantity] } +
+                    related.sumOf { it[EventInventoryItems.plannedQuantity] }
+                val available = stockByItemId[itemId] ?: return@mapNotNull null
+                if (requested <= available) return@mapNotNull null
+                EventInventoryConflictResponse(
+                    itemId = itemId.toString(),
+                    itemName = rows.first()[EventInventoryItems.name],
+                    availableQuantity = available,
+                    requestedQuantity = requested,
+                    overlappingEvents = related.mapNotNull { overlappingNames[it[EventInventoryItems.eventId]] }.distinct()
+                )
+            }
+
+        Result.success(
+            EventInventoryReadinessResponse(
+                readinessPercent = if (totalQuantity == 0) 100 else (completedQuantity * 100 / totalQuantity),
+                totalQuantity = totalQuantity,
+                completedQuantity = completedQuantity,
+                openQuantity = totalQuantity - completedQuantity,
+                overdueCount = overdueCount,
+                unassignedCount = unassignedCount,
+                conflicts = conflicts
+            )
+        )
     }
 
     fun getEventInventoryRequests(
@@ -1629,6 +1847,9 @@ class EventService {
             if (existing[EventInventoryRequests.status] != "PENDING") {
                 return@transaction Result.failure(Exception("Only pending requests can be approved"))
             }
+            if (existing[EventInventoryRequests.provider] != "UKVEDYS") {
+                return@transaction Result.failure(Exception("Unit-provided needs are not reviewed by the event quartermaster"))
+            }
 
             val now = kotlinx.datetime.Clock.System.now()
             EventInventoryRequests.update({ EventInventoryRequests.id eq requestId }) {
@@ -1667,6 +1888,9 @@ class EventService {
 
             if (existing[EventInventoryRequests.status] !in listOf("PENDING", "APPROVED")) {
                 return@transaction Result.failure(Exception("Only pending or approved requests can be rejected"))
+            }
+            if (existing[EventInventoryRequests.provider] != "UKVEDYS") {
+                return@transaction Result.failure(Exception("Unit-provided needs are not reviewed by the event quartermaster"))
             }
 
             val now = kotlinx.datetime.Clock.System.now()
@@ -1751,6 +1975,9 @@ class EventService {
 
             if (existing[EventInventoryRequests.status] !in listOf("PENDING", "APPROVED")) {
                 return@transaction Result.failure(Exception("Only pending or approved requests can be fulfilled"))
+            }
+            if (existing[EventInventoryRequests.provider] != "UKVEDYS") {
+                return@transaction Result.failure(Exception("Unit-provided needs cannot be fulfilled by the event quartermaster"))
             }
 
             val inventoryItem = EventInventoryItems.selectAll()
@@ -2541,7 +2768,8 @@ class EventService {
                 .where { EventInventoryItems.eventId eq eventId }
                 .orderBy(EventInventoryCustody.createdAt, SortOrder.DESC)
                 .toList()
-            val custody = rows.map { toCustodyResponse(it) }
+            val hydration = buildCustodyHydration(rows)
+            val custody = rows.map { toCustodyResponse(it, hydration) }
             Result.success(EventInventoryCustodyListResponse(custody = custody, total = custody.size))
         }
     }
@@ -2552,8 +2780,196 @@ class EventService {
             val movements = EventInventoryMovements.selectAll()
                 .where { EventInventoryMovements.eventId eq eventId }
                 .orderBy(EventInventoryMovements.createdAt, SortOrder.DESC)
-                .map { toMovementResponse(it) }
-            Result.success(EventInventoryMovementListResponse(movements = movements, total = movements.size))
+                .toList()
+            val hydration = buildMovementHydration(movements)
+            val responses = movements.map { toMovementResponse(it, hydration) }
+            Result.success(EventInventoryMovementListResponse(movements = responses, total = responses.size))
+        }
+    }
+
+    fun getInventoryTransferRequests(
+        eventId: UUID,
+        tuntasId: UUID,
+        userId: UUID,
+        includeAll: Boolean
+    ): Result<EventInventoryTransferRequestListResponse> {
+        return transaction {
+            ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+            var query = EventInventoryTransferRequests.selectAll()
+                .where { EventInventoryTransferRequests.eventId eq eventId }
+            if (!includeAll) {
+                query = query.andWhere {
+                    (EventInventoryTransferRequests.requestedByUserId eq userId) or
+                        (EventInventoryTransferRequests.requestedFromUserId eq userId)
+                }
+            }
+            val rows = query
+                .orderBy(EventInventoryTransferRequests.createdAt, SortOrder.DESC)
+                .toList()
+            val responses = toInventoryTransferRequestResponses(rows)
+            Result.success(EventInventoryTransferRequestListResponse(responses, responses.size))
+        }
+    }
+
+    fun createInventoryTransferRequest(
+        eventId: UUID,
+        tuntasId: UUID,
+        requestedByUserId: UUID,
+        request: CreateEventInventoryTransferRequest
+    ): Result<EventInventoryTransferRequestResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureMovementAllowedForEvent(event)
+                ?: return@transaction Result.failure(Exception("Inventory transfers are allowed only during an active event"))
+            if (request.quantity < 1) {
+                return@transaction Result.failure(Exception("Quantity must be at least 1"))
+            }
+            val custodyId = runCatching { UUID.fromString(request.sourceCustodyId) }.getOrNull()
+                ?: return@transaction Result.failure(Exception("Invalid custody ID"))
+            val custody = EventInventoryCustody
+                .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
+                .selectAll()
+                .where {
+                    (EventInventoryCustody.id eq custodyId) and
+                        (EventInventoryItems.eventId eq eventId) and
+                        (EventInventoryCustody.status eq "OPEN")
+                }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Custody record not found"))
+            val holderUserId = custody[EventInventoryCustody.holderUserId]
+                ?: return@transaction Result.failure(Exception("The item is not currently held by a person"))
+            if (holderUserId == requestedByUserId) {
+                return@transaction Result.failure(Exception("You cannot request an item from yourself"))
+            }
+            val remaining = openQuantity(custody)
+            if (request.quantity > remaining) {
+                return@transaction Result.failure(Exception("Requested quantity exceeds the holder's remaining quantity"))
+            }
+            val duplicate = EventInventoryTransferRequests.selectAll()
+                .where {
+                    (EventInventoryTransferRequests.sourceCustodyId eq custodyId) and
+                        (EventInventoryTransferRequests.requestedByUserId eq requestedByUserId) and
+                        (EventInventoryTransferRequests.status eq "PENDING")
+                }
+                .firstOrNull()
+            if (duplicate != null) {
+                return@transaction Result.failure(Exception("A pending request for this custody already exists"))
+            }
+            val requestId = EventInventoryTransferRequests.insert {
+                it[this.eventId] = eventId
+                it[sourceCustodyId] = custodyId
+                it[eventInventoryItemId] = custody[EventInventoryCustody.eventInventoryItemId]
+                it[this.requestedByUserId] = requestedByUserId
+                it[requestedFromUserId] = holderUserId
+                it[quantity] = request.quantity
+                it[status] = "PENDING"
+                it[notes] = request.notes?.trim()?.ifBlank { null }
+                it[createdAt] = kotlinx.datetime.Clock.System.now()
+            } get EventInventoryTransferRequests.id
+            val row = EventInventoryTransferRequests.selectAll()
+                .where { EventInventoryTransferRequests.id eq requestId }
+                .first()
+            Result.success(toInventoryTransferRequestResponses(listOf(row)).first())
+        }
+    }
+
+    fun respondToInventoryTransferRequest(
+        eventId: UUID,
+        requestId: UUID,
+        tuntasId: UUID,
+        respondingUserId: UUID,
+        canManageInventory: Boolean,
+        request: RespondEventInventoryTransferRequest
+    ): Result<EventInventoryTransferRequestResponse> {
+        return transaction {
+            val event = ensureEvent(eventId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Event not found"))
+            ensureMovementAllowedForEvent(event)
+                ?: return@transaction Result.failure(Exception("Inventory transfers are allowed only during an active event"))
+            val transferRequest = EventInventoryTransferRequests.selectAll()
+                .where {
+                    (EventInventoryTransferRequests.id eq requestId) and
+                        (EventInventoryTransferRequests.eventId eq eventId)
+                }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Transfer request not found"))
+            if (transferRequest[EventInventoryTransferRequests.status] != "PENDING") {
+                return@transaction Result.failure(Exception("Only pending transfer requests can be answered"))
+            }
+            val requestedFromUserId = transferRequest[EventInventoryTransferRequests.requestedFromUserId]
+            if (!canManageInventory && requestedFromUserId != respondingUserId) {
+                return@transaction Result.failure(Exception("Only the current holder can answer this request"))
+            }
+            val now = kotlinx.datetime.Clock.System.now()
+            var movementId: UUID? = null
+            if (request.approve) {
+                val source = EventInventoryCustody
+                    .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
+                    .selectAll()
+                    .where {
+                        (EventInventoryCustody.id eq transferRequest[EventInventoryTransferRequests.sourceCustodyId]) and
+                            (EventInventoryItems.eventId eq eventId) and
+                            (EventInventoryCustody.status eq "OPEN")
+                    }
+                    .forUpdate()
+                    .firstOrNull()
+                    ?: return@transaction Result.failure(Exception("The source custody is no longer available"))
+                if (source[EventInventoryCustody.holderUserId] != requestedFromUserId) {
+                    return@transaction Result.failure(Exception("The item is no longer held by the original holder"))
+                }
+                val quantity = transferRequest[EventInventoryTransferRequests.quantity]
+                if (quantity > openQuantity(source)) {
+                    return@transaction Result.failure(Exception("The holder no longer has enough quantity"))
+                }
+                val nextReturned = source[EventInventoryCustody.returnedQuantity] + quantity
+                EventInventoryCustody.update({ EventInventoryCustody.id eq source[EventInventoryCustody.id] }) {
+                    it[returnedQuantity] = nextReturned
+                    if (nextReturned == source[EventInventoryCustody.quantity]) {
+                        it[status] = "CLOSED"
+                        it[closedAt] = now
+                    }
+                }
+                val targetCustodyId = insertCustody(
+                    eventInventoryItemId = source[EventInventoryCustody.eventInventoryItemId],
+                    parentCustodyId = source[EventInventoryCustody.parentCustodyId],
+                    pastovykleId = source[EventInventoryCustody.pastovykleId],
+                    holderUserId = transferRequest[EventInventoryTransferRequests.requestedByUserId],
+                    quantity = quantity,
+                    createdByUserId = respondingUserId,
+                    notes = request.notes?.trim()?.ifBlank { transferRequest[EventInventoryTransferRequests.notes] },
+                    createdAt = now
+                )
+                movementId = insertInventoryMovement(
+                    eventId = eventId,
+                    eventInventoryItemId = source[EventInventoryCustody.eventInventoryItemId],
+                    custodyId = targetCustodyId,
+                    inventoryRequestId = null,
+                    movementType = "TRANSFER",
+                    quantity = quantity,
+                    fromPastovykleId = source[EventInventoryCustody.pastovykleId],
+                    toPastovykleId = source[EventInventoryCustody.pastovykleId],
+                    fromUserId = requestedFromUserId,
+                    toUserId = transferRequest[EventInventoryTransferRequests.requestedByUserId],
+                    performedByUserId = respondingUserId,
+                    clientRequestId = "transfer-request-$requestId",
+                    notes = request.notes?.trim()?.ifBlank { transferRequest[EventInventoryTransferRequests.notes] },
+                    createdAt = now
+                )
+            }
+            EventInventoryTransferRequests.update({ EventInventoryTransferRequests.id eq requestId }) {
+                it[status] = if (request.approve) "APPROVED" else "REJECTED"
+                it[respondedAt] = now
+                it[respondedByUserId] = respondingUserId
+                it[EventInventoryTransferRequests.movementId] = movementId
+                request.notes?.trim()?.takeIf { value -> value.isNotBlank() }?.let { value -> it[notes] = value }
+            }
+            val updated = EventInventoryTransferRequests.selectAll()
+                .where { EventInventoryTransferRequests.id eq requestId }
+                .first()
+            Result.success(toInventoryTransferRequestResponses(listOf(updated)).first())
         }
     }
 
@@ -3356,14 +3772,30 @@ class EventService {
         return EventInventoryItems.selectAll().where { EventInventoryItems.id eq eventInventoryItemId }.first()
     }
 
-    fun getPurchases(eventId: UUID, tuntasId: UUID): Result<EventPurchaseListResponse> {
+    fun getPurchases(
+        eventId: UUID,
+        tuntasId: UUID,
+        limit: Int? = null,
+        offset: Int = 0
+    ): Result<EventPurchaseListResponse> {
         return transaction {
             ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
-            val purchases = EventPurchases.selectAll()
+            val query = EventPurchases.selectAll()
                 .where { EventPurchases.eventId eq eventId }
                 .orderBy(EventPurchases.createdAt, SortOrder.DESC)
-                .map { toPurchaseResponse(it) }
-            Result.success(EventPurchaseListResponse(purchases = purchases, total = purchases.size))
+            val total = query.count().toInt()
+            val purchases = (limit?.let { query.limit(it, offset.toLong()) } ?: query).toList()
+            val hydration = buildPurchaseHydration(purchases)
+            val responses = purchases.map { toPurchaseResponse(it, hydration) }
+            Result.success(
+                EventPurchaseListResponse(
+                    purchases = responses,
+                    total = total,
+                    limit = limit,
+                    offset = offset,
+                    hasMore = limit != null && offset + responses.size < total
+                )
+            )
         }
     }
 
@@ -3821,13 +4253,12 @@ class EventService {
 
     private fun canViewEventRow(event: ResultRow, access: EventAccess): Boolean {
         if (!access.isActiveMember) return false
-        if (access.isGlobalEventAdmin) return true
         if (event[Events.id] in access.eventRoleEventIds) return true
         if (event[Events.id] in access.responsiblePastovykleEventIds) return true
 
         val targetOrgUnitId = event[Events.organizationalUnitId]
         if (targetOrgUnitId == null) {
-            return vadovasRankName in access.rankNames
+            return access.isGlobalEventAdmin || vadovasRankName in access.rankNames
         }
 
         val targetUnit = OrganizationalUnits.selectAll()
@@ -3843,7 +4274,7 @@ class EventService {
                 val belongsToTargetUnit = targetOrgUnitId in access.assignedUnitIds || targetOrgUnitId in access.ledUnitIds
                 belongsToTargetUnit && access.rankNames.any { it in seniorScoutRankNames }
             }
-            else -> false
+            else -> access.isGlobalEventAdmin
         }
     }
 
@@ -4150,30 +4581,108 @@ class EventService {
         }
     }
 
+    private data class EventInventoryPlanHydration(
+        val pastovykleNamesById: Map<UUID, String>,
+        val locationNodesById: Map<UUID, LocationNodeData>,
+        val allocatedByItemId: Map<UUID, Int>,
+        val bucketNamesById: Map<UUID, String>,
+        val responsibleUserNamesById: Map<UUID, String>,
+        val sourcesByItemId: Map<UUID, List<EventInventorySourceResponse>>
+    )
+
     private fun toEventInventoryPlanResponse(eventId: UUID): EventInventoryPlanResponse {
-        val buckets = EventInventoryBuckets.selectAll()
+        val bucketRows = EventInventoryBuckets.selectAll()
             .where { EventInventoryBuckets.eventId eq eventId }
-            .map { toBucketResponse(it) }
-        val items = EventInventoryItems.selectAll()
+            .toList()
+        val itemRows = EventInventoryItems.selectAll()
             .where { EventInventoryItems.eventId eq eventId }
-            .map { toInventoryItemResponse(it) }
-        val allocations = EventInventoryAllocations
+            .toList()
+        val allocationRows = EventInventoryAllocations
             .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
             .selectAll()
             .where { EventInventoryItems.eventId eq eventId }
-            .map { toAllocationResponse(it) }
+            .toList()
+        val hydration = buildEventInventoryPlanHydration(bucketRows, itemRows)
+        val buckets = bucketRows.map { toBucketResponse(it, hydration) }
+        val items = itemRows.map { toInventoryItemResponse(it, hydration) }
+        val allocations = allocationRows.map { toAllocationResponse(it, hydration.bucketNamesById) }
         return EventInventoryPlanResponse(buckets = buckets, items = items, allocations = allocations)
     }
 
-    private fun toBucketResponse(row: ResultRow): EventInventoryBucketResponse {
+    private fun buildEventInventoryPlanHydration(
+        bucketRows: List<ResultRow>,
+        itemRows: List<ResultRow>
+    ): EventInventoryPlanHydration {
+        val pastovykleIds = bucketRows.mapNotNull { it[EventInventoryBuckets.pastovykleId] }.distinct()
+        val pastovykleNamesById = if (pastovykleIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Pastovykles.selectAll()
+                .where { Pastovykles.id inList pastovykleIds }
+                .associate { it[Pastovykles.id] to it[Pastovykles.name] }
+        }
+        val locationNodesById = if (bucketRows.any { it[EventInventoryBuckets.locationId] != null }) {
+            Locations.selectAll()
+                .toList()
+                .associate { it[Locations.id] to it.toLocationNodeData() }
+        } else {
+            emptyMap()
+        }
+        val itemIds = itemRows.map { it[EventInventoryItems.id] }
+        val allocationRows = if (itemIds.isEmpty()) {
+            emptyList()
+        } else {
+            EventInventoryAllocations.selectAll()
+                .where { EventInventoryAllocations.eventInventoryItemId inList itemIds }
+                .toList()
+        }
+        val allocatedByItemId = allocationRows
+            .groupBy { it[EventInventoryAllocations.eventInventoryItemId] }
+            .mapValues { (_, rows) -> rows.sumOf { it[EventInventoryAllocations.quantity] } }
+        val bucketNamesById = bucketRows.associate { it[EventInventoryBuckets.id] to it[EventInventoryBuckets.name] }
+        val responsibleUserIds = itemRows.mapNotNull { it[EventInventoryItems.responsibleUserId] }.distinct()
+        val responsibleUserNamesById = if (responsibleUserIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Users.selectAll()
+                .where { Users.id inList responsibleUserIds }
+                .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
+        }
+        val sourceRows = if (itemIds.isEmpty()) {
+            emptyList()
+        } else {
+            EventInventorySources.selectAll()
+                .where { EventInventorySources.eventInventoryItemId inList itemIds }
+                .orderBy(EventInventorySources.createdAt to SortOrder.ASC)
+                .toList()
+        }
+        val sourcesByItemId = sourceRows
+            .map { it[EventInventorySources.eventInventoryItemId] to toInventorySourceResponse(it) }
+            .groupBy({ it.first }, { it.second })
+
+        return EventInventoryPlanHydration(
+            pastovykleNamesById = pastovykleNamesById,
+            locationNodesById = locationNodesById,
+            allocatedByItemId = allocatedByItemId,
+            bucketNamesById = bucketNamesById,
+            responsibleUserNamesById = responsibleUserNamesById,
+            sourcesByItemId = sourcesByItemId
+        )
+    }
+
+    private fun toBucketResponse(
+        row: ResultRow,
+        hydration: EventInventoryPlanHydration? = null
+    ): EventInventoryBucketResponse {
         val pastovykleId = row[EventInventoryBuckets.pastovykleId]
         val pastovykleName = pastovykleId?.let {
-            Pastovykles.selectAll().where { Pastovykles.id eq it }.firstOrNull()?.get(Pastovykles.name)
+            hydration?.pastovykleNamesById?.get(it)
+                ?: Pastovykles.selectAll().where { Pastovykles.id eq it }.firstOrNull()?.get(Pastovykles.name)
         }
         val locationId = row[EventInventoryBuckets.locationId]
         val locationPath = locationId?.let { id ->
-            val locationRows = Locations.selectAll().toList()
-            val nodesById = locationRows.associate { it[Locations.id] to it.toLocationNodeData() }
+            val nodesById = hydration?.locationNodesById
+                ?: Locations.selectAll().toList().associate { it[Locations.id] to it.toLocationNodeData() }
             buildLocationPath(id, nodesById)
         }
         return EventInventoryBucketResponse(
@@ -4189,31 +4698,40 @@ class EventService {
         )
     }
 
-    private fun toInventoryItemResponse(row: ResultRow): EventInventoryItemResponse {
-        val allocated = EventInventoryAllocations.selectAll()
-            .where { EventInventoryAllocations.eventInventoryItemId eq row[EventInventoryItems.id] }
-            .sumOf { it[EventInventoryAllocations.quantity] }
+    private fun toInventoryItemResponse(
+        row: ResultRow,
+        hydration: EventInventoryPlanHydration? = null
+    ): EventInventoryItemResponse {
+        val itemId = row[EventInventoryItems.id]
+        val allocated = hydration?.allocatedByItemId?.get(itemId)
+            ?: EventInventoryAllocations.selectAll()
+                .where { EventInventoryAllocations.eventInventoryItemId eq itemId }
+                .sumOf { it[EventInventoryAllocations.quantity] }
         val planned = row[EventInventoryItems.plannedQuantity]
-        val sources = inventorySourcesForItem(row)
+        val sources = inventorySourcesForItem(row, hydration)
         val available = sources.takeIf { it.isNotEmpty() }
             ?.sumOf { it.reservedQuantity }
             ?: row[EventInventoryItems.availableQuantity]
-        val bucket = row[EventInventoryItems.bucketId]?.let { bucketId ->
-            EventInventoryBuckets.selectAll()
-                .where { EventInventoryBuckets.id eq bucketId }
-                .firstOrNull()
+        val bucketName = row[EventInventoryItems.bucketId]?.let { bucketId ->
+            hydration?.bucketNamesById?.get(bucketId)
+                ?: EventInventoryBuckets.select(EventInventoryBuckets.name)
+                    .where { EventInventoryBuckets.id eq bucketId }
+                    .firstOrNull()
+                    ?.get(EventInventoryBuckets.name)
         }
-        val responsible = row[EventInventoryItems.responsibleUserId]?.let { userId ->
-            Users.selectAll()
-                .where { Users.id eq userId }
-                .firstOrNull()
+        val responsibleUserName = row[EventInventoryItems.responsibleUserId]?.let { userId ->
+            hydration?.responsibleUserNamesById?.get(userId)
+                ?: Users.selectAll()
+                    .where { Users.id eq userId }
+                    .firstOrNull()
+                    ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
         }
         return EventInventoryItemResponse(
-            id = row[EventInventoryItems.id].toString(),
+            id = itemId.toString(),
             eventId = row[EventInventoryItems.eventId].toString(),
             itemId = row[EventInventoryItems.itemId]?.toString(),
             bucketId = row[EventInventoryItems.bucketId]?.toString(),
-            bucketName = bucket?.get(EventInventoryBuckets.name),
+            bucketName = bucketName,
             reservationGroupId = row[EventInventoryItems.reservationGroupId]?.toString(),
             name = row[EventInventoryItems.name],
             plannedQuantity = planned,
@@ -4235,17 +4753,21 @@ class EventService {
             ),
             sources = sources,
             responsibleUserId = row[EventInventoryItems.responsibleUserId]?.toString(),
-            responsibleUserName = responsible?.let { "${it[Users.name]} ${it[Users.surname]}".trim() },
+            responsibleUserName = responsibleUserName,
             createdByUserId = row[EventInventoryItems.createdByUserId]?.toString(),
             createdAt = row[EventInventoryItems.createdAt].toString()
         )
     }
 
-    private fun inventorySourcesForItem(row: ResultRow): List<EventInventorySourceResponse> {
-        val sourceRows = EventInventorySources.selectAll()
-            .where { EventInventorySources.eventInventoryItemId eq row[EventInventoryItems.id] }
-            .orderBy(EventInventorySources.createdAt to SortOrder.ASC)
-            .map { toInventorySourceResponse(it) }
+    private fun inventorySourcesForItem(
+        row: ResultRow,
+        hydration: EventInventoryPlanHydration? = null
+    ): List<EventInventorySourceResponse> {
+        val sourceRows = hydration?.sourcesByItemId?.get(row[EventInventoryItems.id])
+            ?: EventInventorySources.selectAll()
+                .where { EventInventorySources.eventInventoryItemId eq row[EventInventoryItems.id] }
+                .orderBy(EventInventorySources.createdAt to SortOrder.ASC)
+                .map { toInventorySourceResponse(it) }
         if (sourceRows.isNotEmpty()) return sourceRows
 
         val legacyReserved = row[EventInventoryItems.availableQuantity]
@@ -4368,43 +4890,99 @@ class EventService {
         return (item[Items.quantity] - reserved).coerceAtLeast(0)
     }
 
-    private fun toAllocationResponse(row: ResultRow): EventInventoryAllocationResponse {
-        val bucket = EventInventoryBuckets.selectAll()
-            .where { EventInventoryBuckets.id eq row[EventInventoryAllocations.bucketId] }
-            .first()
+    private fun toAllocationResponse(
+        row: ResultRow,
+        bucketNamesById: Map<UUID, String>? = null
+    ): EventInventoryAllocationResponse {
+        val bucketId = row[EventInventoryAllocations.bucketId]
+        val bucketName = bucketNamesById?.get(bucketId)
+            ?: EventInventoryBuckets.select(EventInventoryBuckets.name)
+                .where { EventInventoryBuckets.id eq bucketId }
+                .first()[EventInventoryBuckets.name]
         return EventInventoryAllocationResponse(
             id = row[EventInventoryAllocations.id].toString(),
             eventInventoryItemId = row[EventInventoryAllocations.eventInventoryItemId].toString(),
-            bucketId = row[EventInventoryAllocations.bucketId].toString(),
-            bucketName = bucket[EventInventoryBuckets.name],
+            bucketId = bucketId.toString(),
+            bucketName = bucketName,
             quantity = row[EventInventoryAllocations.quantity],
             notes = row[EventInventoryAllocations.notes]
         )
     }
 
-    private fun toPurchaseResponse(row: ResultRow): EventPurchaseResponse {
-        val user = row[EventPurchases.purchasedByUserId]?.let { userId ->
-            Users.selectAll().where { Users.id eq userId }.firstOrNull()
+    private data class EventPurchaseHydration(
+        val purchasedByNamesByUserId: Map<UUID, String>,
+        val purchaseItemsByPurchaseId: Map<UUID, List<ResultRow>>,
+        val inventoryItemNamesById: Map<UUID, String>,
+        val invoicesByPurchaseId: Map<UUID, List<EventPurchaseInvoiceResponse>>
+    )
+
+    private fun buildPurchaseHydration(rows: List<ResultRow>): EventPurchaseHydration {
+        if (rows.isEmpty()) {
+            return EventPurchaseHydration(emptyMap(), emptyMap(), emptyMap(), emptyMap())
         }
-        val items = EventPurchaseItems.selectAll()
-            .where { EventPurchaseItems.purchaseId eq row[EventPurchases.id] }
-            .map { toPurchaseItemResponse(it) }
-        val invoices = EventPurchaseInvoices.selectAll()
-            .where { EventPurchaseInvoices.purchaseId eq row[EventPurchases.id] }
+        val purchaseIds = rows.map { it[EventPurchases.id] }
+        val userIds = rows.mapNotNull { it[EventPurchases.purchasedByUserId] }.distinct()
+        val purchasedByNamesByUserId = if (userIds.isEmpty()) {
+            emptyMap()
+        } else {
+            Users.selectAll()
+                .where { Users.id inList userIds }
+                .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
+        }
+        val purchaseItemRows = EventPurchaseItems.selectAll()
+            .where { EventPurchaseItems.purchaseId inList purchaseIds }
+            .toList()
+        val inventoryItemIds = purchaseItemRows.map { it[EventPurchaseItems.eventInventoryItemId] }.distinct()
+        val inventoryItemNamesById = if (inventoryItemIds.isEmpty()) {
+            emptyMap()
+        } else {
+            EventInventoryItems.select(EventInventoryItems.id, EventInventoryItems.name)
+                .where { EventInventoryItems.id inList inventoryItemIds }
+                .associate { it[EventInventoryItems.id] to it[EventInventoryItems.name] }
+        }
+        val invoiceRows = EventPurchaseInvoices.selectAll()
+            .where { EventPurchaseInvoices.purchaseId inList purchaseIds }
             .orderBy(EventPurchaseInvoices.createdAt to SortOrder.ASC)
-            .map {
-                EventPurchaseInvoiceResponse(
-                    id = it[EventPurchaseInvoices.id].toString(),
-                    purchaseId = it[EventPurchaseInvoices.purchaseId].toString(),
-                    fileUrl = it[EventPurchaseInvoices.fileUrl],
-                    createdAt = it[EventPurchaseInvoices.createdAt].toString()
-                )
-            }
+            .toList()
+        val invoicesByPurchaseId = invoiceRows
+            .map { it[EventPurchaseInvoices.purchaseId] to toPurchaseInvoiceResponse(it) }
+            .groupBy({ it.first }, { it.second })
+
+        return EventPurchaseHydration(
+            purchasedByNamesByUserId = purchasedByNamesByUserId,
+            purchaseItemsByPurchaseId = purchaseItemRows.groupBy { it[EventPurchaseItems.purchaseId] },
+            inventoryItemNamesById = inventoryItemNamesById,
+            invoicesByPurchaseId = invoicesByPurchaseId
+        )
+    }
+
+    private fun toPurchaseResponse(
+        row: ResultRow,
+        hydration: EventPurchaseHydration? = null
+    ): EventPurchaseResponse {
+        val user = row[EventPurchases.purchasedByUserId]?.let { userId ->
+            hydration?.purchasedByNamesByUserId?.get(userId)
+                ?: Users.selectAll()
+                    .where { Users.id eq userId }
+                    .firstOrNull()
+                    ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+        }
+        val purchaseId = row[EventPurchases.id]
+        val items = hydration?.purchaseItemsByPurchaseId?.get(purchaseId)
+            ?.map { toPurchaseItemResponse(it, hydration) }
+            ?: EventPurchaseItems.selectAll()
+                .where { EventPurchaseItems.purchaseId eq purchaseId }
+                .map { toPurchaseItemResponse(it) }
+        val invoices = hydration?.invoicesByPurchaseId?.get(purchaseId)
+            ?: EventPurchaseInvoices.selectAll()
+                .where { EventPurchaseInvoices.purchaseId eq purchaseId }
+                .orderBy(EventPurchaseInvoices.createdAt to SortOrder.ASC)
+                .map { toPurchaseInvoiceResponse(it) }
         return EventPurchaseResponse(
-            id = row[EventPurchases.id].toString(),
+            id = purchaseId.toString(),
             eventId = row[EventPurchases.eventId].toString(),
             purchasedByUserId = row[EventPurchases.purchasedByUserId]?.toString(),
-            purchasedByName = user?.let { "${it[Users.name]} ${it[Users.surname]}".trim() },
+            purchasedByName = user,
             status = row[EventPurchases.status],
             purchaseDate = row[EventPurchases.purchaseDate]?.toString(),
             totalAmount = row[EventPurchases.totalAmount]?.toDouble(),
@@ -4417,16 +4995,29 @@ class EventService {
         )
     }
 
-    private fun toPurchaseItemResponse(row: ResultRow): EventPurchaseItemResponse {
-        val inventoryItem = EventInventoryItems.selectAll()
-            .where { EventInventoryItems.id eq row[EventPurchaseItems.eventInventoryItemId] }
-            .first()
+    private fun toPurchaseInvoiceResponse(row: ResultRow): EventPurchaseInvoiceResponse =
+        EventPurchaseInvoiceResponse(
+            id = row[EventPurchaseInvoices.id].toString(),
+            purchaseId = row[EventPurchaseInvoices.purchaseId].toString(),
+            fileUrl = row[EventPurchaseInvoices.fileUrl],
+            createdAt = row[EventPurchaseInvoices.createdAt].toString()
+        )
+
+    private fun toPurchaseItemResponse(
+        row: ResultRow,
+        hydration: EventPurchaseHydration? = null
+    ): EventPurchaseItemResponse {
+        val eventInventoryItemId = row[EventPurchaseItems.eventInventoryItemId]
+        val itemName = hydration?.inventoryItemNamesById?.get(eventInventoryItemId)
+            ?: EventInventoryItems.select(EventInventoryItems.name)
+                .where { EventInventoryItems.id eq eventInventoryItemId }
+                .first()[EventInventoryItems.name]
         val unitPrice = row[EventPurchaseItems.unitPrice]
         return EventPurchaseItemResponse(
             id = row[EventPurchaseItems.id].toString(),
             purchaseId = row[EventPurchaseItems.purchaseId].toString(),
-            eventInventoryItemId = row[EventPurchaseItems.eventInventoryItemId].toString(),
-            itemName = inventoryItem[EventInventoryItems.name],
+            eventInventoryItemId = eventInventoryItemId.toString(),
+            itemName = itemName,
             purchasedQuantity = row[EventPurchaseItems.purchasedQuantity],
             unitPrice = unitPrice?.toDouble(),
             lineTotal = unitPrice?.multiply(BigDecimal(row[EventPurchaseItems.purchasedQuantity]))?.toDouble(),
@@ -4554,50 +5145,109 @@ class EventService {
             ?.get(EventInventoryCustody.id)
     }
 
-    private fun toCustodyResponse(row: ResultRow): EventInventoryCustodyResponse {
-        val pastovykle = row[EventInventoryCustody.pastovykleId]?.let { id ->
-            Pastovykles.selectAll().where { Pastovykles.id eq id }.firstOrNull()
-        }
-        val holder = row[EventInventoryCustody.holderUserId]?.let { userId ->
-            Users.selectAll().where { Users.id eq userId }.firstOrNull()
-        }
-        val creator = Users.selectAll().where { Users.id eq row[EventInventoryCustody.createdByUserId] }.firstOrNull()
+    private data class CustodyHydration(
+        val pastovykleNamesById: Map<UUID, String>,
+        val userNamesById: Map<UUID, String>
+    )
+
+    private fun buildCustodyHydration(rows: List<ResultRow>): CustodyHydration {
+        val pastovykleIds = rows.mapNotNull { it[EventInventoryCustody.pastovykleId] }.distinct()
+        val userIds = buildSet {
+            rows.mapNotNullTo(this) { it[EventInventoryCustody.holderUserId] }
+            rows.mapTo(this) { it[EventInventoryCustody.createdByUserId] }
+        }.toList()
+        return CustodyHydration(
+            pastovykleNamesById = loadPastovykleNames(pastovykleIds),
+            userNamesById = loadUserNames(userIds)
+        )
+    }
+
+    private fun toCustodyResponse(
+        row: ResultRow,
+        hydration: CustodyHydration? = null
+    ): EventInventoryCustodyResponse {
+        val pastovykleId = row[EventInventoryCustody.pastovykleId]
+        val holderUserId = row[EventInventoryCustody.holderUserId]
+        val createdByUserId = row[EventInventoryCustody.createdByUserId]
         return EventInventoryCustodyResponse(
             id = row[EventInventoryCustody.id].toString(),
             eventInventoryItemId = row[EventInventoryCustody.eventInventoryItemId].toString(),
             itemName = row[EventInventoryItems.name],
-            pastovykleId = row[EventInventoryCustody.pastovykleId]?.toString(),
-            pastovykleName = pastovykle?.get(Pastovykles.name),
-            holderUserId = row[EventInventoryCustody.holderUserId]?.toString(),
-            holderUserName = holder?.let { "${it[Users.name]} ${it[Users.surname]}".trim() },
+            pastovykleId = pastovykleId?.toString(),
+            pastovykleName = pastovykleId?.let {
+                hydration?.pastovykleNamesById?.get(it) ?: loadPastovykleNames(listOf(it))[it]
+            },
+            holderUserId = holderUserId?.toString(),
+            holderUserName = holderUserId?.let {
+                hydration?.userNamesById?.get(it) ?: loadUserNames(listOf(it))[it]
+            },
             quantity = row[EventInventoryCustody.quantity],
             returnedQuantity = row[EventInventoryCustody.returnedQuantity],
             remainingQuantity = (row[EventInventoryCustody.quantity] - row[EventInventoryCustody.returnedQuantity]).coerceAtLeast(0),
             status = row[EventInventoryCustody.status],
-            createdByUserId = row[EventInventoryCustody.createdByUserId].toString(),
-            createdByUserName = creator?.let { "${it[Users.name]} ${it[Users.surname]}".trim() },
+            createdByUserId = createdByUserId.toString(),
+            createdByUserName = hydration?.userNamesById?.get(createdByUserId)
+                ?: loadUserNames(listOf(createdByUserId))[createdByUserId],
             createdAt = row[EventInventoryCustody.createdAt].toString(),
             closedAt = row[EventInventoryCustody.closedAt]?.toString(),
             notes = row[EventInventoryCustody.notes]
         )
     }
 
-    private fun toMovementResponse(row: ResultRow): EventInventoryMovementResponse {
-        val item = EventInventoryItems.selectAll()
-            .where { EventInventoryItems.id eq row[EventInventoryMovements.eventInventoryItemId] }
-            .first()
+    private data class MovementHydration(
+        val itemNamesById: Map<UUID, String>,
+        val pastovykleNamesById: Map<UUID, String>,
+        val userNamesById: Map<UUID, String>
+    )
+
+    private fun buildMovementHydration(rows: List<ResultRow>): MovementHydration {
+        val itemIds = rows.map { it[EventInventoryMovements.eventInventoryItemId] }.distinct()
+        val pastovykleIds = rows.flatMap {
+            listOfNotNull(
+                it[EventInventoryMovements.fromPastovykleId],
+                it[EventInventoryMovements.toPastovykleId]
+            )
+        }.distinct()
+        val userIds = rows.flatMap {
+            listOfNotNull(
+                it[EventInventoryMovements.fromUserId],
+                it[EventInventoryMovements.toUserId],
+                it[EventInventoryMovements.performedByUserId]
+            )
+        }.distinct()
+        val itemNamesById = if (itemIds.isEmpty()) {
+            emptyMap()
+        } else {
+            EventInventoryItems.select(EventInventoryItems.id, EventInventoryItems.name)
+                .where { EventInventoryItems.id inList itemIds }
+                .associate { it[EventInventoryItems.id] to it[EventInventoryItems.name] }
+        }
+        return MovementHydration(
+            itemNamesById = itemNamesById,
+            pastovykleNamesById = loadPastovykleNames(pastovykleIds),
+            userNamesById = loadUserNames(userIds)
+        )
+    }
+
+    private fun toMovementResponse(
+        row: ResultRow,
+        hydration: MovementHydration? = null
+    ): EventInventoryMovementResponse {
+        val eventInventoryItemId = row[EventInventoryMovements.eventInventoryItemId]
         fun userName(id: UUID?): String? = id?.let {
-            Users.selectAll().where { Users.id eq it }.firstOrNull()
-                ?.let { user -> "${user[Users.name]} ${user[Users.surname]}".trim() }
+            hydration?.userNamesById?.get(it) ?: loadUserNames(listOf(it))[it]
         }
         fun pastovykleName(id: UUID?): String? = id?.let {
-            Pastovykles.selectAll().where { Pastovykles.id eq it }.firstOrNull()?.get(Pastovykles.name)
+            hydration?.pastovykleNamesById?.get(it) ?: loadPastovykleNames(listOf(it))[it]
         }
         return EventInventoryMovementResponse(
             id = row[EventInventoryMovements.id].toString(),
             eventId = row[EventInventoryMovements.eventId].toString(),
-            eventInventoryItemId = row[EventInventoryMovements.eventInventoryItemId].toString(),
-            itemName = item[EventInventoryItems.name],
+            eventInventoryItemId = eventInventoryItemId.toString(),
+            itemName = hydration?.itemNamesById?.get(eventInventoryItemId)
+                ?: EventInventoryItems.select(EventInventoryItems.name)
+                    .where { EventInventoryItems.id eq eventInventoryItemId }
+                    .first()[EventInventoryItems.name],
             custodyId = row[EventInventoryMovements.custodyId]?.toString(),
             movementType = row[EventInventoryMovements.movementType],
             quantity = row[EventInventoryMovements.quantity],
@@ -4616,6 +5266,66 @@ class EventService {
         )
     }
 
+    private fun loadUserNames(ids: List<UUID>): Map<UUID, String> =
+        if (ids.isEmpty()) {
+            emptyMap()
+        } else {
+            Users.selectAll()
+                .where { Users.id inList ids.distinct() }
+                .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
+        }
+
+    private fun loadPastovykleNames(ids: List<UUID>): Map<UUID, String> =
+        if (ids.isEmpty()) {
+            emptyMap()
+        } else {
+            Pastovykles.selectAll()
+                .where { Pastovykles.id inList ids.distinct() }
+                .associate { it[Pastovykles.id] to it[Pastovykles.name] }
+        }
+
+    private fun toInventoryTransferRequestResponses(
+        rows: List<ResultRow>
+    ): List<EventInventoryTransferRequestResponse> {
+        if (rows.isEmpty()) return emptyList()
+        val userNames = loadUserNames(
+            rows.flatMap {
+                listOf(
+                    it[EventInventoryTransferRequests.requestedByUserId],
+                    it[EventInventoryTransferRequests.requestedFromUserId]
+                )
+            }
+        )
+        val itemIds = rows.map { it[EventInventoryTransferRequests.eventInventoryItemId] }.distinct()
+        val itemNames = EventInventoryItems
+            .select(EventInventoryItems.id, EventInventoryItems.name)
+            .where { EventInventoryItems.id inList itemIds }
+            .associate { it[EventInventoryItems.id] to it[EventInventoryItems.name] }
+        return rows.map { row ->
+            val requestedByUserId = row[EventInventoryTransferRequests.requestedByUserId]
+            val requestedFromUserId = row[EventInventoryTransferRequests.requestedFromUserId]
+            val eventInventoryItemId = row[EventInventoryTransferRequests.eventInventoryItemId]
+            EventInventoryTransferRequestResponse(
+                id = row[EventInventoryTransferRequests.id].toString(),
+                eventId = row[EventInventoryTransferRequests.eventId].toString(),
+                sourceCustodyId = row[EventInventoryTransferRequests.sourceCustodyId].toString(),
+                eventInventoryItemId = eventInventoryItemId.toString(),
+                itemName = itemNames[eventInventoryItemId] ?: "Unknown",
+                requestedByUserId = requestedByUserId.toString(),
+                requestedByUserName = userNames[requestedByUserId],
+                requestedFromUserId = requestedFromUserId.toString(),
+                requestedFromUserName = userNames[requestedFromUserId],
+                quantity = row[EventInventoryTransferRequests.quantity],
+                status = row[EventInventoryTransferRequests.status],
+                notes = row[EventInventoryTransferRequests.notes],
+                createdAt = row[EventInventoryTransferRequests.createdAt].toString(),
+                respondedAt = row[EventInventoryTransferRequests.respondedAt]?.toString(),
+                respondedByUserId = row[EventInventoryTransferRequests.respondedByUserId]?.toString(),
+                movementId = row[EventInventoryTransferRequests.movementId]?.toString()
+            )
+        }
+    }
+
     private fun toReconciliationResponse(event: ResultRow): EventReconciliationResponse {
         val eventId = event[Events.id]
         val sessionId = latestEventReturnSessionId(eventId)
@@ -4624,12 +5334,17 @@ class EventService {
             .selectAll()
             .where { EventInventoryItems.eventId eq eventId }
             .toList()
+        val custodyHydration = buildCustodyHydration(custodyRows)
         val reconciliationChecksByCustodyId = reconciliationChecksByCustodyId(eventId)
 
         val openReturns = custodyRows
             .filter { it[EventInventoryCustody.status] == "OPEN" && openQuantity(it) > 0 }
             .map { row ->
-                toReconciliationReturnLineResponse(row, reconciliationChecksByCustodyId[row[EventInventoryCustody.id]].orEmpty())
+                toReconciliationReturnLineResponse(
+                    row,
+                    reconciliationChecksByCustodyId[row[EventInventoryCustody.id]].orEmpty(),
+                    custodyHydration
+                )
             }
         val returnedToEventStorage = custodyRows
             .filter {
@@ -4637,10 +5352,28 @@ class EventService {
                     (it[EventInventoryCustody.pastovykleId] == null && it[EventInventoryCustody.holderUserId] == null)
             }
             .map { row ->
-                toReconciliationReturnLineResponse(row, reconciliationChecksByCustodyId[row[EventInventoryCustody.id]].orEmpty())
+                toReconciliationReturnLineResponse(
+                    row,
+                    reconciliationChecksByCustodyId[row[EventInventoryCustody.id]].orEmpty(),
+                    custodyHydration
+                )
             }
-        val unresolvedPurchases = reconciliationPurchaseRows(eventId)
-            .map { toReconciliationPurchaseLineResponse(it) }
+        val purchaseRows = reconciliationPurchaseRows(eventId)
+        val purchaseItemIds = purchaseRows.map { it[EventPurchaseItems.id] }
+        val reconciledQuantityByPurchaseItemId = if (purchaseItemIds.isEmpty()) {
+            emptyMap()
+        } else {
+            EventPurchaseItemReconciliations.selectAll()
+                .where { EventPurchaseItemReconciliations.purchaseItemId inList purchaseItemIds }
+                .groupBy { it[EventPurchaseItemReconciliations.purchaseItemId] }
+                .mapValues { (_, rows) -> rows.sumOf { it[EventPurchaseItemReconciliations.quantity] } }
+        }
+        val unresolvedPurchases = purchaseRows.map {
+            toReconciliationPurchaseLineResponse(
+                it,
+                reconciledQuantityByPurchaseItemId[it[EventPurchaseItems.id]] ?: 0
+            )
+        }
 
         return EventReconciliationResponse(
             eventId = eventId.toString(),
@@ -4655,17 +5388,20 @@ class EventService {
 
     private fun toReconciliationReturnLineResponse(
         row: ResultRow,
-        reconciliationChecks: List<ResultRow>
+        reconciliationChecks: List<ResultRow>,
+        hydration: CustodyHydration? = null
     ): EventReconciliationReturnLineResponse {
-        val pastovykle = row[EventInventoryCustody.pastovykleId]?.let { id ->
-            Pastovykles.selectAll().where { Pastovykles.id eq id }.firstOrNull()
+        val pastovykleId = row[EventInventoryCustody.pastovykleId]
+        val holderUserId = row[EventInventoryCustody.holderUserId]
+        val pastovykleName = pastovykleId?.let {
+            hydration?.pastovykleNamesById?.get(it) ?: loadPastovykleNames(listOf(it))[it]
         }
-        val holder = row[EventInventoryCustody.holderUserId]?.let { userId ->
-            Users.selectAll().where { Users.id eq userId }.firstOrNull()
+        val holderUserName = holderUserId?.let {
+            hydration?.userNamesById?.get(it) ?: loadUserNames(listOf(it))[it]
         }
         val currentHolderSummary = listOfNotNull(
-            pastovykle?.get(Pastovykles.name),
-            holder?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+            pastovykleName,
+            holderUserName
         ).joinToString(" / ").ifBlank { "Renginio sandėlis" }
         val sourcePickupSummary = buildSourcePickupSummary(
             row[EventInventoryItems.sourceCustodianName],
@@ -4688,10 +5424,10 @@ class EventService {
             eventInventoryItemId = row[EventInventoryCustody.eventInventoryItemId].toString(),
             itemId = row[EventInventoryItems.itemId]?.toString(),
             itemName = row[EventInventoryItems.name],
-            pastovykleId = row[EventInventoryCustody.pastovykleId]?.toString(),
-            pastovykleName = pastovykle?.get(Pastovykles.name),
-            holderUserId = row[EventInventoryCustody.holderUserId]?.toString(),
-            holderUserName = holder?.let { "${it[Users.name]} ${it[Users.surname]}".trim() },
+            pastovykleId = pastovykleId?.toString(),
+            pastovykleName = pastovykleName,
+            holderUserId = holderUserId?.toString(),
+            holderUserName = holderUserName,
             quantity = row[EventInventoryCustody.quantity],
             returnedQuantity = row[EventInventoryCustody.returnedQuantity],
             remainingQuantity = openQuantity(row),
@@ -4725,8 +5461,10 @@ class EventService {
         )
     }
 
-    private fun toReconciliationPurchaseLineResponse(row: ResultRow): EventReconciliationPurchaseLineResponse {
-        val reconciledQuantity = reconciledPurchaseQuantity(row[EventPurchaseItems.id])
+    private fun toReconciliationPurchaseLineResponse(
+        row: ResultRow,
+        reconciledQuantity: Int = reconciledPurchaseQuantity(row[EventPurchaseItems.id])
+    ): EventReconciliationPurchaseLineResponse {
         val remainingQuantity = (row[EventPurchaseItems.purchasedQuantity] - reconciledQuantity).coerceAtLeast(0)
         return EventReconciliationPurchaseLineResponse(
             purchaseId = row[EventPurchaseItems.purchaseId].toString(),

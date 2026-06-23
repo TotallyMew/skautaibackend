@@ -33,13 +33,15 @@ class MemberRoutesTest {
         token: String,
         tuntasId: String,
         name: String = "Skautai",
-        type: String = "SKAUTU_DRAUGOVE"
+        type: String = "SKAUTU_DRAUGOVE",
+        subType: String? = null
     ): String {
+        val subTypeField = subType?.let { """, "subType": "$it"""" }.orEmpty()
         val response = client.post("/api/organizational-units") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "$name", "type": "$type" }""")
+            setBody("""{ "name": "$name", "type": "$type"$subTypeField }""")
         }
         return Json.parseToJsonElement(response.bodyAsText())
             .jsonObject["id"]!!.jsonPrimitive.content
@@ -194,6 +196,95 @@ class MemberRoutesTest {
         val memberIds = members.map { it.jsonObject["userId"]!!.jsonPrimitive.content }.toSet()
         assertTrue(vadovasUserId in memberIds)
         assertTrue(skautasUserId in memberIds)
+    }
+
+    @Test
+    fun `senior unit candidates stay hidden from tuntas leadership until approved`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val seniorUnitId = createUnit(
+            token,
+            tuntasId,
+            name = "Vyr. skautai",
+            type = "VYR_SKAUTU_VIENETAS",
+            subType = "DRAUGOVE"
+        )
+        val (seniorLeaderToken, _) = registerUserWithRole(
+            token,
+            tuntasId,
+            "Vyr. skautu draugoves draugininkas",
+            "senior-leader@test.com",
+            seniorUnitId
+        )
+        val (_, seniorScoutId) = registerUserWithRole(
+            token,
+            tuntasId,
+            "Vyr. skautas",
+            "visible-senior@test.com",
+            seniorUnitId
+        )
+        val (_, candidateId) = registerUserWithRole(
+            token,
+            tuntasId,
+            "Vyr. skautas kandidatas",
+            "hidden-candidate@test.com",
+            seniorUnitId
+        )
+
+        val directoryResponse = client.get("/api/members") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, directoryResponse.status)
+        val directoryMembers = Json.parseToJsonElement(directoryResponse.bodyAsText())
+            .jsonObject["members"]!!.jsonArray
+        val directoryIds = directoryMembers
+            .map { it.jsonObject["userId"]!!.jsonPrimitive.content }.toSet()
+        assertTrue(seniorScoutId in directoryIds)
+        assertFalse(candidateId in directoryIds)
+        val hiddenDirectoryCandidate = directoryMembers.single {
+            it.jsonObject["isIdentityHidden"]?.jsonPrimitive?.content == "true"
+        }.jsonObject
+        assertEquals("Kandidatas", hiddenDirectoryCandidate["name"]!!.jsonPrimitive.content)
+        assertEquals("", hiddenDirectoryCandidate["surname"]!!.jsonPrimitive.content)
+        assertEquals("", hiddenDirectoryCandidate["email"]!!.jsonPrimitive.content)
+
+        val unitMembersResponse = client.get("/api/organizational-units/$seniorUnitId/members") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, unitMembersResponse.status)
+        val publicUnitMembers = Json.parseToJsonElement(unitMembersResponse.bodyAsText())
+            .jsonObject["members"]!!.jsonArray
+        val publicUnitMemberIds = publicUnitMembers
+            .map { it.jsonObject["userId"]!!.jsonPrimitive.content }.toSet()
+        assertTrue(seniorScoutId in publicUnitMemberIds)
+        assertFalse(candidateId in publicUnitMemberIds)
+        val hiddenUnitCandidate = publicUnitMembers.single {
+            it.jsonObject["isIdentityHidden"]?.jsonPrimitive?.content == "true"
+        }.jsonObject
+        assertEquals("Kandidatas", hiddenUnitCandidate["userName"]!!.jsonPrimitive.content)
+        assertEquals("", hiddenUnitCandidate["userSurname"]!!.jsonPrimitive.content)
+
+        val visibilityResponse = client.put(
+            "/api/organizational-units/$seniorUnitId/members/$candidateId/visibility"
+        ) {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $seniorLeaderToken")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "isPubliclyVisible": true }""")
+        }
+        assertEquals(HttpStatusCode.OK, visibilityResponse.status)
+
+        val visibleAfterApproval = client.get("/api/organizational-units/$seniorUnitId/members") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        val visibleIds = Json.parseToJsonElement(visibleAfterApproval.bodyAsText())
+            .jsonObject["members"]!!.jsonArray
+            .map { it.jsonObject["userId"]!!.jsonPrimitive.content }
+            .toSet()
+        assertEquals(setOf(seniorScoutId, candidateId), visibleIds)
     }
 
     @Test

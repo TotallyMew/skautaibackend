@@ -2,6 +2,9 @@ package lt.skautai.plugins
 
 import io.ktor.server.application.*
 import io.ktor.server.routing.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import lt.skautai.routes.authRoutes
 import lt.skautai.routes.bendrasInventoryRequestRoutes
 import lt.skautai.routes.deviceRoutes
@@ -40,6 +43,7 @@ import lt.skautai.services.BendrasInventoryRequestService
 import lt.skautai.services.DeviceService
 import lt.skautai.services.EventService
 import lt.skautai.services.EventPackingService
+import lt.skautai.services.EventInventoryReminderService
 import lt.skautai.services.FirebaseNotificationService
 import lt.skautai.services.RequisitionService
 import lt.skautai.routes.rolesRoutes
@@ -65,6 +69,7 @@ fun Application.configureRouting() {
     val deviceService = DeviceService()
     val notificationService = NotificationService()
     val firebaseNotificationService = FirebaseNotificationService(deviceService, notificationService)
+    val eventInventoryReminderService = EventInventoryReminderService(firebaseNotificationService)
     val notificationRecipientService = NotificationRecipientService()
 
     routing {
@@ -82,7 +87,7 @@ fun Application.configureRouting() {
         memberRoutes(memberService)
         leadershipChangeRequestRoutes(leadershipChangeRequestService)
         reservationRoutes(reservationService, firebaseNotificationService, notificationRecipientService)
-        eventRoutes(eventService, memberService, eventPackingService)
+        eventRoutes(eventService, memberService, eventPackingService, firebaseNotificationService)
         bendrasInventoryRequestRoutes(bendrasInventoryRequestService, firebaseNotificationService, notificationRecipientService)
         requisitionRoutes(requisitionService, firebaseNotificationService, notificationRecipientService)
         inventoryTemplateRoutes(inventoryTemplateService)
@@ -103,5 +108,16 @@ fun Application.configureRouting() {
         uploadRoutes()
         liveEventRoutes()
         deviceRoutes(deviceService, firebaseNotificationService)
+    }
+
+    val reminderJob = launch {
+        while (isActive) {
+            runCatching { eventInventoryReminderService.dispatchDueReminders() }
+                .onFailure { log.error("Failed to dispatch event inventory reminders", it) }
+            delay(60 * 60 * 1000L)
+        }
+    }
+    monitor.subscribe(ApplicationStopped) {
+        reminderJob.cancel()
     }
 }

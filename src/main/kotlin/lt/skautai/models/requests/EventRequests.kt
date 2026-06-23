@@ -217,9 +217,35 @@ data class CreateEventInventoryMovementRequest(
 )
 
 @Serializable
+data class CreateEventInventoryTransferRequest(
+    val sourceCustodyId: String,
+    val quantity: Int,
+    val notes: String? = null
+)
+
+@Serializable
+data class RespondEventInventoryTransferRequest(
+    val approve: Boolean,
+    val notes: String? = null
+)
+
+@Serializable
 data class CreatePastovykleInventoryRequestRequest(
     val eventInventoryItemId: String,
     val quantity: Int,
+    val notes: String? = null,
+    val provider: String = "UKVEDYS",
+    val dueAt: String? = null,
+    val responsibleUserId: String? = null
+)
+
+@Serializable
+data class UpdateEventInventoryRequestRequest(
+    val provider: String? = null,
+    val dueAt: String? = null,
+    val clearDueAt: Boolean = false,
+    val responsibleUserId: String? = null,
+    val clearResponsibleUserId: Boolean = false,
     val notes: String? = null
 )
 

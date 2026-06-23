@@ -10,6 +10,7 @@ import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.models.requests.AssignUnitMemberRequest
 import lt.skautai.models.requests.CreateOrganizationalUnitRequest
 import lt.skautai.models.requests.UpdateOrganizationalUnitRequest
+import lt.skautai.models.requests.UpdateUnitMemberVisibilityRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
@@ -154,9 +155,34 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
 
                     if (!checkPermission("members.view", tuntasUUID, unitUUID)) return@get
 
-                    service.getUnitMembers(unitUUID, tuntasUUID)
+                    service.getUnitMembers(unitUUID, tuntasUUID, callerUserId)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to fetch members")) }
+                }
+
+                put("{userId}/visibility") {
+                    val principal = call.principal<JWTPrincipal>()!!
+                    val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+                    val tuntasUUID = call.request.headers["X-Tuntas-Id"]
+                        ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                        ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Valid X-Tuntas-Id header required"))
+                    val unitUUID = call.parameters["id"]
+                        ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                        ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid unit ID"))
+                    val targetUserId = call.parameters["userId"]
+                        ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                        ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
+                    val request = call.receive<UpdateUnitMemberVisibilityRequest>()
+
+                    service.updateUnitMemberVisibility(
+                        unitId = unitUUID,
+                        targetUserId = targetUserId,
+                        tuntasId = tuntasUUID,
+                        callerUserId = callerUserId,
+                        request = request
+                    )
+                        .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                        .onFailure { call.respond(HttpStatusCode.Forbidden, ErrorResponse(it.message ?: "Failed to update visibility")) }
                 }
 
                 post {
@@ -259,6 +285,21 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                     .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Member removed from draugove")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to remove member")) }
                 }
+            }
+
+            get("{id}/privacy-audit") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val callerUserId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasUUID = call.request.headers["X-Tuntas-Id"]
+                    ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Valid X-Tuntas-Id header required"))
+                val unitUUID = call.parameters["id"]
+                    ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid unit ID"))
+
+                service.getSeniorUnitAccessAudit(unitUUID, tuntasUUID, callerUserId)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.Forbidden, ErrorResponse(it.message ?: "Failed to fetch privacy audit")) }
             }
         }
     }

@@ -103,6 +103,7 @@ object TestHelper {
                     leadership_change_requests, item_check_sessions,
                     reservation_movements,
                     event_purchase_items, event_purchases,
+                    event_inventory_transfer_requests,
                     event_inventory_custody, event_inventory_items, event_roles,
                     user_leadership_roles, user_ranks, role_permissions,
                     roles, permissions, locations, organizational_units,
@@ -162,7 +163,7 @@ object TestHelper {
                 memberRoutes(memberService)
                 leadershipChangeRequestRoutes(leadershipChangeRequestService)
                 reservationRoutes(reservationService, firebaseNotificationService, notificationRecipientService)
-                eventRoutes(eventService, memberService, eventPackingService)
+                eventRoutes(eventService, memberService, eventPackingService, firebaseNotificationService)
                 bendrasInventoryRequestRoutes(bendrasInventoryRequestService, firebaseNotificationService, notificationRecipientService)
                 requisitionRoutes(requisitionService, firebaseNotificationService, notificationRecipientService)
                 inventoryTemplateRoutes(inventoryTemplateService)

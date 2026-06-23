@@ -12,9 +12,11 @@ data class UnitMembershipResponse(
     val organizationalUnitName: String,
     val tuntasId: String,
     val assignmentType: String,
+    val isPubliclyVisible: Boolean = false,
     val assignedByUserId: String?,
     val joinedAt: String,
-    val leftAt: String?
+    val leftAt: String?,
+    val isIdentityHidden: Boolean = false
 )
 
 @Serializable

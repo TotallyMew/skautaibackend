@@ -27,6 +27,7 @@ import lt.skautai.services.ItemCheckService
 import lt.skautai.services.ItemScopeHelper
 import lt.skautai.services.ItemService
 import lt.skautai.services.PermissionContextService
+import lt.skautai.services.SeniorUnitPrivacyService
 import java.util.*
 
 fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckService) {
@@ -54,8 +55,32 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 val sharedOnly = call.request.queryParameters["sharedOnly"]?.toBooleanStrictOrNull() ?: false
                 val createdByUserId = call.request.queryParameters["createdByUserId"]
                 val updatedAfter = call.request.queryParameters["updatedAfter"]?.let(::parseInstantOrNull)
+                val searchQuery = call.request.queryParameters["q"]?.trim()?.take(100)
+                val limit = call.request.queryParameters["limit"]?.let { raw ->
+                    raw.toIntOrNull()
+                        ?.takeIf { it in 1..200 }
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("limit must be between 1 and 200"))
+                }
+                val offset = call.request.queryParameters["offset"]?.let { raw ->
+                    raw.toIntOrNull()
+                        ?.takeIf { it >= 0 }
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("offset must be 0 or greater"))
+                } ?: 0
 
-                itemService.getItems(tuntasUUID, userId, custodianId, type, category, status, sharedOnly, createdByUserId, updatedAfter)
+                itemService.getItems(
+                    tuntasId = tuntasUUID,
+                    requestingUserId = userId,
+                    custodianId = custodianId,
+                    type = type,
+                    category = category,
+                    status = status,
+                    sharedOnly = sharedOnly,
+                    createdByUserId = createdByUserId,
+                    updatedAfter = updatedAfter,
+                    searchQuery = searchQuery,
+                    limit = limit,
+                    offset = offset
+                )
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch items")) }
             }
@@ -323,6 +348,13 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 val targetOrgUnitId = request.custodianId?.let {
                     try { UUID.fromString(it) } catch (e: Exception) { null }
                 }
+                if (
+                    targetOrgUnitId != null &&
+                    SeniorUnitPrivacyService.isSeniorUnit(targetOrgUnitId, tuntasUUID) &&
+                    !SeniorUnitPrivacyService.userHasInternalAccess(userId, tuntasUUID, targetOrgUnitId)
+                ) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 val userPerms = resolveUserPermissions(userId, tuntasUUID)
                 val isPendingApproval: Boolean = if (targetOrgUnitId != null) {
@@ -390,6 +422,12 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
 
                 val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
                 val targetOrgUnitId = scopeInfo?.custodianId
+                if (!canAccessSeniorOwnedInventory(userId, tuntasUUID, targetOrgUnitId, scopeInfo?.origin)) {
+                    return@put call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                }
+                if (!canAccessSeniorOwnedInventory(userId, tuntasUUID, newCustodianId, scopeInfo?.origin)) {
+                    return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 if (!checkPermission("items.update", tuntasUUID, targetOrgUnitId)) return@put
                 if (newCustodianId != null && newCustodianId != targetOrgUnitId) {
@@ -420,6 +458,9 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
                     ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
                 val targetOrgUnitId = scopeInfo.custodianId
+                if (!canAccessSeniorOwnedInventory(userId, tuntasUUID, targetOrgUnitId, scopeInfo.origin)) {
+                    return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                }
                 if (!checkPermission("items.update", tuntasUUID, targetOrgUnitId)) return@post
                 if (
                     scopeInfo.origin in listOf("TRANSFERRED_FROM_TUNTAS", "from_shared") &&
@@ -452,6 +493,9 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
 
                 val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
                     ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                if (!canAccessSeniorOwnedInventory(userId, tuntasUUID, scopeInfo.custodianId, scopeInfo.origin)) {
+                    return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                }
                 if (!checkPermission("items.update", tuntasUUID, scopeInfo.custodianId)) return@post
 
                 val request = call.receive<ConsumeItemRequest>()
@@ -565,6 +609,9 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
                     ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
                 val targetOrgUnitId = if (scopeInfo.origin == "TRANSFERRED_FROM_TUNTAS") null else scopeInfo.custodianId
+                if (!canAccessSeniorOwnedInventory(userId, tuntasUUID, scopeInfo.custodianId, scopeInfo.origin)) {
+                    return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                }
                 if (!checkPermission("items.delete", tuntasUUID, targetOrgUnitId)) return@post
 
                 val request = call.receive<WriteOffItemRequest>()
@@ -590,6 +637,17 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 }
 
                 val deleteScopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
+                if (
+                    deleteScopeInfo != null &&
+                    !canAccessSeniorOwnedInventory(
+                        userId,
+                        tuntasUUID,
+                        deleteScopeInfo.custodianId,
+                        deleteScopeInfo.origin
+                    )
+                ) {
+                    return@delete call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                }
                 val deleteTargetOrgUnitId = if (deleteScopeInfo?.origin == "TRANSFERRED_FROM_TUNTAS") null else deleteScopeInfo?.custodianId
                 if (!checkPermission("items.delete", tuntasUUID, deleteTargetOrgUnitId)) return@delete
 
@@ -605,5 +663,16 @@ private fun parseInstantOrNull(value: String): kotlinx.datetime.Instant? = try {
     kotlinx.datetime.Instant.parse(value)
 } catch (_: Exception) {
     null
+}
+
+private fun canAccessSeniorOwnedInventory(
+    userId: UUID,
+    tuntasId: UUID,
+    custodianId: UUID?,
+    origin: String?
+): Boolean {
+    if (custodianId == null || origin == "TRANSFERRED_FROM_TUNTAS") return true
+    if (!SeniorUnitPrivacyService.isSeniorUnit(custodianId, tuntasId)) return true
+    return SeniorUnitPrivacyService.userHasInternalAccess(userId, tuntasId, custodianId)
 }
 

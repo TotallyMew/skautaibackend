@@ -64,7 +64,10 @@ data class ItemResponse(
 @Serializable
 data class ItemListResponse(
     val items: List<ItemResponse>,
-    val total: Int
+    val total: Int,
+    val limit: Int? = null,
+    val offset: Int = 0,
+    val hasMore: Boolean = false
 )
 
 @Serializable

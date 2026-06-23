@@ -21,3 +21,19 @@ data class OrganizationalUnitListResponse(
     val units: List<OrganizationalUnitResponse>,
     val total: Int
 )
+
+@Serializable
+data class SeniorUnitAccessAuditResponse(
+    val id: String,
+    val actorUserId: String,
+    val actorUserName: String,
+    val action: String,
+    val accessMode: String,
+    val createdAt: String
+)
+
+@Serializable
+data class SeniorUnitAccessAuditListResponse(
+    val entries: List<SeniorUnitAccessAuditResponse>,
+    val total: Int
+)

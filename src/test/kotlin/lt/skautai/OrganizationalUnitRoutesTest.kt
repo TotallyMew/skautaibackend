@@ -36,13 +36,15 @@ class OrganizationalUnitRoutesTest {
         token: String,
         tuntasId: String,
         name: String = "Vilkai",
-        type: String = "VILKU_DRAUGOVE"
+        type: String = "VILKU_DRAUGOVE",
+        subType: String? = null
     ): String {
+        val subTypeField = subType?.let { """, "subType": "$it"""" }.orEmpty()
         val response = client.post("/api/organizational-units") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "name": "$name", "type": "$type" }""")
+            setBody("""{ "name": "$name", "type": "$type"$subTypeField }""")
         }
         return Json.parseToJsonElement(response.bodyAsText())
             .jsonObject["id"]!!.jsonPrimitive.content
@@ -938,5 +940,37 @@ class OrganizationalUnitRoutesTest {
         }
 
         assertEquals(HttpStatusCode.Forbidden, response.status)
+    }
+
+    @Test
+    fun `senior unit leader can inspect member list privacy audit`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val unitId = createUnit(token, tuntasId, "Vyr. skautai", "VYR_SKAUTU_VIENETAS", "DRAUGOVE")
+        val (leaderToken, leaderUserId) = registerSecondUser(
+            token = token,
+            tuntasId = tuntasId,
+            roleName = "Vyr. skautu draugoves draugininkas",
+            email = "senior-audit-leader@test.com",
+            organizationalUnitId = unitId
+        )
+
+        val membersResponse = client.get("/api/organizational-units/$unitId/members") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, membersResponse.status, membersResponse.bodyAsText())
+
+        val auditResponse = client.get("/api/organizational-units/$unitId/privacy-audit") {
+            header("Authorization", "Bearer $leaderToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, auditResponse.status, auditResponse.bodyAsText())
+        val entries = Json.parseToJsonElement(auditResponse.bodyAsText()).jsonObject["entries"]!!.jsonArray
+        assertTrue(entries.isNotEmpty())
+        val latest = entries.first().jsonObject
+        assertEquals(leaderUserId, latest["actorUserId"]!!.jsonPrimitive.content)
+        assertEquals("VIEW_MEMBER_LIST", latest["action"]!!.jsonPrimitive.content)
+        assertEquals("INTERNAL", latest["accessMode"]!!.jsonPrimitive.content)
     }
 }

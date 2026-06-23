@@ -8,13 +8,17 @@ import lt.skautai.database.tables.UserRanks
 import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.Users
 import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.SeniorUnitAccessAudit
 import lt.skautai.models.requests.AssignUnitMemberRequest
 import lt.skautai.models.requests.CreateOrganizationalUnitRequest
 import lt.skautai.models.requests.UpdateOrganizationalUnitRequest
+import lt.skautai.models.requests.UpdateUnitMemberVisibilityRequest
 import lt.skautai.models.responses.OrganizationalUnitListResponse
 import lt.skautai.models.responses.OrganizationalUnitResponse
 import lt.skautai.models.responses.UnitMembershipListResponse
 import lt.skautai.models.responses.UnitMembershipResponse
+import lt.skautai.models.responses.SeniorUnitAccessAuditListResponse
+import lt.skautai.models.responses.SeniorUnitAccessAuditResponse
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -208,9 +212,13 @@ class OrganizationalUnitService {
         }
     }
 
-    fun getUnitMembers(unitId: UUID, tuntasId: UUID): Result<UnitMembershipListResponse> {
+    fun getUnitMembers(
+        unitId: UUID,
+        tuntasId: UUID,
+        callerUserId: UUID
+    ): Result<UnitMembershipListResponse> {
         return transaction {
-            OrganizationalUnits.selectAll()
+            val unit = OrganizationalUnits.selectAll()
                 .where {
                     (OrganizationalUnits.id eq unitId) and
                             (OrganizationalUnits.tuntasId eq tuntasId)
@@ -218,7 +226,21 @@ class OrganizationalUnitService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Organizational unit not found"))
 
-            val members = UnitAssignments
+            val hasInternalAccess =
+                unit[OrganizationalUnits.type] !in SeniorUnitPrivacyService.seniorUnitTypes ||
+                    SeniorUnitPrivacyService.userHasInternalAccess(callerUserId, tuntasId, unitId)
+            if (unit[OrganizationalUnits.type] in SeniorUnitPrivacyService.seniorUnitTypes) {
+                SeniorUnitAccessAudit.insert {
+                    it[this.tuntasId] = tuntasId
+                    it[this.unitId] = unitId
+                    it[actorUserId] = callerUserId
+                    it[action] = "VIEW_MEMBER_LIST"
+                    it[accessMode] = if (hasInternalAccess) "INTERNAL" else "PUBLIC"
+                    it[createdAt] = kotlinx.datetime.Clock.System.now()
+                }
+            }
+
+            val memberRows = UnitAssignments
                 .innerJoin(Users, { UnitAssignments.userId }, { Users.id })
                 .selectAll()
                 .where {
@@ -226,10 +248,117 @@ class OrganizationalUnitService {
                             (UnitAssignments.tuntasId eq tuntasId) and
                             (UnitAssignments.leftAt.isNull())
                 }
-                .map { toUnitMembershipResponse(it) }
+                .toList()
+            val rankNamesByUserId = if (hasInternalAccess || memberRows.isEmpty()) {
+                emptyMap()
+            } else {
+                UserRanks
+                    .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
+                    .select(UserRanks.userId, Roles.name)
+                    .where {
+                        (UserRanks.userId inList memberRows.map { it[UnitAssignments.userId] }.distinct()) and
+                            (UserRanks.tuntasId eq tuntasId)
+                    }
+                    .groupBy(
+                        keySelector = { it[UserRanks.userId] },
+                        valueTransform = { it[Roles.name] }
+                    )
+            }
+
+            val members = memberRows.mapNotNull { row ->
+                val rankNames = rankNamesByUserId[row[UnitAssignments.userId]].orEmpty()
+                val hideIdentity = !hasInternalAccess &&
+                    "Vyr. skautas kandidatas" in rankNames &&
+                    !row[UnitAssignments.isPubliclyVisible]
+                when {
+                    hasInternalAccess -> toUnitMembershipResponse(row)
+                    hideIdentity -> toUnitMembershipResponse(row, hideIdentity = true)
+                    "Vyr. skautas" in rankNames || row[UnitAssignments.isPubliclyVisible] ->
+                        toUnitMembershipResponse(row)
+                    else -> null
+                }
+            }
 
             Result.success(UnitMembershipListResponse(members = members, total = members.size))
         }
+    }
+
+    fun getSeniorUnitAccessAudit(
+        unitId: UUID,
+        tuntasId: UUID,
+        callerUserId: UUID
+    ): Result<SeniorUnitAccessAuditListResponse> = transaction {
+        if (!SeniorUnitPrivacyService.canManageCandidateVisibility(callerUserId, tuntasId, unitId)) {
+            return@transaction Result.failure(Exception("Only this senior unit's active leader can view the access audit"))
+        }
+        val entries = SeniorUnitAccessAudit
+            .innerJoin(Users, { SeniorUnitAccessAudit.actorUserId }, { Users.id })
+            .selectAll()
+            .where {
+                (SeniorUnitAccessAudit.unitId eq unitId) and
+                    (SeniorUnitAccessAudit.tuntasId eq tuntasId)
+            }
+            .orderBy(SeniorUnitAccessAudit.createdAt, SortOrder.DESC)
+            .limit(200)
+            .map {
+                SeniorUnitAccessAuditResponse(
+                    id = it[SeniorUnitAccessAudit.id].toString(),
+                    actorUserId = it[SeniorUnitAccessAudit.actorUserId].toString(),
+                    actorUserName = "${it[Users.name]} ${it[Users.surname]}".trim(),
+                    action = it[SeniorUnitAccessAudit.action],
+                    accessMode = it[SeniorUnitAccessAudit.accessMode],
+                    createdAt = it[SeniorUnitAccessAudit.createdAt].toString()
+                )
+            }
+        Result.success(SeniorUnitAccessAuditListResponse(entries, entries.size))
+    }
+
+    fun updateUnitMemberVisibility(
+        unitId: UUID,
+        targetUserId: UUID,
+        tuntasId: UUID,
+        callerUserId: UUID,
+        request: UpdateUnitMemberVisibilityRequest
+    ): Result<UnitMembershipResponse> = transaction {
+        if (!SeniorUnitPrivacyService.canManageCandidateVisibility(callerUserId, tuntasId, unitId)) {
+            return@transaction Result.failure(Exception("Only this senior unit's active leader can change candidate visibility"))
+        }
+
+        val assignment = UnitAssignments
+            .innerJoin(Users, { UnitAssignments.userId }, { Users.id })
+            .selectAll()
+            .where {
+                (UnitAssignments.userId eq targetUserId) and
+                    (UnitAssignments.organizationalUnitId eq unitId) and
+                    (UnitAssignments.tuntasId eq tuntasId) and
+                    UnitAssignments.leftAt.isNull()
+            }
+            .firstOrNull()
+            ?: return@transaction Result.failure(Exception("Unit member not found"))
+
+        val isCandidate = UserRanks
+            .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserRanks.userId eq targetUserId) and
+                    (UserRanks.tuntasId eq tuntasId) and
+                    (Roles.name eq "Vyr. skautas kandidatas")
+            }
+            .firstOrNull() != null
+        if (!isCandidate) {
+            return@transaction Result.failure(Exception("Visibility can only be changed for a senior scout candidate"))
+        }
+
+        UnitAssignments.update({ UnitAssignments.id eq assignment[UnitAssignments.id] }) {
+            it[isPubliclyVisible] = request.isPubliclyVisible
+        }
+
+        val updated = UnitAssignments
+            .innerJoin(Users, { UnitAssignments.userId }, { Users.id })
+            .selectAll()
+            .where { UnitAssignments.id eq assignment[UnitAssignments.id] }
+            .first()
+        Result.success(toUnitMembershipResponse(updated))
     }
 
     fun assignUnitMember(
@@ -596,7 +725,10 @@ class OrganizationalUnitService {
             key?.let { it to mappedValue }
         }.toMap()
 
-    private fun toUnitMembershipResponse(row: ResultRow): UnitMembershipResponse {
+    private fun toUnitMembershipResponse(
+        row: ResultRow,
+        hideIdentity: Boolean = false
+    ): UnitMembershipResponse {
         val unitId = row[UnitAssignments.organizationalUnitId]
         val unitName = OrganizationalUnits.selectAll()
             .where { OrganizationalUnits.id eq unitId }
@@ -604,16 +736,18 @@ class OrganizationalUnitService {
 
         return UnitMembershipResponse(
             id = row[UnitAssignments.id].toString(),
-            userId = row[UnitAssignments.userId].toString(),
-            userName = row[Users.name],
-            userSurname = row[Users.surname],
+            userId = if (hideIdentity) "hidden-${row[UnitAssignments.id]}" else row[UnitAssignments.userId].toString(),
+            userName = if (hideIdentity) "Kandidatas" else row[Users.name],
+            userSurname = if (hideIdentity) "" else row[Users.surname],
             organizationalUnitId = unitId.toString(),
             organizationalUnitName = unitName,
             tuntasId = row[UnitAssignments.tuntasId].toString(),
             assignmentType = row[UnitAssignments.assignmentType],
+            isPubliclyVisible = row[UnitAssignments.isPubliclyVisible],
             assignedByUserId = row[UnitAssignments.assignedByUserId]?.toString(),
             joinedAt = row[UnitAssignments.joinedAt].toString(),
-            leftAt = row[UnitAssignments.leftAt]?.toString()
+            leftAt = row[UnitAssignments.leftAt]?.toString(),
+            isIdentityHidden = hideIdentity
         )
     }
 }

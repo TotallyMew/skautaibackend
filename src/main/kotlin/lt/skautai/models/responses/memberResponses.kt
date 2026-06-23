@@ -33,6 +33,7 @@ data class MemberUnitAssignmentResponse(
     val organizationalUnitId: String,
     val organizationalUnitName: String,
     val assignmentType: String,
+    val isPubliclyVisible: Boolean = false,
     val joinedAt: String
 )
 
@@ -47,7 +48,8 @@ data class MemberResponse(
     val unitAssignments: List<MemberUnitAssignmentResponse> = emptyList(),
     val leadershipRoles: List<MemberLeadershipRoleResponse>,
     val leadershipRoleHistory: List<MemberLeadershipRoleResponse> = emptyList(),
-    val ranks: List<MemberRankResponse>
+    val ranks: List<MemberRankResponse>,
+    val isIdentityHidden: Boolean = false
 )
 
 @Serializable

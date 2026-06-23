@@ -393,6 +393,41 @@ class ReservationRoutesTest {
     }
 
     @Test
+    fun `get reservations supports limit and offset pagination`() = testApplication {
+        configureFullApp()
+        val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val itemId = client.createTestItem(token, tuntasId)
+
+        listOf("2026-06-01", "2026-06-08", "2026-06-15").forEach { startDate ->
+            client.post("/api/reservations") {
+                contentType(ContentType.Application.Json)
+                header("Authorization", "Bearer $token")
+                header("X-Tuntas-Id", tuntasId)
+                setBody(
+                    """{
+                        "itemId": "$itemId",
+                        "quantity": 1,
+                        "startDate": "$startDate",
+                        "endDate": "$startDate"
+                    }""".trimIndent()
+                )
+            }
+        }
+
+        val response = client.get("/api/reservations?limit=2&offset=0") {
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(2, body["reservations"]!!.jsonArray.size)
+        assertEquals(3, body["total"]!!.jsonPrimitive.content.toInt())
+        assertEquals(2, body["limit"]!!.jsonPrimitive.content.toInt())
+        assertEquals("true", body["hasMore"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `get single reservation returns 200`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()

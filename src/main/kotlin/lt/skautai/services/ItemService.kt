@@ -61,15 +61,27 @@ class ItemService {
         status: String? = null,
         sharedOnly: Boolean = false,
         createdByUserId: String? = null,
-        updatedAfter: Instant? = null
+        updatedAfter: Instant? = null,
+        searchQuery: String? = null,
+        limit: Int? = null,
+        offset: Int = 0
     ): Result<ItemListResponse> {
         return transaction {
             val canSeeAll = userCanSeeAllStatuses(requestingUserId, tuntasId)
             val canSeeAllInventory = userCanManageAllInventory(requestingUserId, tuntasId)
             val visibleUnitIds = if (canSeeAllInventory) emptySet() else userVisibleUnitIds(requestingUserId, tuntasId)
+            val protectedSeniorUnitIds = SeniorUnitPrivacyService.protectedUnitIdsFor(requestingUserId, tuntasId)
 
             var query = Items.selectAll()
                 .where { Items.tuntasId eq tuntasId }
+
+            if (protectedSeniorUnitIds.isNotEmpty()) {
+                query = query.andWhere {
+                    Items.custodianId.isNull() or
+                        (Items.custodianId notInList protectedSeniorUnitIds.toList()) or
+                        (Items.origin eq "TRANSFERRED_FROM_TUNTAS")
+                }
+            }
 
             if (!canSeeAllInventory) {
                 query = if (visibleUnitIds.isEmpty()) {
@@ -101,7 +113,9 @@ class ItemService {
                 if (custodianId != null) {
                     val uuid = try { UUID.fromString(custodianId) } catch (e: Exception) { null }
                     if (!canSeeAllInventory && uuid != null && uuid !in visibleUnitIds) {
-                        return@transaction Result.success(ItemListResponse(items = emptyList(), total = 0))
+                        return@transaction Result.success(
+                            ItemListResponse(items = emptyList(), total = 0, limit = limit, offset = offset)
+                        )
                     }
                     if (uuid != null) query = query.andWhere { Items.custodianId eq uuid }
                 } else if (sharedOnly) {
@@ -119,18 +133,46 @@ class ItemService {
                     if (canSeeAll) {
                         query = query.andWhere { Items.status eq it }
                     } else if (it != "ACTIVE") {
-                        return@transaction Result.success(ItemListResponse(items = emptyList(), total = 0))
+                        return@transaction Result.success(
+                            ItemListResponse(items = emptyList(), total = 0, limit = limit, offset = offset)
+                        )
                     }
                 }
             }
             updatedAfter?.let { since ->
                 query = query.andWhere { Items.updatedAt greater since }
             }
+            searchQuery?.trim()?.takeIf { it.isNotBlank() }?.lowercase()?.let { normalized ->
+                val pattern = "%$normalized%"
+                query = query.andWhere {
+                    (Items.name.lowerCase() like pattern) or
+                        (Items.description.lowerCase() like pattern) or
+                        (Items.notes.lowerCase() like pattern) or
+                        (Items.category.lowerCase() like pattern) or
+                        (Items.type.lowerCase() like pattern) or
+                        (Items.condition.lowerCase() like pattern) or
+                        (Items.temporaryStorageLabel.lowerCase() like pattern)
+                }
+            }
 
-            val itemRows = query.toList()
+            val total = query.count().toInt()
+            var pageQuery = query.orderBy(Items.name to SortOrder.ASC, Items.id to SortOrder.ASC)
+            if (limit != null) {
+                pageQuery = pageQuery.limit(limit, offset.toLong())
+            }
+
+            val itemRows = pageQuery.toList()
             val hydration = buildItemListHydration(itemRows, tuntasId)
             val items = itemRows.map { toItemResponse(it, hydration) }
-            Result.success(ItemListResponse(items = items, total = items.size))
+            Result.success(
+                ItemListResponse(
+                    items = items,
+                    total = total,
+                    limit = limit,
+                    offset = offset,
+                    hasMore = limit != null && offset + items.size < total
+                )
+            )
         }
     }
 
@@ -162,6 +204,9 @@ class ItemService {
                 }
             }
             val custodianId = item[Items.custodianId]
+            if (isProtectedSeniorOwnedItem(item, requestingUserId, tuntasId)) {
+                return@transaction Result.failure(Exception("Item not found"))
+            }
             if (!canSeeAllInventory && custodianId != null && custodianId !in userVisibleUnitIds(requestingUserId, tuntasId)) {
                 return@transaction Result.failure(Exception("Item not found"))
             }
@@ -1085,6 +1130,7 @@ class ItemService {
             .firstOrNull() ?: return null
         if (!canSeeAll && item[Items.status] != "ACTIVE") return null
         val custodianId = item[Items.custodianId]
+        if (isProtectedSeniorOwnedItem(item, requestingUserId, tuntasId)) return null
         if (!canSeeAllInventory && custodianId != null && custodianId !in userVisibleUnitIds(requestingUserId, tuntasId)) {
             return null
         }
@@ -1371,6 +1417,16 @@ class ItemService {
             .toSet()
 
         return leadershipUnitIds + memberUnitIds
+    }
+
+    private fun isProtectedSeniorOwnedItem(
+        item: ResultRow,
+        requestingUserId: UUID,
+        tuntasId: UUID
+    ): Boolean {
+        val custodianId = item[Items.custodianId] ?: return false
+        if (item[Items.origin] == "TRANSFERRED_FROM_TUNTAS") return false
+        return custodianId in SeniorUnitPrivacyService.protectedUnitIdsFor(requestingUserId, tuntasId)
     }
 
     private data class KitSummary(

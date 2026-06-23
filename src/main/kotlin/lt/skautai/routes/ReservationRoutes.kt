@@ -47,6 +47,16 @@ fun Route.reservationRoutes(
                 }
                 val status = call.request.queryParameters["status"]
                 val updatedAfter = call.request.queryParameters["updatedAfter"]?.let(::parseInstantOrNull)
+                val limit = call.request.queryParameters["limit"]?.let { raw ->
+                    raw.toIntOrNull()
+                        ?.takeIf { it in 1..200 }
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("limit must be between 1 and 200"))
+                }
+                val offset = call.request.queryParameters["offset"]?.let { raw ->
+                    raw.toIntOrNull()
+                        ?.takeIf { it >= 0 }
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("offset must be 0 or greater"))
+                } ?: 0
 
                 val userPerms = resolveUserPermissions(userId, tuntasUUID)
                 val canViewAll = userPerms.any {
@@ -57,7 +67,17 @@ fun Route.reservationRoutes(
                     .flatMap { it.userOrgUnitIds }
                     .distinct()
 
-                reservationService.getReservations(tuntasUUID, userId, canViewAll, approvableUnitIds, itemId, status, updatedAfter)
+                reservationService.getReservations(
+                    tuntasId = tuntasUUID,
+                    userId = userId,
+                    canViewAll = canViewAll,
+                    approvableUnitIds = approvableUnitIds,
+                    itemId = itemId,
+                    status = status,
+                    updatedAfter = updatedAfter,
+                    limit = limit,
+                    offset = offset
+                )
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch reservations")) }
             }
