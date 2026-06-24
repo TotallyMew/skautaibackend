@@ -52,6 +52,10 @@ import lt.skautai.routes.operationalRoutes
 import lt.skautai.routes.accountDeletionRoutes
 import lt.skautai.routes.publicSiteRoutes
 import lt.skautai.services.AccountDeletionService
+import io.ktor.server.plugins.ratelimit.rateLimit
+import lt.skautai.plugins.ExpensiveApiRateLimit
+import lt.skautai.plugins.MessagingRateLimit
+import lt.skautai.plugins.SearchRateLimit
 
 fun Application.configureRouting() {
     val authService = AuthService(environment)
@@ -82,40 +86,54 @@ fun Application.configureRouting() {
         publicSiteRoutes()
         accountDeletionRoutes(accountDeletionService)
         authRoutes(authService)
-        invitationRoutes(invitationService)
-        superAdminRoutes(
-            memberService,
-            organizationalUnitService,
-            firebaseNotificationService,
-            notificationRecipientService
-        )
-        itemRoutes(itemService, itemCheckService)
-        locationRoutes(locationService)
-        organizationalUnitRoutes(organizationalUnitService)
-        memberRoutes(memberService)
-        leadershipChangeRequestRoutes(leadershipChangeRequestService)
-        reservationRoutes(reservationService, firebaseNotificationService, notificationRecipientService)
-        eventRoutes(eventService, memberService, eventPackingService, firebaseNotificationService)
-        bendrasInventoryRequestRoutes(bendrasInventoryRequestService, firebaseNotificationService, notificationRecipientService)
-        requisitionRoutes(requisitionService, firebaseNotificationService, notificationRecipientService)
-        inventoryTemplateRoutes(inventoryTemplateService)
-        inventoryKitRoutes(inventoryKitService)
-        myTaskRoutes(myTaskService)
-        notificationRoutes(notificationService)
-        mobileRoutes(
-            itemService,
-            reservationService,
-            bendrasInventoryRequestService,
-            requisitionService,
-            eventService,
-            organizationalUnitService,
-            myTaskService
-        )
-        userRoutes()
-        rolesRoutes()
-        uploadRoutes()
-        liveEventRoutes()
-        deviceRoutes(deviceService, firebaseNotificationService)
+        rateLimit(AuthenticatedApiRateLimit) {
+            rateLimit(MutationRateLimit) {
+                invitationRoutes(invitationService)
+                superAdminRoutes(
+                    memberService,
+                    organizationalUnitService,
+                    firebaseNotificationService,
+                    notificationRecipientService
+                )
+                rateLimit(SearchRateLimit) {
+                    itemRoutes(itemService, itemCheckService)
+                }
+                locationRoutes(locationService)
+                organizationalUnitRoutes(organizationalUnitService)
+                memberRoutes(memberService)
+                leadershipChangeRequestRoutes(leadershipChangeRequestService)
+                reservationRoutes(reservationService, firebaseNotificationService, notificationRecipientService)
+                rateLimit(ExpensiveApiRateLimit) {
+                    eventRoutes(eventService, memberService, eventPackingService, firebaseNotificationService)
+                }
+                bendrasInventoryRequestRoutes(bendrasInventoryRequestService, firebaseNotificationService, notificationRecipientService)
+                requisitionRoutes(requisitionService, firebaseNotificationService, notificationRecipientService)
+                inventoryTemplateRoutes(inventoryTemplateService)
+                inventoryKitRoutes(inventoryKitService)
+                myTaskRoutes(myTaskService)
+                rateLimit(MessagingRateLimit) {
+                    notificationRoutes(notificationService)
+                }
+                rateLimit(SearchRateLimit) {
+                    mobileRoutes(
+                        itemService,
+                        reservationService,
+                        bendrasInventoryRequestService,
+                        requisitionService,
+                        eventService,
+                        organizationalUnitService,
+                        myTaskService
+                    )
+                }
+                userRoutes()
+                rolesRoutes()
+                rateLimit(UploadRateLimit) {
+                    uploadRoutes()
+                }
+                liveEventRoutes()
+                deviceRoutes(deviceService, firebaseNotificationService)
+            }
+        }
     }
 
     val reminderJob = launch {

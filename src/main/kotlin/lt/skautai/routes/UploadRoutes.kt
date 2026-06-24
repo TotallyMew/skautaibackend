@@ -1,19 +1,23 @@
 package lt.skautai.routes
 
+import io.ktor.http.ContentDisposition
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.PartData
 import io.ktor.http.content.forEachPart
 import io.ktor.http.content.streamProvider
 import io.ktor.server.auth.authenticate
+import io.ktor.server.auth.jwt.JWTPrincipal
+import io.ktor.server.auth.principal
 import io.ktor.server.request.receiveMultipart
-import io.ktor.server.response.respond
-import io.ktor.server.response.respondFile
+import io.ktor.server.response.*
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.UploadResponse
+import lt.skautai.services.PermissionContextService
 import lt.skautai.util.UploadStorage
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -31,6 +35,23 @@ fun Route.uploadRoutes() {
     authenticate("auth-jwt") {
         route("/uploads/images") {
             get("{fileName}") {
+                val principal = call.principal<JWTPrincipal>()
+                    ?: return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Not authenticated"))
+                val userId = try {
+                    UUID.fromString(principal.getClaim("userId", String::class))
+                } catch (_: Exception) {
+                    return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+                }
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try {
+                    UUID.fromString(tuntasId)
+                } catch (_: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
                 val fileName = call.parameters["fileName"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("File name required"))
                 val file = UploadStorage.resolveImage(fileName)
@@ -40,6 +61,11 @@ fun Route.uploadRoutes() {
                     return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("File not found"))
                 }
 
+                call.response.header(HttpHeaders.CacheControl, "private, no-store")
+                call.response.header(
+                    HttpHeaders.ContentDisposition,
+                    ContentDisposition.Inline.withParameter(ContentDisposition.Parameters.FileName, file.name).toString()
+                )
                 call.respondFile(file)
             }
         }
@@ -94,9 +120,7 @@ private suspend fun io.ktor.server.application.ApplicationCall.handleUpload(
             )
             error = validation.error
             if (validation.error == null) {
-                val fileName = "${UUID.randomUUID()}.${validation.extension}"
-                val target = File(uploadDir, fileName)
-                target.writeBytes(validation.bytes)
+                val fileName = writeUploadExclusive(uploadDir, validation.extension, validation.bytes)
                 uploadedUrl = "$urlPrefix/$fileName"
             }
         }
@@ -113,6 +137,18 @@ private suspend fun io.ktor.server.application.ApplicationCall.handleUpload(
         return
     }
     respond(HttpStatusCode.Created, UploadResponse(url))
+}
+
+private fun writeUploadExclusive(uploadDir: File, extension: String, bytes: ByteArray): String {
+    repeat(5) {
+        val fileName = "${UUID.randomUUID()}.$extension"
+        val target = File(uploadDir, fileName)
+        if (target.createNewFile()) {
+            target.outputStream().use { it.write(bytes) }
+            return fileName
+        }
+    }
+    throw IllegalStateException("Could not allocate upload file name")
 }
 
 private data class UploadValidationResult(

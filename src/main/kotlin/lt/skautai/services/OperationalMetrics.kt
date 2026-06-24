@@ -9,6 +9,8 @@ object OperationalMetrics {
     private val activeRequests = AtomicLong()
     private val failedRequests = AtomicLong()
     private val unhandledErrors = AtomicLong()
+    private val rateLimitedRequests = AtomicLong()
+    private val oversizedRequests = AtomicLong()
     private val totalDurationMs = AtomicLong()
     private val maxDurationMs = AtomicLong()
     private val statusClasses = ConcurrentHashMap<Int, AtomicLong>()
@@ -30,6 +32,14 @@ object OperationalMetrics {
         unhandledErrors.incrementAndGet()
     }
 
+    fun rateLimitedRequest() {
+        rateLimitedRequests.incrementAndGet()
+    }
+
+    fun oversizedRequestRejected() {
+        oversizedRequests.incrementAndGet()
+    }
+
     fun uptimeSeconds(): Long = (System.currentTimeMillis() - startedAtMs) / 1_000
 
     fun prometheus(): String {
@@ -46,6 +56,10 @@ object OperationalMetrics {
             appendLine("skautai_http_failed_requests_total ${failedRequests.get()}")
             appendLine("# TYPE skautai_unhandled_errors_total counter")
             appendLine("skautai_unhandled_errors_total ${unhandledErrors.get()}")
+            appendLine("# TYPE skautai_rate_limited_requests_total counter")
+            appendLine("skautai_rate_limited_requests_total ${rateLimitedRequests.get()}")
+            appendLine("# TYPE skautai_oversized_requests_total counter")
+            appendLine("skautai_oversized_requests_total ${oversizedRequests.get()}")
             appendLine("# TYPE skautai_http_request_duration_ms_average gauge")
             appendLine("skautai_http_request_duration_ms_average $averageDuration")
             appendLine("# TYPE skautai_http_request_duration_ms_max gauge")

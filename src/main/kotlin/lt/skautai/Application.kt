@@ -5,6 +5,7 @@ import io.ktor.server.config.ApplicationConfig
 import io.ktor.server.application.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.defaultheaders.*
+import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
 import io.ktor.server.request.httpMethod
@@ -15,8 +16,12 @@ import lt.skautai.plugins.configureCompression
 import lt.skautai.plugins.configureRouting
 import lt.skautai.plugins.configureLiveEventPublisher
 import lt.skautai.plugins.configureRequestTiming
+import lt.skautai.plugins.configureRequestBodyLimits
 import lt.skautai.plugins.configureSecurity
 import lt.skautai.plugins.configureSerialization
+import lt.skautai.plugins.configureRateLimiting
+import lt.skautai.plugins.RequestBodyTooLargeException
+import lt.skautai.plugins.RequestLengthRequiredException
 import lt.skautai.services.PermissionSeeder
 import lt.skautai.services.VadovasRankSupport
 import lt.skautai.services.OperationalMetrics
@@ -44,6 +49,8 @@ fun Application.module() {
     configureDatabases()
     configureSerialization()
     configureSecurity()
+    configureRateLimiting()
+    configureRequestBodyLimits()
     configureCompression()
     configureRequestTiming()
     configureLiveEventPublisher()
@@ -53,6 +60,41 @@ fun Application.module() {
         header("Referrer-Policy", "strict-origin-when-cross-origin")
     }
     install(StatusPages) {
+        status(HttpStatusCode.TooManyRequests) { call, status ->
+            OperationalMetrics.rateLimitedRequest()
+            applicationLogger.warn(
+                "Rate limit exceeded method={} path={}",
+                call.request.httpMethod.value,
+                call.request.path()
+            )
+            val retryAfter = call.response.headers[HttpHeaders.RetryAfter]
+                ?.toLongOrNull()
+                ?.coerceAtLeast(1)
+            val message = if (retryAfter != null) {
+                "Per daug užklausų. Bandykite dar kartą po $retryAfter sek."
+            } else {
+                "Per daug užklausų. Palaukite ir bandykite dar kartą."
+            }
+            call.respond(status, ErrorResponse(message))
+        }
+        exception<RequestBodyTooLargeException> { call, cause ->
+            call.respond(
+                HttpStatusCode.PayloadTooLarge,
+                ErrorResponse("Request body is too large.")
+            )
+        }
+        exception<RequestLengthRequiredException> { call, _ ->
+            call.respond(HttpStatusCode.LengthRequired, ErrorResponse("Content-Length header is required."))
+        }
+        exception<BadRequestException> { call, cause ->
+            applicationLogger.warn(
+                "Bad request method={} path={}",
+                call.request.httpMethod.value,
+                call.request.path(),
+                cause
+            )
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request."))
+        }
         exception<Throwable> { call, cause ->
             OperationalMetrics.unhandledError()
             applicationLogger.error(
@@ -90,6 +132,7 @@ fun Application.configureDatabases() {
             validationTimeout = systemLong("DB_POOL_VALIDATION_TIMEOUT_MS", 3_000L)
             idleTimeout = systemLong("DB_POOL_IDLE_TIMEOUT_MS", 600_000L)
             maxLifetime = systemLong("DB_POOL_MAX_LIFETIME_MS", 1_500_000L)
+            connectionInitSql = "SET statement_timeout = ${systemLong("DB_STATEMENT_TIMEOUT_MS", 15_000L)}; SET idle_in_transaction_session_timeout = ${systemLong("DB_IDLE_TX_TIMEOUT_MS", 30_000L)}"
             poolName = "skautai-db"
         }
     )
@@ -197,7 +240,13 @@ private val supportedDotEnvKeys = setOf(
     "DB_POOL_VALIDATION_TIMEOUT_MS",
     "DB_POOL_IDLE_TIMEOUT_MS",
     "DB_POOL_MAX_LIFETIME_MS"
+    ,"DB_STATEMENT_TIMEOUT_MS"
+    ,"DB_IDLE_TX_TIMEOUT_MS"
     ,"METRICS_TOKEN"
+    ,"TRUSTED_PROXY_IPS"
+    ,"MAX_API_BODY_BYTES"
+    ,"MAX_UPLOAD_BODY_BYTES"
+    ,"ANDROID_APP_CERT_SHA256"
     ,"RESEND_API_KEY"
     ,"PASSWORD_RESET_EMAIL_FROM"
     ,"PASSWORD_RESET_PUBLIC_BASE_URL"

@@ -45,7 +45,11 @@ fun Route.operationalRoutes() {
     get("/metrics") {
         val configuredToken = System.getenv("METRICS_TOKEN")
             ?: System.getProperty("METRICS_TOKEN")
-        if (!configuredToken.isNullOrBlank() && call.request.headers["X-Metrics-Token"] != configuredToken) {
+        if (configuredToken.isNullOrBlank()) {
+            call.respond(HttpStatusCode.NotFound)
+            return@get
+        }
+        if (call.request.headers["X-Metrics-Token"] != configuredToken) {
             call.respond(HttpStatusCode.Unauthorized)
             return@get
         }

@@ -155,7 +155,10 @@ fun Route.mobileRoutes(
                 val tuntasId = call.request.headers["X-Tuntas-Id"]?.let(::parseUuidOrNull)
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
 
-                PermissionContextService.resolve(userId, tuntasId)
+                val permissions = PermissionContextService.resolve(userId, tuntasId)
+                if (permissions.permissions.isEmpty()) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
                 call.respond(
                     HttpStatusCode.OK,
                     MobileCacheStateResponse(buildCacheState(tuntasId))

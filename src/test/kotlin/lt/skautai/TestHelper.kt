@@ -8,11 +8,16 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.config.MapApplicationConfig
 import io.ktor.server.routing.*
+import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.response.respond
+import io.ktor.server.application.Application
+import io.ktor.server.application.install
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import lt.skautai.plugins.configureSecurity
+import lt.skautai.plugins.configureRateLimiting
 import lt.skautai.routes.authRoutes
 import lt.skautai.routes.invitationRoutes
 import lt.skautai.routes.inventoryKitRoutes
@@ -142,6 +147,8 @@ object TestHelper {
         application {
             configureSecurity()
             configureSerialization()
+            configureRateLimiting()
+            configureTestRateLimitStatusPage()
             System.setProperty("PASSWORD_RESET_PUBLIC_BASE_URL", "https://api.example.test")
             System.setProperty("ACCOUNT_DELETION_PUBLIC_BASE_URL", "https://api.example.test")
             val testEmailService = object : EmailService {
@@ -358,4 +365,20 @@ object TestHelper {
         )
     }
 
+}
+
+private fun Application.configureTestRateLimitStatusPage() {
+    install(StatusPages) {
+        status(HttpStatusCode.TooManyRequests) { call, status ->
+            val retryAfter = call.response.headers[HttpHeaders.RetryAfter]
+                ?.toLongOrNull()
+                ?.coerceAtLeast(1)
+            val message = if (retryAfter != null) {
+                "Per daug užklausų. Bandykite dar kartą po $retryAfter sek."
+            } else {
+                "Per daug užklausų. Palaukite ir bandykite dar kartą."
+            }
+            call.respond(status, lt.skautai.models.responses.ErrorResponse(message))
+        }
+    }
 }

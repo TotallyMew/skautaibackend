@@ -3,6 +3,7 @@ package lt.skautai.routes
 import io.ktor.http.*
 import io.ktor.server.auth.*
 import io.ktor.server.auth.jwt.*
+import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -10,49 +11,55 @@ import lt.skautai.models.requests.PublicAccountDeletionRequest
 import lt.skautai.models.requests.RequestAccountDeletionRequest
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.MessageResponse
+import lt.skautai.plugins.EmailRequestRateLimit
+import lt.skautai.plugins.PublicAuthRateLimit
 import lt.skautai.services.AccountDeletionService
 import lt.skautai.services.TokenStatus
 import java.util.UUID
 
 fun Route.accountDeletionRoutes(service: AccountDeletionService) {
     authenticate("auth-jwt") {
-        post("/api/users/me/account-deletion") {
-            val principal = call.principal<JWTPrincipal>()!!
-            val userId = UUID.fromString(principal.getClaim("userId", String::class))
-            val request = call.receive<RequestAccountDeletionRequest>()
-            service.requestFromApp(userId, request.password)
-                .onSuccess {
-                    call.respond(
-                        HttpStatusCode.Accepted,
-                        MessageResponse("Patvirtinimo nuoroda išsiųsta į jūsų el. paštą.")
-                    )
-                }
-                .onFailure {
-                    call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Nepavyko pateikti prašymo."))
-                }
+        rateLimit(EmailRequestRateLimit) {
+            post("/api/users/me/account-deletion") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val request = call.receive<RequestAccountDeletionRequest>()
+                service.requestFromApp(userId, request.password)
+                    .onSuccess {
+                        call.respond(
+                            HttpStatusCode.Accepted,
+                            MessageResponse("Patvirtinimo nuoroda išsiųsta į jūsų el. paštą.")
+                        )
+                    }
+                    .onFailure {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Nepavyko pateikti prašymo."))
+                    }
+            }
         }
     }
 
-    post("/api/account-deletion/request") {
-        val request = call.receive<PublicAccountDeletionRequest>()
-        service.requestFromWeb(request.email)
-        call.respond(
-            HttpStatusCode.Accepted,
-            MessageResponse("Jei paskyra su šiuo el. paštu egzistuoja, išsiuntėme patvirtinimo nuorodą.")
-        )
-    }
+    rateLimit(EmailRequestRateLimit) {
+        post("/api/account-deletion/request") {
+            val request = call.receive<PublicAccountDeletionRequest>()
+            service.requestFromWeb(request.email)
+            call.respond(
+                HttpStatusCode.Accepted,
+                MessageResponse("Jei paskyra su šiuo el. paštu egzistuoja, išsiuntėme patvirtinimo nuorodą.")
+            )
+        }
 
-    post("/account-deletion/request") {
-        val email = call.receiveParameters()["email"].orEmpty()
-        service.requestFromWeb(email)
-        call.respondText(
-            accountDeletionResultPage(
-                "Prašymas priimtas",
-                "Jei paskyra su šiuo el. paštu egzistuoja, išsiuntėme patvirtinimo nuorodą."
-            ),
-            ContentType.Text.Html,
-            HttpStatusCode.Accepted
-        )
+        post("/account-deletion/request") {
+            val email = call.receiveParameters()["email"].orEmpty()
+            service.requestFromWeb(email)
+            call.respondText(
+                accountDeletionResultPage(
+                    "Prašymas priimtas",
+                    "Jei paskyra su šiuo el. paštu egzistuoja, išsiuntėme patvirtinimo nuorodą."
+                ),
+                ContentType.Text.Html,
+                HttpStatusCode.Accepted
+            )
+        }
     }
 
     get("/account-deletion/confirm") {
@@ -66,25 +73,27 @@ fun Route.accountDeletionRoutes(service: AccountDeletionService) {
         call.respondText(body, ContentType.Text.Html)
     }
 
-    post("/account-deletion/confirm") {
-        val token = call.receiveParameters()["token"].orEmpty()
-        service.confirm(token)
-            .onSuccess {
-                call.respondText(
-                    accountDeletionResultPage(
-                        "Paskyra ištrinta",
-                        "Jūsų prisijungimas, asmeniniai duomenys ir aktyvios narystės pašalinti."
-                    ),
-                    ContentType.Text.Html
-                )
-            }
-            .onFailure {
-                call.respondText(
-                    accountDeletionResultPage("Nepavyko ištrinti paskyros", it.message ?: "Pabandykite dar kartą."),
-                    ContentType.Text.Html,
-                    HttpStatusCode.BadRequest
-                )
-            }
+    rateLimit(PublicAuthRateLimit) {
+        post("/account-deletion/confirm") {
+            val token = call.receiveParameters()["token"].orEmpty()
+            service.confirm(token)
+                .onSuccess {
+                    call.respondText(
+                        accountDeletionResultPage(
+                            "Paskyra ištrinta",
+                            "Jūsų prisijungimas, asmeniniai duomenys ir aktyvios narystės pašalinti."
+                        ),
+                        ContentType.Text.Html
+                    )
+                }
+                .onFailure {
+                    call.respondText(
+                        accountDeletionResultPage("Nepavyko ištrinti paskyros", it.message ?: "Pabandykite dar kartą."),
+                        ContentType.Text.Html,
+                        HttpStatusCode.BadRequest
+                    )
+                }
+        }
     }
 }
 
