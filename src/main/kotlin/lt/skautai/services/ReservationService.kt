@@ -197,23 +197,18 @@ class ReservationService {
                 return@transaction Result.failure(Exception("End date cannot be before start date"))
             }
 
-            val itemRows = itemIds
-                .sortedBy(UUID::toString)
-                .map { itemId ->
-                    val row = Items.selectAll()
-                        .where {
-                            (Items.id eq itemId) and
-                                (Items.tuntasId eq tuntasId) and
-                                (Items.status eq "ACTIVE")
-                        }
-                        .forUpdate()
-                        .firstOrNull()
-                        ?: return@transaction Result.failure(Exception("One or more selected items were not found"))
-                    itemId to row
+            val sortedItemIds = itemIds.sortedBy(UUID::toString)
+            val itemRows = Items.selectAll()
+                .where {
+                    (Items.id inList sortedItemIds) and
+                        (Items.tuntasId eq tuntasId) and
+                        (Items.status eq "ACTIVE")
                 }
-                .toMap()
+                .orderBy(Items.id to SortOrder.ASC)
+                .forUpdate()
+                .associateBy { it[Items.id] }
 
-            if (itemRows.size != itemIds.size) {
+            if (itemRows.size != sortedItemIds.distinct().size) {
                 return@transaction Result.failure(Exception("One or more selected items were not found"))
             }
 
@@ -304,12 +299,13 @@ class ReservationService {
                 reservedByUserId = reservedByUserId
             )?.let { return@transaction Result.failure(it) }
 
+            val overlappingQuantities = overlappingReservedQuantities(itemRows.keys, startDate, endDate)
             for ((itemIdString, requestedQuantity) in normalizedItems) {
                 val itemUUID = UUID.fromString(itemIdString)
                 val item = itemRows[itemUUID]
                     ?: return@transaction Result.failure(Exception("Item not found or not active"))
 
-                val conflictingQuantity = overlappingReservedQuantity(itemUUID, startDate, endDate)
+                val conflictingQuantity = overlappingQuantities[itemUUID] ?: 0
                 val availableQuantity = item[Items.quantity] - conflictingQuantity
 
                 if (requestedQuantity > availableQuantity) {
@@ -899,20 +895,22 @@ class ReservationService {
             ?.get(Reservations.reservedByUserId)
     }
 
-    private fun overlappingReservedQuantity(
-        itemId: UUID,
+    private fun overlappingReservedQuantities(
+        itemIds: Collection<UUID>,
         startDate: LocalDate,
         endDate: LocalDate
-    ): Int {
+    ): Map<UUID, Int> {
+        if (itemIds.isEmpty()) return emptyMap()
         return Reservations
-            .select(Reservations.quantity)
+            .select(Reservations.itemId, Reservations.quantity)
             .where {
-                (Reservations.itemId eq itemId) and
+                (Reservations.itemId inList itemIds.toList()) and
                     (Reservations.status inList listOf("APPROVED", "ACTIVE")) and
                     (Reservations.startDate lessEq endDate) and
                     (Reservations.endDate greaterEq startDate)
             }
-            .sumOf { it[Reservations.quantity] }
+            .groupBy { it[Reservations.itemId] }
+            .mapValues { (_, rows) -> rows.sumOf { it[Reservations.quantity] } }
     }
 
     private fun parseDate(value: String): LocalDate? {
@@ -976,7 +974,7 @@ class ReservationService {
             .where { Items.id inList itemIds }
             .associateBy { it[Items.id] }
         val usersById = Users.selectAll()
-            .where { Users.id inList rows.map { it[Reservations.reservedByUserId] }.distinct() }
+            .where { (Users.id inList rows.map { it[Reservations.reservedByUserId] }.distinct()) and Users.deletedAt.isNull() }
             .associateBy { it[Users.id] }
         val unitIds = buildSet {
             rows.mapNotNullTo(this) { it[Reservations.requestingUnitId] }
@@ -1240,7 +1238,7 @@ class ReservationService {
             .associateBy { it[Items.id] }
         val reservedByUser = hydration?.usersById?.get(first[Reservations.reservedByUserId])
             ?: Users.selectAll()
-                .where { Users.id eq first[Reservations.reservedByUserId] }
+                .where { (Users.id eq first[Reservations.reservedByUserId]) and Users.deletedAt.isNull() }
                 .firstOrNull()
         val requestingUnit = first[Reservations.requestingUnitId]?.let { unitId ->
             hydration?.unitsById?.get(unitId)

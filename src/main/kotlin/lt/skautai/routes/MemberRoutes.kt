@@ -16,9 +16,9 @@ import lt.skautai.plugins.checkPermission
 import lt.skautai.services.MemberService
 import java.util.*
 
-fun Route.memberRoutes(memberService: MemberService) {
+fun Route.memberRoutes(memberService: MemberService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/members") {
+        route("$apiPrefix/members") {
 
             get {
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
@@ -95,7 +95,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
                     }
 
-                    val request = call.receive<AssignLeadershipRoleRequest>()
+                    val request = call.receiveValidated<AssignLeadershipRoleRequest>()
 
                     memberService.assignLeadershipRole(userUUID, tuntasUUID, assignedByUserId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -126,7 +126,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                         return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid assignment ID"))
                     }
 
-                    val request = call.receive<UpdateLeadershipRoleRequest>()
+                    val request = call.receiveValidated<UpdateLeadershipRoleRequest>()
 
                     memberService.updateLeadershipRole(userUUID, assignmentUUID, tuntasUUID, callerUserId, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -194,7 +194,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                val request = call.receive<TransferTuntininkasRequest>()
+                val request = call.receiveValidated<TransferTuntininkasRequest>()
                 val successorUserId = try { UUID.fromString(request.successorUserId) } catch (e: Exception) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
                 }
@@ -224,7 +224,7 @@ fun Route.memberRoutes(memberService: MemberService) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
                     }
 
-                    val request = call.receive<AssignRankRequest>()
+                    val request = call.receiveValidated<AssignRankRequest>()
 
                     memberService.assignRank(userUUID, tuntasUUID, assignedByUserId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }

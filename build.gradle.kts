@@ -27,6 +27,7 @@ dependencies {
     implementation("io.ktor:ktor-server-status-pages:$ktor_version")
     implementation("io.ktor:ktor-server-default-headers:$ktor_version")
     implementation("io.ktor:ktor-server-compression:$ktor_version")
+    implementation("io.ktor:ktor-server-cors:$ktor_version")
     implementation("io.ktor:ktor-server-rate-limit:$ktor_version")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     implementation("org.jetbrains.exposed:exposed-kotlin-datetime:$exposed_version")

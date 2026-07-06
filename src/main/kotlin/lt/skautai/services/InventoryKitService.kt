@@ -157,21 +157,29 @@ class InventoryKitService {
                 return Result.failure(Exception("Invalid item ID"))
             }
         }.distinct()
-        val rows = itemIds.map { itemId ->
+        val rowsById = if (itemIds.isEmpty()) {
+            emptyMap()
+        } else {
             Items.selectAll()
-                .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) and (Items.status eq "ACTIVE") }
-                .firstOrNull()
-                ?: return Result.failure(Exception("Kit item not found in this tuntas"))
+                .where { (Items.id inList itemIds) and (Items.tuntasId eq tuntasId) and (Items.status eq "ACTIVE") }
+                .associateBy { it[Items.id] }
         }
-        return Result.success(rows)
+        if (rowsById.size != itemIds.size) {
+            return Result.failure(Exception("Kit item not found in this tuntas"))
+        }
+        return Result.success(itemIds.map { rowsById.getValue(it) })
     }
 
-    private fun currentItemRows(kitId: UUID): List<ResultRow> =
-        InventoryKitItems.selectAll()
+    private fun currentItemRows(kitId: UUID): List<ResultRow> {
+        val itemIds = InventoryKitItems.selectAll()
             .where { InventoryKitItems.kitId eq kitId }
-            .mapNotNull { kitItem ->
-                Items.selectAll().where { Items.id eq kitItem[InventoryKitItems.itemId] }.firstOrNull()
-            }
+            .map { it[InventoryKitItems.itemId] }
+        if (itemIds.isEmpty()) return emptyList()
+        val rowsById = Items.selectAll()
+            .where { Items.id inList itemIds }
+            .associateBy { it[Items.id] }
+        return itemIds.mapNotNull { rowsById[it] }
+    }
 
     private fun resolveCustodian(
         tuntasId: UUID,
@@ -207,10 +215,24 @@ class InventoryKitService {
     }
 
     private fun validateItemsAvailableForKit(kitId: UUID?, itemRows: List<ResultRow>): Exception? {
-        itemRows.forEach { item ->
-            val activeKit = activeKitForItem(item[Items.id])
+        val itemIds = itemRows.map { it[Items.id] }
+        if (itemIds.isEmpty()) return null
+        val itemNamesById = itemRows.associate { it[Items.id] to it[Items.name] }
+        val memberships = InventoryKitItems.selectAll()
+            .where { InventoryKitItems.itemId inList itemIds }
+            .toList()
+        if (memberships.isEmpty()) return null
+
+        val kitIds = memberships.map { it[InventoryKitItems.kitId] }.distinct()
+        val activeKitsById = InventoryKits.selectAll()
+            .where { (InventoryKits.id inList kitIds) and (InventoryKits.status eq "ACTIVE") }
+            .associateBy { it[InventoryKits.id] }
+
+        memberships.forEach { membership ->
+            val activeKit = activeKitsById[membership[InventoryKitItems.kitId]]
             if (activeKit != null && activeKit[InventoryKits.id] != kitId) {
-                return Exception("${item[Items.name]} is already in another active kit")
+                val itemName = itemNamesById[membership[InventoryKitItems.itemId]] ?: "Item"
+                return Exception("$itemName is already in another active kit")
             }
         }
         return null
@@ -349,13 +371,20 @@ class InventoryKitService {
         val locationId = row[InventoryKits.locationId]
         val locationName = locationId?.let { locationNodes[it]?.name }
         val locationPath = locationId?.let { buildLocationPath(it, locationNodes) }
-        val items = hydration?.itemsByKitId?.get(kitId) ?: InventoryKitItems.selectAll()
-            .where { InventoryKitItems.kitId eq kitId }
-            .mapNotNull { kitItem ->
-                val item = Items.selectAll()
-                    .where { Items.id eq kitItem[InventoryKitItems.itemId] }
-                    .firstOrNull()
-                    ?: return@mapNotNull null
+        val items = hydration?.itemsByKitId?.get(kitId) ?: run {
+            val kitItemRows = InventoryKitItems.selectAll()
+                .where { InventoryKitItems.kitId eq kitId }
+                .toList()
+            val itemIds = kitItemRows.map { it[InventoryKitItems.itemId] }.distinct()
+            val itemRowsById = if (itemIds.isEmpty()) {
+                emptyMap()
+            } else {
+                Items.selectAll()
+                    .where { Items.id inList itemIds }
+                    .associateBy { it[Items.id] }
+            }
+            kitItemRows.mapNotNull { kitItem ->
+                val item = itemRowsById[kitItem[InventoryKitItems.itemId]] ?: return@mapNotNull null
                 val itemLocationId = item[Items.locationId]
                 InventoryKitItemResponse(
                     id = kitItem[InventoryKitItems.id].toString(),
@@ -371,6 +400,7 @@ class InventoryKitService {
                     notes = kitItem[InventoryKitItems.notes]
                 )
             }
+        }
         return InventoryKitResponse(
             id = kitId.toString(),
             tuntasId = row[InventoryKits.tuntasId].toString(),

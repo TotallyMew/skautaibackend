@@ -33,7 +33,8 @@ class MemberService {
                 .selectAll()
                 .where {
                     (UserTuntasMemberships.tuntasId eq tuntasId) and
-                        (UserTuntasMemberships.leftAt.isNull())
+                        (UserTuntasMemberships.leftAt.isNull()) and
+                        Users.deletedAt.isNull()
                 }
                 .toList()
             val hydration = buildMemberListHydration(
@@ -71,7 +72,8 @@ class MemberService {
                 .where {
                     (UserTuntasMemberships.userId eq userId) and
                             (UserTuntasMemberships.tuntasId eq tuntasId) and
-                            (UserTuntasMemberships.leftAt.isNull())
+                            (UserTuntasMemberships.leftAt.isNull()) and
+                            Users.deletedAt.isNull()
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Member not found in this tuntas"))
@@ -107,7 +109,8 @@ class MemberService {
                 .selectAll()
                 .where {
                     (UserTuntasMemberships.tuntasId eq tuntasId) and
-                        (UserTuntasMemberships.leftAt.isNull())
+                        (UserTuntasMemberships.leftAt.isNull()) and
+                        Users.deletedAt.isNull()
                 }
                 .toList()
             val hydration = buildMemberListHydration(

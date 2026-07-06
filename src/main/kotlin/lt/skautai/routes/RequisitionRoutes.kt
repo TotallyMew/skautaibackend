@@ -37,10 +37,11 @@ import org.jetbrains.exposed.sql.transactions.transaction
 fun Route.requisitionRoutes(
     service: RequisitionService,
     firebaseNotificationService: FirebaseNotificationService,
-    notificationRecipientService: NotificationRecipientService
+    notificationRecipientService: NotificationRecipientService,
+    apiPrefix: String = "/api"
 ) {
     authenticate("auth-jwt") {
-        route("/api/requisitions") {
+        route("$apiPrefix/requisitions") {
             get {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
@@ -138,7 +139,7 @@ fun Route.requisitionRoutes(
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
 
-                val request = call.receive<CreateRequisitionRequest>()
+                val request = call.receiveValidated<CreateRequisitionRequest>()
                 service.createRequest(tuntasUUID, userId, request)
                     .onSuccess {
                         firebaseNotificationService.sendRequisitionNextStepNotifications(
@@ -204,7 +205,7 @@ fun Route.requisitionRoutes(
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
                 }
 
-                val request = call.receive<RequisitionUnitReviewRequest>()
+                val request = call.receiveValidated<RequisitionUnitReviewRequest>()
                 service.unitReview(requestUUID, tuntasUUID, userId, request)
                     .onSuccess {
                         firebaseNotificationService.sendRequisitionReviewNotification(it)
@@ -240,7 +241,7 @@ fun Route.requisitionRoutes(
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
                 }
 
-                val request = call.receive<RequisitionTopLevelReviewRequest>()
+                val request = call.receiveValidated<RequisitionTopLevelReviewRequest>()
                 service.topLevelReview(requestUUID, tuntasUUID, userId, request)
                     .onSuccess {
                         firebaseNotificationService.sendRequisitionReviewNotification(it)
@@ -271,7 +272,7 @@ fun Route.requisitionRoutes(
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
                 }
 
-                val request = call.receive<RequisitionMarkPurchasedRequest>()
+                val request = call.receiveValidated<RequisitionMarkPurchasedRequest>()
                 service.markPurchased(requestUUID, tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to mark requisition purchased")) }
@@ -299,7 +300,7 @@ fun Route.requisitionRoutes(
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
                 }
 
-                val request = call.receive<AddRequisitionToInventoryRequest>()
+                val request = call.receiveValidated<AddRequisitionToInventoryRequest>()
                 service.addPurchasedItemsToInventory(requestUUID, tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to add requisition to inventory")) }

@@ -51,10 +51,11 @@ fun Route.eventRoutes(
     eventService: EventService,
     memberService: MemberService,
     eventPackingService: EventPackingService,
-    firebaseNotificationService: FirebaseNotificationService
+    firebaseNotificationService: FirebaseNotificationService,
+    apiPrefix: String = "/api"
 ) {
     authenticate("auth-jwt") {
-        route("/api/events") {
+        route("$apiPrefix/events") {
 
             get {
                 val userId = currentUserId() ?: return@get
@@ -143,7 +144,7 @@ fun Route.eventRoutes(
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                val request = call.receive<CreateEventRequest>()
+                val request = call.receiveValidated<CreateEventRequest>()
                 val targetOrgUnitId = request.organizationalUnitId?.let {
                     try { UUID.fromString(it) } catch (e: Exception) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid organizational unit ID"))
@@ -171,7 +172,7 @@ fun Route.eventRoutes(
                 val eventUUID = try { UUID.fromString(eventId) } catch (e: Exception) {
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid event ID"))
                 }
-                val request = call.receive<UpdateEventRequest>()
+                val request = call.receiveValidated<UpdateEventRequest>()
                 if (request.status == "ACTIVE") {
                     if (!canStartEvent(eventService, tuntasUUID, eventUUID)) return@put
                 } else {
@@ -221,7 +222,7 @@ fun Route.eventRoutes(
                     }
                     if (!canManageEvent(eventService, tuntasUUID, eventUUID)) return@post
 
-                    val request = call.receive<AssignEventRoleRequest>()
+                    val request = call.receiveValidated<AssignEventRoleRequest>()
 
                     eventService.assignEventRole(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -288,7 +289,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
-                    val request = call.receive<CreateEventPackingContainerRequest>()
+                    val request = call.receiveValidated<CreateEventPackingContainerRequest>()
                     eventPackingService.createContainer(eventUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create packing container")) }
@@ -300,7 +301,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@put
                     val lineUUID = parseUuidParameter("lineId", "Invalid packing line ID") ?: return@put
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
-                    val request = call.receive<UpdateEventPackingLineRequest>()
+                    val request = call.receiveValidated<UpdateEventPackingLineRequest>()
                     eventPackingService.updateLine(eventUUID, lineUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update packing line")) }
@@ -329,7 +330,7 @@ fun Route.eventRoutes(
                     if (!eventService.canRequestEventInventory(eventUUID, tuntasUUID, userId)) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                     }
-                    val request = call.receive<CreateEventInventoryRequestRequest>()
+                    val request = call.receiveValidated<CreateEventInventoryRequestRequest>()
                     eventService.createEventInventoryRequest(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e ->
@@ -344,7 +345,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@put
                     val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@put
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
-                    val request = call.receive<UpdateEventInventoryRequestRequest>()
+                    val request = call.receiveValidated<UpdateEventInventoryRequestRequest>()
                     eventService.updateInventoryRequest(eventUUID, requestUUID, tuntasUUID, userId, request)
                         .onSuccess {
                             notifyInventoryRequestAssignment(firebaseNotificationService, tuntasUUID, it, request.responsibleUserId != null)
@@ -368,7 +369,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
-                    val request = call.receive<CreateEventInventoryBucketRequest>()
+                    val request = call.receiveValidated<CreateEventInventoryBucketRequest>()
                     eventService.createInventoryBucket(eventUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create inventory bucket")) }
@@ -379,7 +380,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@put
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
                     val bucketUUID = parseUuidParameter("bucketId", "Invalid bucket ID") ?: return@put
-                    val request = call.receive<UpdateEventInventoryBucketRequest>()
+                    val request = call.receiveValidated<UpdateEventInventoryBucketRequest>()
                     eventService.updateInventoryBucket(eventUUID, bucketUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update inventory bucket")) }
@@ -403,7 +404,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
-                    val request = call.receive<CreateEventInventoryItemRequest>()
+                    val request = call.receiveValidated<CreateEventInventoryItemRequest>()
                     eventService.createInventoryItem(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create inventory item")) }
@@ -415,7 +416,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
-                    val request = call.receive<CreateEventInventoryItemsBulkRequest>()
+                    val request = call.receiveValidated<CreateEventInventoryItemsBulkRequest>()
                     eventService.createInventoryItemsBulk(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create inventory items")) }
@@ -426,7 +427,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@put
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
                     val inventoryItemUUID = parseUuidParameter("inventoryItemId", "Invalid inventory item ID") ?: return@put
-                    val request = call.receive<UpdateEventInventoryItemRequest>()
+                    val request = call.receiveValidated<UpdateEventInventoryItemRequest>()
                     eventService.updateInventoryItem(eventUUID, inventoryItemUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update inventory item")) }
@@ -449,7 +450,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
                     val inventoryItemUUID = parseUuidParameter("inventoryItemId", "Invalid inventory item ID") ?: return@post
-                    val request = call.receive<CreateEventInventorySourceRequest>()
+                    val request = call.receiveValidated<CreateEventInventorySourceRequest>()
                     eventService.createInventorySource(eventUUID, inventoryItemUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create inventory source")) }
@@ -460,7 +461,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@put
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
                     val sourceUUID = parseUuidParameter("sourceId", "Invalid inventory source ID") ?: return@put
-                    val request = call.receive<UpdateEventInventorySourceRequest>()
+                    val request = call.receiveValidated<UpdateEventInventorySourceRequest>()
                     eventService.updateInventorySource(eventUUID, sourceUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update inventory source")) }
@@ -482,7 +483,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
-                    val request = call.receive<CreateEventInventoryAllocationRequest>()
+                    val request = call.receiveValidated<CreateEventInventoryAllocationRequest>()
                     eventService.createInventoryAllocation(eventUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create inventory allocation")) }
@@ -493,7 +494,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@put
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@put
                     val allocationUUID = parseUuidParameter("allocationId", "Invalid allocation ID") ?: return@put
-                    val request = call.receive<UpdateEventInventoryAllocationRequest>()
+                    val request = call.receiveValidated<UpdateEventInventoryAllocationRequest>()
                     eventService.updateInventoryAllocation(eventUUID, allocationUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update inventory allocation")) }
@@ -544,7 +545,7 @@ fun Route.eventRoutes(
                         userPermissions.any {
                             it.permissionName == "events.inventory.distribute" && it.scope == "ALL"
                         }
-                    val request = call.receive<CreateEventInventoryMovementRequest>()
+                    val request = call.receiveValidated<CreateEventInventoryMovementRequest>()
                     eventService.createInventoryMovement(eventUUID, tuntasUUID, userId, request, canManageInventory)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e ->
@@ -579,7 +580,7 @@ fun Route.eventRoutes(
                     if (!eventService.isTuntasMember(userId, tuntasUUID)) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                     }
-                    val request = call.receive<CreateEventInventoryTransferRequest>()
+                    val request = call.receiveValidated<CreateEventInventoryTransferRequest>()
                     eventService.createInventoryTransferRequest(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { response ->
                             firebaseNotificationService.sendToUser(
@@ -609,7 +610,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@post
                     val requestUUID = parseUuidParameter("requestId", "Invalid transfer request ID") ?: return@post
                     val canManageInventory = eventService.canManageEventInventory(eventUUID, tuntasUUID, userId)
-                    val request = call.receive<RespondEventInventoryTransferRequest>()
+                    val request = call.receiveValidated<RespondEventInventoryTransferRequest>()
                     eventService.respondToInventoryTransferRequest(
                         eventUUID,
                         requestUUID,
@@ -672,7 +673,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
-                    val request = call.receive<CreateEventPurchaseRequest>()
+                    val request = call.receiveValidated<CreateEventPurchaseRequest>()
                     eventService.createPurchase(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create purchase")) }
@@ -683,7 +684,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@put
                     if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@put
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@put
-                    val request = call.receive<UpdateEventPurchaseRequest>()
+                    val request = call.receiveValidated<UpdateEventPurchaseRequest>()
                     eventService.updatePurchase(eventUUID, purchaseUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update purchase")) }
@@ -694,7 +695,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@post
-                    val request = call.receive<AttachEventPurchaseInvoiceRequest>()
+                    val request = call.receiveValidated<AttachEventPurchaseInvoiceRequest>()
                     eventService.attachPurchaseInvoice(eventUUID, purchaseUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to attach invoice")) }
@@ -783,7 +784,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@put
                     val eventUUID = parseEventId() ?: return@put
                     if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@put
-                    val request = call.receive<UpdateEventFinanceBudgetRequest>()
+                    val request = call.receiveValidated<UpdateEventFinanceBudgetRequest>()
                     eventService.updateEventFinanceBudget(eventUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update event budget")) }
@@ -794,7 +795,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
-                    val request = call.receive<CreateEventExtraCostRequest>()
+                    val request = call.receiveValidated<CreateEventExtraCostRequest>()
                     eventService.createEventExtraCost(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to create event cost")) }
@@ -805,7 +806,7 @@ fun Route.eventRoutes(
                     val eventUUID = parseEventId() ?: return@put
                     val costUUID = parseUuidParameter("costId", "Invalid extra cost ID") ?: return@put
                     if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@put
-                    val request = call.receive<UpdateEventExtraCostRequest>()
+                    val request = call.receiveValidated<UpdateEventExtraCostRequest>()
                     eventService.updateEventExtraCost(eventUUID, tuntasUUID, costUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update event cost")) }
@@ -838,7 +839,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
-                    val request = call.receive<ReconcileEventReturnsRequest>()
+                    val request = call.receiveValidated<ReconcileEventReturnsRequest>()
                     eventService.reconcileReturns(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to reconcile returns")) }
@@ -850,7 +851,7 @@ fun Route.eventRoutes(
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
                     if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
-                    val request = call.receive<ReconcileEventPurchasesRequest>()
+                    val request = call.receiveValidated<ReconcileEventPurchasesRequest>()
                     eventService.reconcilePurchases(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to reconcile purchases")) }
@@ -914,7 +915,7 @@ fun Route.eventRoutes(
                     }
                     if (!canManageEvent(eventService, tuntasUUID, eventUUID)) return@post
 
-                    val request = call.receive<CreatePastovykleRequest>()
+                    val request = call.receiveValidated<CreatePastovykleRequest>()
 
                     eventService.createPastovykle(eventUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -971,7 +972,7 @@ fun Route.eventRoutes(
                         return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid pastovyklė ID"))
                     }
 
-                    val request = call.receive<UpdatePastovykleRequest>()
+                    val request = call.receiveValidated<UpdatePastovykleRequest>()
 
                     eventService.updatePastovykle(eventUUID, pidUUID, tuntasUUID, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -1019,7 +1020,7 @@ fun Route.eventRoutes(
                             return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                         }
 
-                        val request = call.receive<AssignPastovykleLeaderRequest>()
+                        val request = call.receiveValidated<AssignPastovykleLeaderRequest>()
                         eventService.assignPastovykleLeader(eventUUID, pastovykleUUID, tuntasUUID, userId, request)
                             .onSuccess { call.respond(HttpStatusCode.Created, it) }
                             .onFailure { e ->
@@ -1069,7 +1070,7 @@ fun Route.eventRoutes(
                         val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
                         if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@post
 
-                        val request = call.receive<AddPastovykleMemberRequest>()
+                        val request = call.receiveValidated<AddPastovykleMemberRequest>()
                         eventService.addPastovykleMember(eventUUID, pastovykleUUID, tuntasUUID, userId, request)
                             .onSuccess { call.respond(HttpStatusCode.Created, it) }
                             .onFailure { e ->
@@ -1151,7 +1152,7 @@ fun Route.eventRoutes(
                             eventService.isPastovykleResponsible(eventUUID, pidUUID, tuntasUUID, userId)
                         if (!canIssue) return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
 
-                        val request = call.receive<AssignPastovykleInventoryRequest>()
+                        val request = call.receiveValidated<AssignPastovykleInventoryRequest>()
 
                         eventService.assignInventory(eventUUID, pidUUID, tuntasUUID, userId, request)
                             .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -1192,7 +1193,7 @@ fun Route.eventRoutes(
                             return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid inventory ID"))
                         }
 
-                        val request = call.receive<UpdatePastovykleInventoryRequest>()
+                        val request = call.receiveValidated<UpdatePastovykleInventoryRequest>()
 
                         eventService.updateInventoryAssignment(eventUUID, pidUUID, invUUID, tuntasUUID, request)
                             .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -1260,7 +1261,7 @@ fun Route.eventRoutes(
                         val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
                         if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@post
 
-                        val request = call.receive<CreatePastovykleInventoryRequestRequest>()
+                        val request = call.receiveValidated<CreatePastovykleInventoryRequestRequest>()
                         eventService.createPastovykleRequest(eventUUID, pastovykleUUID, tuntasUUID, userId, request)
                             .onSuccess {
                                 notifyInventoryRequestAssignment(firebaseNotificationService, tuntasUUID, it, request.responsibleUserId != null)
@@ -1279,7 +1280,7 @@ fun Route.eventRoutes(
                         val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovykle ID") ?: return@put
                         val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@put
                         if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@put
-                        val request = call.receive<UpdateEventInventoryRequestRequest>()
+                        val request = call.receiveValidated<UpdateEventInventoryRequestRequest>()
                         eventService.updateInventoryRequest(eventUUID, requestUUID, tuntasUUID, userId, request)
                             .onSuccess {
                                 notifyInventoryRequestAssignment(firebaseNotificationService, tuntasUUID, it, request.responsibleUserId != null)
@@ -1331,7 +1332,7 @@ fun Route.eventRoutes(
                         val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@post
                         if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@post
 
-                        val request = call.receive<MarkPastovykleInventoryRequestSelfProvidedRequest>()
+                        val request = call.receiveValidated<MarkPastovykleInventoryRequestSelfProvidedRequest>()
                         eventService.markPastovykleRequestSelfProvided(eventUUID, pastovykleUUID, requestUUID, tuntasUUID, userId, request)
                             .onSuccess { call.respond(HttpStatusCode.OK, it) }
                             .onFailure { e ->
@@ -1349,7 +1350,7 @@ fun Route.eventRoutes(
                         val requestUUID = parseUuidParameter("requestId", "Invalid request ID") ?: return@post
                         if (!canManageEventInventory(eventService, tuntasUUID, eventUUID)) return@post
 
-                        val request = call.receive<FulfillPastovykleInventoryRequestRequest>()
+                        val request = call.receiveValidated<FulfillPastovykleInventoryRequestRequest>()
                         eventService.fulfillPastovykleRequest(eventUUID, pastovykleUUID, requestUUID, tuntasUUID, userId, request)
                             .onSuccess { call.respond(HttpStatusCode.OK, it) }
                             .onFailure { e ->
@@ -1367,7 +1368,7 @@ fun Route.eventRoutes(
                     val pastovykleUUID = parseUuidParameter("pid", "Invalid pastovyklė ID") ?: return@post
                     if (!canAccessPastovykle(eventService, tuntasUUID, eventUUID, pastovykleUUID)) return@post
 
-                    val request = call.receive<AssignUnitInventoryToPastovykleRequest>()
+                    val request = call.receiveValidated<AssignUnitInventoryToPastovykleRequest>()
                     eventService.assignUnitInventoryToPastovykle(eventUUID, pastovykleUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { e ->

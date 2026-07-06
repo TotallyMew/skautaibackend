@@ -21,9 +21,9 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.*
 
-fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
+fun Route.organizationalUnitRoutes(service: OrganizationalUnitService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/organizational-units") {
+        route("$apiPrefix/organizational-units") {
 
             get {
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
@@ -85,7 +85,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
 
                 if (!checkPermission("organizational_units.manage", tuntasUUID)) return@post
 
-                val request = call.receive<CreateOrganizationalUnitRequest>()
+                val request = call.receiveValidated<CreateOrganizationalUnitRequest>()
 
                 service.createUnit(tuntasUUID, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -107,7 +107,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid unit ID"))
                 }
 
-                val request = call.receive<UpdateOrganizationalUnitRequest>()
+                val request = call.receiveValidated<UpdateOrganizationalUnitRequest>()
 
                 service.updateUnit(unitUUID, tuntasUUID, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -172,7 +172,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
                     val targetUserId = call.parameters["userId"]
                         ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                         ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID"))
-                    val request = call.receive<UpdateUnitMemberVisibilityRequest>()
+                    val request = call.receiveValidated<UpdateUnitMemberVisibilityRequest>()
 
                     service.updateUnitMemberVisibility(
                         unitId = unitUUID,
@@ -203,7 +203,7 @@ fun Route.organizationalUnitRoutes(service: OrganizationalUnitService) {
 
                     if (!checkPermission("unit.members.manage", tuntasUUID, unitUUID)) return@post
 
-                    val request = call.receive<AssignUnitMemberRequest>()
+                    val request = call.receiveValidated<AssignUnitMemberRequest>()
 
                     service.assignUnitMember(unitUUID, tuntasUUID, assignedByUserId, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }

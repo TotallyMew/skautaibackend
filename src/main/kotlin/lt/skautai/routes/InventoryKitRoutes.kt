@@ -20,9 +20,9 @@ import lt.skautai.models.responses.MessageResponse
 import lt.skautai.plugins.checkPermission
 import lt.skautai.services.InventoryKitService
 
-fun Route.inventoryKitRoutes(inventoryKitService: InventoryKitService) {
+fun Route.inventoryKitRoutes(inventoryKitService: InventoryKitService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/inventory-kits") {
+        route("$apiPrefix/inventory-kits") {
             get {
                 val principal = call.principal<JWTPrincipal>()!!
                 val tuntasUUID = call.tuntasIdOrRespond() ?: return@get
@@ -48,7 +48,7 @@ fun Route.inventoryKitRoutes(inventoryKitService: InventoryKitService) {
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
                 val tuntasUUID = call.tuntasIdOrRespond() ?: return@post
                 if (!checkPermission("items.create", tuntasUUID, null)) return@post
-                val request = call.receive<CreateInventoryKitRequest>()
+                val request = call.receiveValidated<CreateInventoryKitRequest>()
                 inventoryKitService.createKit(tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create kit")) }
@@ -59,7 +59,7 @@ fun Route.inventoryKitRoutes(inventoryKitService: InventoryKitService) {
                 val tuntasUUID = call.tuntasIdOrRespond() ?: return@put
                 if (!checkPermission("items.update", tuntasUUID, null)) return@put
                 val kitUUID = call.kitIdOrRespond() ?: return@put
-                val request = call.receive<UpdateInventoryKitRequest>()
+                val request = call.receiveValidated<UpdateInventoryKitRequest>()
                 inventoryKitService.updateKit(kitUUID, tuntasUUID, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to update kit")) }

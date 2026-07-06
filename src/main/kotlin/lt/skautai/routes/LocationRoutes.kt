@@ -17,9 +17,9 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import lt.skautai.services.LocationService
 import java.util.*
 
-fun Route.locationRoutes(locationService: LocationService) {
+fun Route.locationRoutes(locationService: LocationService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/locations") {
+        route("$apiPrefix/locations") {
 
             get {
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
@@ -85,7 +85,7 @@ fun Route.locationRoutes(locationService: LocationService) {
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Not a member of this tuntas"))
                 }
 
-                val request = call.receive<CreateLocationRequest>()
+                val request = call.receiveValidated<CreateLocationRequest>()
 
                 locationService.createLocation(tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -114,7 +114,7 @@ fun Route.locationRoutes(locationService: LocationService) {
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid location ID"))
                 }
 
-                val request = call.receive<UpdateLocationRequest>()
+                val request = call.receiveValidated<UpdateLocationRequest>()
 
                 locationService.updateLocation(locationUUID, tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }

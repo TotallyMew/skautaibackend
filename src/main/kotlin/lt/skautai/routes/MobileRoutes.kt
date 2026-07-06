@@ -24,6 +24,8 @@ import lt.skautai.services.RequisitionService
 import lt.skautai.services.ReservationService
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.transactions.TransactionManager
+import org.jetbrains.exposed.sql.IColumnType
+import org.jetbrains.exposed.sql.UUIDColumnType
 import java.util.UUID
 
 fun Route.mobileRoutes(
@@ -33,10 +35,11 @@ fun Route.mobileRoutes(
     requisitionService: RequisitionService,
     eventService: EventService,
     organizationalUnitService: OrganizationalUnitService,
-    myTaskService: MyTaskService
+    myTaskService: MyTaskService,
+    apiPrefix: String = "/api"
 ) {
     authenticate("auth-jwt") {
-        route("/api/mobile") {
+        route("$apiPrefix/mobile") {
             get("/home-summary") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
@@ -112,10 +115,11 @@ fun Route.mobileRoutes(
                             """
                             SELECT COUNT(*)
                             FROM bendras_inventory_requests
-                            WHERE tuntas_id = '${tuntasId}'
+                            WHERE tuntas_id = ?
                               AND top_level_status = 'PENDING'
-                              $sharedRequestVisibility
-                            """.trimIndent()
+                              ${sharedRequestVisibility.sql}
+                            """.trimIndent(),
+                            uuidArg(tuntasId) + sharedRequestVisibility.args
                         ),
                         myReservationCount = reservationCounts.myReservationCount,
                         assignedReservationCount = reservationCounts.assignedReservationCount,
@@ -207,15 +211,23 @@ private fun org.jetbrains.exposed.sql.Transaction.itemHomeCountsSql(
     tuntasId: UUID,
     userId: UUID,
     activeUnitId: String?,
-    itemVisibility: String,
+    itemVisibility: SqlFragment,
     includeSharedPendingApproval: Boolean
 ): ItemHomeCounts {
     var counts = ItemHomeCounts()
-    val activeUnitPredicate = activeUnitId?.let { "custodian_id = '$it'" } ?: "FALSE"
+    val activeUnitUuid = activeUnitId?.let(UUID::fromString)
+    val activeUnitPredicate = activeUnitUuid?.let { "custodian_id = ?" } ?: "FALSE"
     val sharedPendingPredicate = if (includeSharedPendingApproval) {
         "status = 'PENDING_APPROVAL' AND custodian_id IS NULL AND type <> 'INDIVIDUAL'"
     } else {
         "FALSE"
+    }
+    val args = buildList {
+        activeUnitUuid?.let { add(uuidParam(it)) }
+        activeUnitUuid?.let { add(uuidParam(it)) }
+        add(uuidParam(userId))
+        add(uuidParam(tuntasId))
+        addAll(itemVisibility.args)
     }
     exec(
         """
@@ -224,11 +236,12 @@ private fun org.jetbrains.exposed.sql.Transaction.itemHomeCountsSql(
           COALESCE(SUM(CASE WHEN status = 'ACTIVE' AND $activeUnitPredicate AND origin = 'TRANSFERRED_FROM_TUNTAS' THEN 1 ELSE 0 END), 0)::int,
           COALESCE(SUM(CASE WHEN status = 'ACTIVE' AND custodian_id IS NULL AND type <> 'INDIVIDUAL' THEN 1 ELSE 0 END), 0)::int,
           COALESCE(SUM(CASE WHEN $sharedPendingPredicate THEN 1 ELSE 0 END), 0)::int,
-          COALESCE(SUM(CASE WHEN status = 'ACTIVE' AND type = 'INDIVIDUAL' AND created_by_user_id = '$userId' THEN 1 ELSE 0 END), 0)::int
+          COALESCE(SUM(CASE WHEN status = 'ACTIVE' AND type = 'INDIVIDUAL' AND created_by_user_id = ? THEN 1 ELSE 0 END), 0)::int
         FROM items
-        WHERE tuntas_id = '$tuntasId'
-          $itemVisibility
-        """.trimIndent()
+        WHERE tuntas_id = ?
+          ${itemVisibility.sql}
+        """.trimIndent(),
+        args
     ) { rs ->
         if (rs.next()) {
             counts = ItemHomeCounts(
@@ -246,25 +259,32 @@ private fun org.jetbrains.exposed.sql.Transaction.itemHomeCountsSql(
 private fun org.jetbrains.exposed.sql.Transaction.requisitionHomeCountsSql(
     tuntasId: UUID,
     userId: UUID,
-    requisitionVisibility: String,
+    requisitionVisibility: SqlFragment,
     includeAssigned: Boolean
 ): RequisitionHomeCounts {
     var counts = RequisitionHomeCounts()
     val assignedPredicate = if (includeAssigned) {
-        "created_by_user_id <> '$userId' AND top_level_review_status = 'PENDING'"
+        "created_by_user_id <> ? AND top_level_review_status = 'PENDING'"
     } else {
         "FALSE"
+    }
+    val args = buildList {
+        add(uuidParam(userId))
+        if (includeAssigned) add(uuidParam(userId))
+        add(uuidParam(tuntasId))
+        addAll(requisitionVisibility.args)
     }
     exec(
         """
         SELECT
           COUNT(*)::int,
-          COALESCE(SUM(CASE WHEN created_by_user_id = '$userId' THEN 1 ELSE 0 END), 0)::int,
+          COALESCE(SUM(CASE WHEN created_by_user_id = ? THEN 1 ELSE 0 END), 0)::int,
           COALESCE(SUM(CASE WHEN $assignedPredicate THEN 1 ELSE 0 END), 0)::int
         FROM draugove_requisitions
-        WHERE tuntas_id = '$tuntasId'
-          $requisitionVisibility
-        """.trimIndent()
+        WHERE tuntas_id = ?
+          ${requisitionVisibility.sql}
+        """.trimIndent(),
+        args
     ) { rs ->
         if (rs.next()) {
             counts = RequisitionHomeCounts(
@@ -280,22 +300,24 @@ private fun org.jetbrains.exposed.sql.Transaction.requisitionHomeCountsSql(
 private fun org.jetbrains.exposed.sql.Transaction.reservationHomeCountsSql(
     tuntasId: UUID,
     userId: UUID,
-    reservationVisibility: String,
+    reservationVisibility: SqlFragment,
     includeReviewCounts: Boolean
 ): ReservationHomeCounts {
     var counts = ReservationHomeCounts()
     val assignedPredicate = if (includeReviewCounts) "status = 'PENDING'" else "FALSE"
     val trackedPredicate = if (includeReviewCounts) "status IN ('APPROVED', 'ACTIVE')" else "FALSE"
+    val args = listOf(uuidParam(userId), uuidParam(tuntasId)) + reservationVisibility.args
     exec(
         """
         SELECT
-          COUNT(DISTINCT CASE WHEN reserved_by_user_id = '$userId' AND status IN ('APPROVED', 'ACTIVE') THEN group_id END)::int,
+          COUNT(DISTINCT CASE WHEN reserved_by_user_id = ? AND status IN ('APPROVED', 'ACTIVE') THEN group_id END)::int,
           COUNT(DISTINCT CASE WHEN $assignedPredicate THEN group_id END)::int,
           COUNT(DISTINCT CASE WHEN $trackedPredicate THEN group_id END)::int
         FROM reservations
-        WHERE tuntas_id = '$tuntasId'
-          $reservationVisibility
-        """.trimIndent()
+        WHERE tuntas_id = ?
+          ${reservationVisibility.sql}
+        """.trimIndent(),
+        args
     ) { rs ->
         if (rs.next()) {
             counts = ReservationHomeCounts(
@@ -308,54 +330,75 @@ private fun org.jetbrains.exposed.sql.Transaction.reservationHomeCountsSql(
     return counts
 }
 
-private fun org.jetbrains.exposed.sql.Transaction.countSql(sql: String): Int {
+private fun org.jetbrains.exposed.sql.Transaction.countSql(sql: String, args: Iterable<Pair<IColumnType<*>, Any?>> = emptyList()): Int {
     var value = 0
-    exec(sql) { rs ->
+    exec(sql, args) { rs ->
         if (rs.next()) value = rs.getInt(1)
     }
     return value
 }
 
-private fun itemVisibilitySql(permissions: PermissionContext): String {
+private data class SqlFragment(
+    val sql: String,
+    val args: List<Pair<IColumnType<*>, Any?>> = emptyList()
+)
+
+private fun itemVisibilitySql(permissions: PermissionContext): SqlFragment {
     if (permissions.hasAll("items.view") || permissions.hasAll("items.create") || permissions.hasAll("items.update")) {
-        return ""
+        return SqlFragment("")
     }
     val unitIds = permissions.allUserOrgUnitIds
-    if (unitIds.isEmpty()) return "AND custodian_id IS NULL"
-    return "AND (custodian_id IS NULL OR custodian_id IN (${unitIds.sqlUuidList()}))"
+    if (unitIds.isEmpty()) return SqlFragment("AND custodian_id IS NULL")
+    return SqlFragment(
+        "AND (custodian_id IS NULL OR custodian_id IN (${unitIds.sqlPlaceholders()}))",
+        unitIds.uuidArgs()
+    )
 }
 
 private fun reservationVisibilitySql(
     userId: UUID,
     canViewAll: Boolean,
     approvableUnitIds: List<UUID>
-): String {
-    if (canViewAll) return ""
-    if (approvableUnitIds.isEmpty()) return "AND reserved_by_user_id = '${userId}'"
-    return "AND (requesting_unit_id IN (${approvableUnitIds.sqlUuidList()}) OR reserved_by_user_id = '${userId}')"
+): SqlFragment {
+    if (canViewAll) return SqlFragment("")
+    if (approvableUnitIds.isEmpty()) return SqlFragment("AND reserved_by_user_id = ?", uuidArg(userId))
+    return SqlFragment(
+        "AND (requesting_unit_id IN (${approvableUnitIds.sqlPlaceholders()}) OR reserved_by_user_id = ?)",
+        approvableUnitIds.uuidArgs() + uuidParam(userId)
+    )
 }
 
 private fun sharedRequestVisibilitySql(
     isAdmin: Boolean,
     unitIds: List<UUID>
-): String {
-    if (isAdmin) return ""
-    if (unitIds.isEmpty()) return "AND requested_by_user_id IS NULL"
-    return "AND requesting_unit_id IN (${unitIds.sqlUuidList()})"
+): SqlFragment {
+    if (isAdmin) return SqlFragment("")
+    if (unitIds.isEmpty()) return SqlFragment("AND requested_by_user_id IS NULL")
+    return SqlFragment("AND requesting_unit_id IN (${unitIds.sqlPlaceholders()})", unitIds.uuidArgs())
 }
 
 private fun requisitionVisibilitySql(
     userId: UUID,
     isTopLevelReviewer: Boolean,
     unitIds: List<UUID>
-): String {
-    if (isTopLevelReviewer) return ""
-    if (unitIds.isEmpty()) return "AND created_by_user_id = '${userId}'"
-    return "AND (organizational_unit_id IN (${unitIds.sqlUuidList()}) OR created_by_user_id = '${userId}')"
+): SqlFragment {
+    if (isTopLevelReviewer) return SqlFragment("")
+    if (unitIds.isEmpty()) return SqlFragment("AND created_by_user_id = ?", uuidArg(userId))
+    return SqlFragment(
+        "AND (organizational_unit_id IN (${unitIds.sqlPlaceholders()}) OR created_by_user_id = ?)",
+        unitIds.uuidArgs() + uuidParam(userId)
+    )
 }
 
-private fun Collection<UUID>.sqlUuidList(): String =
-    joinToString(",") { "'$it'" }
+private fun Collection<UUID>.sqlPlaceholders(): String =
+    joinToString(",") { "?" }
+
+private fun Collection<UUID>.uuidArgs(): List<Pair<IColumnType<*>, Any?>> =
+    map { uuidParam(it) }
+
+private fun uuidArg(value: UUID): List<Pair<IColumnType<*>, Any?>> = listOf(uuidParam(value))
+
+private fun uuidParam(value: UUID): Pair<IColumnType<*>, Any?> = UUIDColumnType() to value
 
 private fun parseUuidOrNull(value: String): UUID? = try {
     UUID.fromString(value)
@@ -389,9 +432,10 @@ private fun buildCacheState(tuntasId: UUID): List<MobileCacheStateResourceRespon
                        MAX(GREATEST(users.updated_at, user_tuntas_memberships.joined_at))::text AS max_updated_at
                 FROM users
                 INNER JOIN user_tuntas_memberships ON users.id = user_tuntas_memberships.user_id
-                WHERE user_tuntas_memberships.tuntas_id = '${tuntasId}'
+                WHERE user_tuntas_memberships.tuntas_id = ?
                   AND user_tuntas_memberships.left_at IS NULL
-                """.trimIndent()
+                """.trimIndent(),
+                uuidArg(tuntasId)
             )
         )
     )
@@ -408,13 +452,14 @@ private fun tableStateSql(table: String, updatedAtColumn: String, tuntasId: UUID
         SELECT COUNT(*)::int AS total,
                MAX($updatedAtColumn)::text AS max_updated_at
         FROM $table
-        WHERE tuntas_id = '${tuntasId}'
-        """.trimIndent()
+        WHERE tuntas_id = ?
+        """.trimIndent(),
+        uuidArg(tuntasId)
     )
 
-private fun stateSql(sql: String): ResourceStateData {
+private fun stateSql(sql: String, args: Iterable<Pair<IColumnType<*>, Any?>> = emptyList()): ResourceStateData {
     var state = ResourceStateData(total = 0, maxUpdatedAt = null)
-    TransactionManager.current().exec(sql) { rs ->
+    TransactionManager.current().exec(sql, args) { rs ->
         if (rs.next()) {
             state = ResourceStateData(
                 total = rs.getInt("total"),

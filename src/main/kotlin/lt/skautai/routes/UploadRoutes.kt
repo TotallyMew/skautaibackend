@@ -15,13 +15,19 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
+import lt.skautai.database.tables.Tuntai
+import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.UploadResponse
 import lt.skautai.services.PermissionContextService
 import lt.skautai.util.UploadStorage
-import java.io.ByteArrayOutputStream
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.innerJoin
+import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.transactions.transaction
 import java.io.File
-import java.io.InputStream
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.Files
 import java.util.UUID
 
 private val allowedImageExtensions = setOf("jpg", "jpeg", "png", "webp")
@@ -31,9 +37,10 @@ private val allowedDocumentContentTypes = allowedImageContentTypes + "applicatio
 private const val maxImageBytes = 5L * 1024 * 1024
 private const val maxDocumentBytes = 10L * 1024 * 1024
 
-fun Route.uploadRoutes() {
+fun Route.uploadRoutes(apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/uploads/images") {
+        if (apiPrefix == "/api") {
+            route("/uploads/images") {
             get("{fileName}") {
                 val principal = call.principal<JWTPrincipal>()
                     ?: return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Not authenticated"))
@@ -41,16 +48,6 @@ fun Route.uploadRoutes() {
                     UUID.fromString(principal.getClaim("userId", String::class))
                 } catch (_: Exception) {
                     return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
-                }
-                val tuntasId = call.request.headers["X-Tuntas-Id"]
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
-                val tuntasUUID = try {
-                    UUID.fromString(tuntasId)
-                } catch (_: Exception) {
-                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
-                }
-                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
                 val fileName = call.parameters["fileName"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("File name required"))
@@ -60,6 +57,11 @@ fun Route.uploadRoutes() {
                 if (!file.exists()) {
                     return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("File not found"))
                 }
+                val tuntasUUID = call.resolveTuntasForUpload(userId)
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
 
                 call.response.header(HttpHeaders.CacheControl, "private, no-store")
                 call.response.header(
@@ -67,10 +69,11 @@ fun Route.uploadRoutes() {
                     ContentDisposition.Inline.withParameter(ContentDisposition.Parameters.FileName, file.name).toString()
                 )
                 call.respondFile(file)
+                }
             }
         }
 
-        post("/api/uploads/images") {
+        post("$apiPrefix/uploads/images") {
             call.handleUpload(
                 uploadDir = UploadStorage.imagesDir(),
                 maxBytes = maxImageBytes,
@@ -82,7 +85,7 @@ fun Route.uploadRoutes() {
             )
         }
 
-        post("/api/uploads/documents") {
+        post("$apiPrefix/uploads/documents") {
             call.handleUpload(
                 uploadDir = UploadStorage.documentsDir(),
                 maxBytes = maxDocumentBytes,
@@ -120,7 +123,9 @@ private suspend fun io.ktor.server.application.ApplicationCall.handleUpload(
             )
             error = validation.error
             if (validation.error == null) {
-                val fileName = writeUploadExclusive(uploadDir, validation.extension, validation.bytes)
+                val stagedFile = validation.stagedFile
+                    ?: throw IllegalStateException("Validated upload did not produce a staged file")
+                val fileName = moveUploadExclusive(uploadDir, validation.extension, stagedFile)
                 uploadedUrl = "$urlPrefix/$fileName"
             }
         }
@@ -139,20 +144,47 @@ private suspend fun io.ktor.server.application.ApplicationCall.handleUpload(
     respond(HttpStatusCode.Created, UploadResponse(url))
 }
 
-private fun writeUploadExclusive(uploadDir: File, extension: String, bytes: ByteArray): String {
+private fun io.ktor.server.application.ApplicationCall.resolveTuntasForUpload(userId: UUID): UUID? {
+    request.headers["X-Tuntas-Id"]?.let { headerValue ->
+        return try {
+            UUID.fromString(headerValue)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    return transaction {
+        UserTuntasMemberships
+            .innerJoin(Tuntai, { UserTuntasMemberships.tuntasId }, { Tuntai.id })
+            .select(UserTuntasMemberships.tuntasId)
+            .where {
+                (UserTuntasMemberships.userId eq userId) and
+                    UserTuntasMemberships.leftAt.isNull() and
+                    (Tuntai.status eq "ACTIVE")
+            }
+            .map { it[UserTuntasMemberships.tuntasId] }
+            .distinct()
+            .singleOrNull()
+    }
+}
+
+private fun moveUploadExclusive(uploadDir: File, extension: String, stagedFile: File): String {
     repeat(5) {
         val fileName = "${UUID.randomUUID()}.$extension"
         val target = File(uploadDir, fileName)
-        if (target.createNewFile()) {
-            target.outputStream().use { it.write(bytes) }
+        try {
+            Files.move(stagedFile.toPath(), target.toPath())
             return fileName
+        } catch (_: FileAlreadyExistsException) {
+            // Try another UUID below.
         }
     }
+    stagedFile.delete()
     throw IllegalStateException("Could not allocate upload file name")
 }
 
 private data class UploadValidationResult(
-    val bytes: ByteArray = ByteArray(0),
+    val stagedFile: File? = null,
     val extension: String = "",
     val error: String? = null
 )
@@ -180,46 +212,68 @@ private fun validateUpload(
         return UploadValidationResult(error = "Unsupported Content-Type")
     }
 
-    val bytes = try {
-        part.streamProvider().use { it.readUpTo(maxBytes) }
+    val stagedFile = try {
+        part.streamProvider().use { input ->
+            stageUpload(input, maxBytes)
+        }
     } catch (_: IllegalArgumentException) {
         return UploadValidationResult(error = "File is too large")
     }
 
+    val signature = stagedFile.inputStream().use { input ->
+        ByteArray(signatureBytes).also { buffer ->
+            val read = input.read(buffer)
+            if (read <= 0) return UploadValidationResult(error = "File contents do not match the declared type")
+            if (read < buffer.size) return@also
+        }.let { buffer ->
+            val actualLength = stagedFile.length().coerceAtMost(signatureBytes.toLong()).toInt()
+            buffer.copyOf(actualLength)
+        }
+    }
+
     val matchesSignature = when {
-        isJpeg(bytes) -> extension in setOf("jpg", "jpeg") && contentType == "image/jpeg"
-        isPng(bytes) -> extension == "png" && contentType == "image/png"
-        isWebp(bytes) -> extension == "webp" && contentType == "image/webp"
-        allowPdf && isPdf(bytes) -> extension == "pdf" && contentType == "application/pdf"
+        isJpeg(signature) -> extension in setOf("jpg", "jpeg") && contentType == "image/jpeg"
+        isPng(signature) -> extension == "png" && contentType == "image/png"
+        isWebp(signature) -> extension == "webp" && contentType == "image/webp"
+        allowPdf && isPdf(signature) -> extension == "pdf" && contentType == "application/pdf"
         else -> false
     }
 
     if (!matchesSignature) {
+        stagedFile.delete()
         return UploadValidationResult(error = "File contents do not match the declared type")
     }
 
-    return UploadValidationResult(bytes = bytes, extension = extension)
+    return UploadValidationResult(stagedFile = stagedFile, extension = extension)
 }
 
-private fun InputStream.readUpTo(maxBytes: Long): ByteArray {
+private fun stageUpload(input: java.io.InputStream, maxBytes: Long): File {
+    val tempFile = Files.createTempFile(UploadStorage.rootDir().toPath(), "upload-", ".tmp").toFile()
     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-    val output = ByteArrayOutputStream()
     var total = 0L
 
-    while (true) {
-        val read = read(buffer)
-        if (read == -1) {
-            break
+    try {
+        tempFile.outputStream().use { output ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read == -1) {
+                    break
+                }
+                total += read
+                if (total > maxBytes) {
+                    throw IllegalArgumentException("File too large")
+                }
+                output.write(buffer, 0, read)
+            }
         }
-        total += read
-        if (total > maxBytes) {
-            throw IllegalArgumentException("File too large")
-        }
-        output.write(buffer, 0, read)
+        return tempFile
+    } catch (e: Exception) {
+        tempFile.delete()
+        throw e
     }
-
-    return output.toByteArray()
 }
+
+private const val signatureBytes = 16
 
 private fun isJpeg(bytes: ByteArray): Boolean =
     bytes.size >= 3 &&

@@ -32,9 +32,10 @@ private val RequestBodyLimits = createApplicationPlugin(name = "RequestBodyLimit
         val path = call.request.path()
         if (!path.startsWith("/api/")) return@onCall
 
-        val limit = if (path.startsWith("/api/uploads/")) uploadLimitBytes else defaultLimitBytes
+        val limit = if (path.isUploadPath()) uploadLimitBytes else defaultLimitBytes
         val contentLength = call.request.contentLength()
         if (contentLength == null) {
+            if (method == HttpMethod.Delete) return@onCall
             OperationalMetrics.oversizedRequestRejected()
             bodyLimitLogger.warn(
                 "rejecting request without content length method={} path={} remoteHost={}",
@@ -61,3 +62,6 @@ private val RequestBodyLimits = createApplicationPlugin(name = "RequestBodyLimit
 
 private fun settingLong(name: String, default: Long): Long =
     (System.getenv(name) ?: System.getProperty(name))?.toLongOrNull() ?: default
+
+private fun String.isUploadPath(): Boolean =
+    startsWith("/api/uploads/") || startsWith("/api/v1/uploads/")

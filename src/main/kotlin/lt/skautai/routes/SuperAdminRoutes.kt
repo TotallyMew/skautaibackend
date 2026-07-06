@@ -38,12 +38,13 @@ fun Route.superAdminRoutes(
     memberService: MemberService,
     organizationalUnitService: OrganizationalUnitService,
     firebaseNotificationService: FirebaseNotificationService,
-    notificationRecipientService: NotificationRecipientService
+    notificationRecipientService: NotificationRecipientService,
+    apiPrefix: String = "/api"
 ) {
     authenticate("auth-super-admin") {
-        route("/api/super-admin/notifications") {
+        route("$apiPrefix/super-admin/notifications") {
             post {
-                val request = call.receive<SuperAdminNotificationRequest>()
+                val request = call.receiveValidated<SuperAdminNotificationRequest>()
                 val title = request.title.trim()
                 val body = request.body.trim()
                 if (title.isBlank()) {
@@ -91,7 +92,7 @@ fun Route.superAdminRoutes(
             }
         }
 
-        route("/api/super-admin/tuntai") {
+        route("$apiPrefix/super-admin/tuntai") {
             get {
                 val tuntai = transaction {
                     Tuntai.selectAll().map {
@@ -231,7 +232,7 @@ fun Route.superAdminRoutes(
                 post("/members/{userId}/leadership-roles") {
                     val tuntasId = parseTuntasId() ?: return@post
                     val userId = parseUserId() ?: return@post
-                    val request = call.receive<AssignLeadershipRoleRequest>()
+                    val request = call.receiveValidated<AssignLeadershipRoleRequest>()
 
                     memberService.assignLeadershipRole(
                         targetUserId = userId,
@@ -251,7 +252,7 @@ fun Route.superAdminRoutes(
                     val tuntasId = parseTuntasId() ?: return@put
                     val userId = parseUserId() ?: return@put
                     val assignmentId = parseAssignmentId() ?: return@put
-                    val request = call.receive<UpdateLeadershipRoleRequest>()
+                    val request = call.receiveValidated<UpdateLeadershipRoleRequest>()
 
                     memberService.superAdminUpdateLeadershipRole(
                         targetUserId = userId,
@@ -288,7 +289,7 @@ fun Route.superAdminRoutes(
                 post("/members/{userId}/ranks") {
                     val tuntasId = parseTuntasId() ?: return@post
                     val userId = parseUserId() ?: return@post
-                    val request = call.receive<AssignRankRequest>()
+                    val request = call.receiveValidated<AssignRankRequest>()
 
                     memberService.assignRank(
                         targetUserId = userId,

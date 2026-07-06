@@ -246,7 +246,8 @@ class OrganizationalUnitService {
                 .where {
                     (UnitAssignments.organizationalUnitId eq unitId) and
                             (UnitAssignments.tuntasId eq tuntasId) and
-                            (UnitAssignments.leftAt.isNull())
+                            (UnitAssignments.leftAt.isNull()) and
+                            Users.deletedAt.isNull()
                 }
                 .toList()
             val rankNamesByUserId = if (hasInternalAccess || memberRows.isEmpty()) {
@@ -327,12 +328,13 @@ class OrganizationalUnitService {
         val assignment = UnitAssignments
             .innerJoin(Users, { UnitAssignments.userId }, { Users.id })
             .selectAll()
-            .where {
-                (UnitAssignments.userId eq targetUserId) and
-                    (UnitAssignments.organizationalUnitId eq unitId) and
-                    (UnitAssignments.tuntasId eq tuntasId) and
-                    UnitAssignments.leftAt.isNull()
-            }
+                .where {
+                    (UnitAssignments.userId eq targetUserId) and
+                        (UnitAssignments.organizationalUnitId eq unitId) and
+                        (UnitAssignments.tuntasId eq tuntasId) and
+                        UnitAssignments.leftAt.isNull() and
+                        Users.deletedAt.isNull()
+                }
             .firstOrNull()
             ?: return@transaction Result.failure(Exception("Unit member not found"))
 
@@ -353,11 +355,11 @@ class OrganizationalUnitService {
             it[isPubliclyVisible] = request.isPubliclyVisible
         }
 
-        val updated = UnitAssignments
-            .innerJoin(Users, { UnitAssignments.userId }, { Users.id })
-            .selectAll()
-            .where { UnitAssignments.id eq assignment[UnitAssignments.id] }
-            .first()
+            val updated = UnitAssignments
+                .innerJoin(Users, { UnitAssignments.userId }, { Users.id })
+                .selectAll()
+                .where { (UnitAssignments.id eq assignment[UnitAssignments.id]) and Users.deletedAt.isNull() }
+                .first()
         Result.success(toUnitMembershipResponse(updated))
     }
 
@@ -454,7 +456,7 @@ class OrganizationalUnitService {
             val inserted = UnitAssignments
                 .innerJoin(Users, { UnitAssignments.userId }, { Users.id })
                 .selectAll()
-                .where { UnitAssignments.id eq assignmentId }
+                .where { (UnitAssignments.id eq assignmentId) and Users.deletedAt.isNull() }
                 .first()
 
             Result.success(toUnitMembershipResponse(inserted))
@@ -520,7 +522,7 @@ class OrganizationalUnitService {
             val moved = UnitAssignments
                 .innerJoin(Users, { UnitAssignments.userId }, { Users.id })
                 .selectAll()
-                .where { UnitAssignments.id eq assignmentId }
+                .where { (UnitAssignments.id eq assignmentId) and Users.deletedAt.isNull() }
                 .first()
 
             Result.success(toUnitMembershipResponse(moved))

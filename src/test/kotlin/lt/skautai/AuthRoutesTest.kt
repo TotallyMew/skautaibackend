@@ -545,7 +545,18 @@ class AuthRoutesTest {
 
         assertEquals(HttpStatusCode.OK, client.get("/health/live").status)
         assertEquals(HttpStatusCode.OK, client.get("/health/ready").status)
-        assertEquals(HttpStatusCode.OK, client.get("/metrics").status)
+
+        assertEquals(HttpStatusCode.NotFound, client.get("/metrics").status)
+        System.setProperty("METRICS_TOKEN", "test-metrics-token")
+        try {
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/metrics").status)
+            val metrics = client.get("/metrics") {
+                header("X-Metrics-Token", "test-metrics-token")
+            }
+            assertEquals(HttpStatusCode.OK, metrics.status)
+        } finally {
+            System.clearProperty("METRICS_TOKEN")
+        }
     }
 
     @Test

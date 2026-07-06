@@ -29,7 +29,7 @@ class RateLimitingTest {
 
     @Test
     fun `registration is limited with Lithuanian error message`() = testApplication {
-        configureFullApp()
+        configureFullApp(useProductionRateLimits = true)
 
         repeat(3) { index ->
             client.post("/api/auth/register") {
@@ -73,7 +73,7 @@ class RateLimitingTest {
 
     @Test
     fun `public email requests are limited with Lithuanian error message`() = testApplication {
-        configureFullApp()
+        configureFullApp(useProductionRateLimits = true)
 
         repeat(10) {
             client.post("/api/auth/forgot-password") {

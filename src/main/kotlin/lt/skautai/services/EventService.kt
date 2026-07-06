@@ -830,11 +830,16 @@ class EventService {
         notes = row[Pastovykles.notes]
     )
 
-    private fun toPastovykleMemberResponse(row: ResultRow): PastovykleMemberResponse {
-        val user = Users.selectAll()
-            .where { Users.id eq row[PastovykleMembers.userId] }
-            .firstOrNull()
-        val userName = user?.let { "${it[Users.name]} ${it[Users.surname]}".trim() } ?: "Unknown"
+    private fun toPastovykleMemberResponse(
+        row: ResultRow,
+        userNamesById: Map<UUID, String> = emptyMap()
+    ): PastovykleMemberResponse {
+        val userName = userNamesById[row[PastovykleMembers.userId]]
+            ?: Users.selectAll()
+                .where { (Users.id eq row[PastovykleMembers.userId]) and Users.deletedAt.isNull() }
+                .firstOrNull()
+                ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+            ?: "Unknown"
         return PastovykleMemberResponse(
             id = row[PastovykleMembers.id].toString(),
             pastovykleId = row[PastovykleMembers.pastovykleId].toString(),
@@ -856,10 +861,15 @@ class EventService {
             .firstOrNull() != null
     }
 
-    private fun toInventoryResponse(row: ResultRow): PastovykleInventoryResponse {
-        val itemName = Items.selectAll()
-            .where { Items.id eq row[PastovykleInventory.itemId] }
-            .firstOrNull()?.get(Items.name) ?: "Unknown"
+    private fun toInventoryResponse(
+        row: ResultRow,
+        itemNamesById: Map<UUID, String> = emptyMap()
+    ): PastovykleInventoryResponse {
+        val itemName = itemNamesById[row[PastovykleInventory.itemId]]
+            ?: Items.selectAll()
+                .where { Items.id eq row[PastovykleInventory.itemId] }
+                .firstOrNull()?.get(Items.name)
+            ?: "Unknown"
         return PastovykleInventoryResponse(
             id = row[PastovykleInventory.id].toString(),
             pastovykleId = row[PastovykleInventory.pastovykleId].toString(),
@@ -1229,12 +1239,21 @@ class EventService {
             ensurePastovykle(eventId, pastovykleId)
                 ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
 
-            val members = PastovykleMembers.selectAll()
+            val memberRows = PastovykleMembers.selectAll()
                 .where {
                     (PastovykleMembers.pastovykleId eq pastovykleId) and
                         (PastovykleMembers.status eq "ACTIVE")
                 }
-                .map { toPastovykleMemberResponse(it) }
+                .toList()
+            val memberUserIds = memberRows.map { it[PastovykleMembers.userId] }.distinct()
+            val userNamesById = if (memberUserIds.isEmpty()) {
+                emptyMap()
+            } else {
+                Users.selectAll()
+                    .where { (Users.id inList memberUserIds) and Users.deletedAt.isNull() }
+                    .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
+            }
+            val members = memberRows.map { toPastovykleMemberResponse(it, userNamesById) }
 
             Result.success(PastovykleMemberListResponse(members = members, total = members.size))
         }
@@ -1351,9 +1370,18 @@ class EventService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Pastovyklė not found"))
 
-            val list = PastovykleInventory.selectAll()
+            val inventoryRows = PastovykleInventory.selectAll()
                 .where { PastovykleInventory.pastovykleId eq pastovykleId }
-                .map { toInventoryResponse(it) }
+                .toList()
+            val itemIds = inventoryRows.map { it[PastovykleInventory.itemId] }.distinct()
+            val itemNamesById = if (itemIds.isEmpty()) {
+                emptyMap()
+            } else {
+                Items.select(Items.id, Items.name)
+                    .where { Items.id inList itemIds }
+                    .associate { it[Items.id] to it[Items.name] }
+            }
+            val list = inventoryRows.map { toInventoryResponse(it, itemNamesById) }
 
             Result.success(PastovykleInventoryListResponse(inventory = list, total = list.size))
         }
@@ -4354,11 +4382,15 @@ class EventService {
             emptyMap()
         } else {
             Users.selectAll()
-                .where { Users.id inList roleUserIds.toList() }
+                .where { (Users.id inList roleUserIds.toList()) and Users.deletedAt.isNull() }
                 .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
         }
         val rolesByEventId = roleRows
-            .map { row -> row[EventRoles.eventId] to toEventRoleResponse(row, roleUserNamesById[row[EventRoles.userId]]) }
+            .mapNotNull { row ->
+                roleUserNamesById[row[EventRoles.userId]]?.let { userName ->
+                    row[EventRoles.eventId] to toEventRoleResponse(row, userName)
+                }
+            }
             .groupBy({ it.first }, { it.second })
 
         val inventoryRows = EventInventoryItems.selectAll()
@@ -4427,9 +4459,7 @@ class EventService {
     private fun toEventResponse(row: ResultRow, hydration: EventListHydration? = null): EventResponse {
         val eventId = row[Events.id]
 
-        val roles = hydration?.rolesByEventId?.get(eventId) ?: EventRoles.selectAll()
-            .where { EventRoles.eventId eq eventId }
-            .map { toEventRoleResponse(it) }
+        val roles = hydration?.rolesByEventId?.get(eventId) ?: activeEventRoleResponses(eventId)
 
         return EventResponse(
             id = eventId.toString(),
@@ -4532,10 +4562,28 @@ class EventService {
 
     private fun toEventRoleResponse(row: ResultRow): EventRoleResponse {
         val userName = Users.selectAll()
-            .where { Users.id eq row[EventRoles.userId] }
+            .where { (Users.id eq row[EventRoles.userId]) and Users.deletedAt.isNull() }
             .firstOrNull()
             ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
         return toEventRoleResponse(row, userName)
+    }
+
+    private fun activeEventRoleResponses(eventId: UUID): List<EventRoleResponse> {
+        val roleRows = EventRoles.selectAll()
+            .where { EventRoles.eventId eq eventId }
+            .toList()
+        val userIds = roleRows.map { it[EventRoles.userId] }.distinct()
+        if (userIds.isEmpty()) return emptyList()
+
+        val userNamesById = Users.selectAll()
+            .where { (Users.id inList userIds) and Users.deletedAt.isNull() }
+            .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
+
+        return roleRows.mapNotNull { row ->
+            userNamesById[row[EventRoles.userId]]?.let { userName ->
+                toEventRoleResponse(row, userName)
+            }
+        }
     }
 
     private fun toEventRoleResponse(row: ResultRow, userName: String?): EventRoleResponse {

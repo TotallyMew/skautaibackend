@@ -28,8 +28,10 @@ import lt.skautai.models.responses.MyTaskListResponse
 import lt.skautai.models.responses.MyTaskResponse
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
+import org.jetbrains.exposed.sql.IColumnType
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
+import org.jetbrains.exposed.sql.UUIDColumnType
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.innerJoin
 import org.jetbrains.exposed.sql.select
@@ -268,6 +270,7 @@ class MyTaskService {
         now: Instant
     ) {
         val reviewableUnitIds = resolveReviewableUnitIds(userId, tuntasId)
+        val clauseArgs = mutableListOf<Pair<IColumnType<*>, Any?>>()
         val clauses = buildList {
             if (
                 reviewableUnitIds.isNotEmpty() &&
@@ -275,10 +278,11 @@ class MyTaskService {
             ) {
                 add(
                     """
-                    organizational_unit_id IN (${reviewableUnitIds.sqlUuidList()})
+                    organizational_unit_id IN (${reviewableUnitIds.sqlPlaceholders()})
                     AND unit_review_status = 'PENDING'
                     """.trimIndent()
                 )
+                clauseArgs += reviewableUnitIds.uuidArgs()
             }
             if (permissionContext.hasAll("requisitions.approve")) {
                 add("top_level_review_status = 'PENDING'")
@@ -289,10 +293,11 @@ class MyTaskService {
             """
             SELECT COUNT(*)
             FROM draugove_requisitions
-            WHERE tuntas_id = '${tuntasId}'
-              AND created_by_user_id <> '${userId}'
+            WHERE tuntas_id = ?
+              AND created_by_user_id <> ?
               AND (${clauses.joinToString(" OR ") { "($it)" }})
-            """.trimIndent()
+            """.trimIndent(),
+            listOf(uuidParam(tuntasId), uuidParam(userId)) + clauseArgs
         )
         if (count == 0) return
         tasks += task(
@@ -320,10 +325,11 @@ class MyTaskService {
             """
             SELECT COUNT(*)
             FROM bendras_inventory_requests
-            WHERE tuntas_id = '${tuntasId}'
+            WHERE tuntas_id = ?
               AND top_level_status = 'PENDING'
-              AND requested_by_user_id <> '${userId}'
-            """.trimIndent()
+              AND requested_by_user_id <> ?
+            """.trimIndent(),
+            listOf(uuidParam(tuntasId), uuidParam(userId))
         )
         if (count == 0) return
         tasks += task(
@@ -350,10 +356,11 @@ class MyTaskService {
             """
             SELECT COUNT(*)
             FROM leadership_change_requests
-            WHERE tuntas_id = '${tuntasId}'
+            WHERE tuntas_id = ?
               AND status = 'PENDING'
-              AND requester_user_id <> '${userId}'
-            """.trimIndent()
+              AND requester_user_id <> ?
+            """.trimIndent(),
+            listOf(uuidParam(tuntasId), uuidParam(userId))
         )
         if (count == 0) return
         tasks += task(
@@ -763,9 +770,10 @@ class MyTaskService {
             """
             SELECT DISTINCT event_id
             FROM event_inventory_items
-            WHERE event_id IN (${eventIds.sqlUuidList()})
+            WHERE event_id IN (${eventIds.sqlPlaceholders()})
               AND (needs_purchase = TRUE OR planned_quantity > available_quantity)
-            """.trimIndent()
+            """.trimIndent(),
+            eventIds.uuidArgs()
         )
     }
 
@@ -775,8 +783,9 @@ class MyTaskService {
             """
             SELECT DISTINCT event_id
             FROM event_inventory_items
-            WHERE event_id IN (${eventIds.sqlUuidList()})
-            """.trimIndent()
+            WHERE event_id IN (${eventIds.sqlPlaceholders()})
+            """.trimIndent(),
+            eventIds.uuidArgs()
         )
     }
 
@@ -786,8 +795,9 @@ class MyTaskService {
             """
             SELECT DISTINCT event_id
             FROM event_packing_lines
-            WHERE event_id IN (${eventIds.sqlUuidList()})
-            """.trimIndent()
+            WHERE event_id IN (${eventIds.sqlPlaceholders()})
+            """.trimIndent(),
+            eventIds.uuidArgs()
         )
     }
 
@@ -797,9 +807,10 @@ class MyTaskService {
             """
             SELECT DISTINCT event_id
             FROM event_packing_lines
-            WHERE event_id IN (${eventIds.sqlUuidList()})
+            WHERE event_id IN (${eventIds.sqlPlaceholders()})
               AND status NOT IN ('PACKED', 'LOADED', 'RETURNED')
-            """.trimIndent()
+            """.trimIndent(),
+            eventIds.uuidArgs()
         )
     }
 
@@ -809,9 +820,10 @@ class MyTaskService {
             """
             SELECT DISTINCT event_id
             FROM event_packing_lines
-            WHERE event_id IN (${eventIds.sqlUuidList()})
+            WHERE event_id IN (${eventIds.sqlPlaceholders()})
               AND status IN ('PICKED', 'PACKED', 'LOADED')
-            """.trimIndent()
+            """.trimIndent(),
+            eventIds.uuidArgs()
         )
     }
 
@@ -823,7 +835,7 @@ class MyTaskService {
             FROM event_inventory_custody
             INNER JOIN event_inventory_items
                 ON event_inventory_custody.event_inventory_item_id = event_inventory_items.id
-            WHERE event_inventory_items.event_id IN (${eventIds.sqlUuidList()})
+            WHERE event_inventory_items.event_id IN (${eventIds.sqlPlaceholders()})
               AND event_inventory_custody.status = 'OPEN'
               AND event_inventory_custody.quantity > event_inventory_custody.returned_quantity
             UNION
@@ -831,9 +843,10 @@ class MyTaskService {
             FROM event_purchase_items
             INNER JOIN event_purchases
                 ON event_purchase_items.purchase_id = event_purchases.id
-            WHERE event_purchases.event_id IN (${eventIds.sqlUuidList()})
+            WHERE event_purchases.event_id IN (${eventIds.sqlPlaceholders()})
               AND event_purchase_items.added_to_inventory = FALSE
-            """.trimIndent()
+            """.trimIndent(),
+            eventIds.uuidArgs() + eventIds.uuidArgs()
         )
     }
 
@@ -931,17 +944,17 @@ class MyTaskService {
         else -> 0
     }
 
-    private fun countSql(sql: String): Int {
+    private fun countSql(sql: String, args: Iterable<Pair<IColumnType<*>, Any?>> = emptyList()): Int {
         var count = 0
-        TransactionManager.current().exec(sql) { rs ->
+        TransactionManager.current().exec(sql, args) { rs ->
             if (rs.next()) count = rs.getInt(1)
         }
         return count
     }
 
-    private fun uuidSetSql(sql: String): Set<UUID> {
+    private fun uuidSetSql(sql: String, args: Iterable<Pair<IColumnType<*>, Any?>> = emptyList()): Set<UUID> {
         val ids = mutableSetOf<UUID>()
-        TransactionManager.current().exec(sql) { rs ->
+        TransactionManager.current().exec(sql, args) { rs ->
             while (rs.next()) {
                 ids += rs.getObject(1, UUID::class.java)
             }
@@ -949,8 +962,13 @@ class MyTaskService {
         return ids
     }
 
-    private fun Collection<UUID>.sqlUuidList(): String =
-        joinToString(",") { "'$it'" }
+    private fun Collection<UUID>.sqlPlaceholders(): String =
+        joinToString(",") { "?" }
+
+    private fun Collection<UUID>.uuidArgs(): List<Pair<IColumnType<*>, Any?>> =
+        map { uuidParam(it) }
+
+    private fun uuidParam(value: UUID): Pair<IColumnType<*>, Any?> = UUIDColumnType() to value
 
     private data class MovementTotals(
         val issued: Int = 0,

@@ -19,14 +19,15 @@ import java.util.UUID
 
 fun Route.deviceRoutes(
     deviceService: DeviceService,
-    firebaseNotificationService: FirebaseNotificationService
+    firebaseNotificationService: FirebaseNotificationService,
+    apiPrefix: String = "/api"
 ) {
     authenticate("auth-jwt") {
-        route("/api/devices") {
+        route("$apiPrefix/devices") {
             post("/register") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
-                val request = call.receive<RegisterDeviceRequest>()
+                val request = call.receiveValidated<RegisterDeviceRequest>()
 
                 deviceService.registerDevice(userId, request)
                     .onSuccess {
@@ -40,7 +41,7 @@ fun Route.deviceRoutes(
             delete("/register") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
-                val request = call.receive<RegisterDeviceRequest>()
+                val request = call.receiveValidated<RegisterDeviceRequest>()
 
                 deviceService.unregisterDevice(userId, request.deviceToken)
                     .onSuccess {

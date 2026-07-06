@@ -30,9 +30,9 @@ import lt.skautai.services.PermissionContextService
 import lt.skautai.services.SeniorUnitPrivacyService
 import java.util.*
 
-fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckService) {
+fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/items") {
+        route("$apiPrefix/items") {
 
             get {
                 val principal = call.principal<JWTPrincipal>()!!
@@ -262,7 +262,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                     }
-                    val request = call.receive<CreateStorageAuditSessionRequest>()
+                    val request = call.receiveValidated<CreateStorageAuditSessionRequest>()
                     itemCheckService.createStorageAuditSession(tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create audit session")) }
@@ -305,7 +305,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     val sessionUUID = try { UUID.fromString(sessionId) } catch (e: Exception) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid session ID"))
                     }
-                    val request = call.receive<UpsertStorageAuditChecksRequest>()
+                    val request = call.receiveValidated<UpsertStorageAuditChecksRequest>()
                     itemCheckService.upsertStorageAuditChecks(sessionUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to save audit checks")) }
@@ -343,7 +343,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                val request = call.receive<CreateItemRequest>()
+                val request = call.receiveValidated<CreateItemRequest>()
 
                 val targetOrgUnitId = request.custodianId?.let {
                     try { UUID.fromString(it) } catch (e: Exception) { null }
@@ -412,7 +412,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
                 }
 
-                val request = call.receive<UpdateItemRequest>()
+                val request = call.receiveValidated<UpdateItemRequest>()
 
                 val newCustodianId = request.custodianId?.let {
                     try { UUID.fromString(it) } catch (e: Exception) {
@@ -469,7 +469,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
 
-                val request = call.receive<RestockItemRequest>()
+                val request = call.receiveValidated<RestockItemRequest>()
                 itemService.restockItem(itemUUID, tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to restock item")) }
@@ -498,7 +498,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 }
                 if (!checkPermission("items.update", tuntasUUID, scopeInfo.custodianId)) return@post
 
-                val request = call.receive<ConsumeItemRequest>()
+                val request = call.receiveValidated<ConsumeItemRequest>()
                 itemService.consumeItem(itemUUID, tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to consume item")) }
@@ -528,7 +528,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
 
-                val request = call.receive<ReviewItemAdditionRequest>()
+                val request = call.receiveValidated<ReviewItemAdditionRequest>()
                 itemService.reviewItemAddition(itemUUID, tuntasUUID, userId, request, reviewerPerms)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to review item")) }
@@ -555,7 +555,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
                 }
 
-                val request = call.receive<TransferItemToUnitRequest>()
+                val request = call.receiveValidated<TransferItemToUnitRequest>()
                 itemService.transferSharedItemToUnit(itemUUID, tuntasUUID, request, userId)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to transfer item")) }
@@ -584,7 +584,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
 
-                val request = call.receive<ReturnItemToSharedRequest>()
+                val request = call.receiveValidated<ReturnItemToSharedRequest>()
                 itemService.returnTransferredItemToShared(itemUUID, tuntasUUID, request, userId)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to return item")) }
@@ -614,7 +614,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 }
                 if (!checkPermission("items.delete", tuntasUUID, targetOrgUnitId)) return@post
 
-                val request = call.receive<WriteOffItemRequest>()
+                val request = call.receiveValidated<WriteOffItemRequest>()
                 itemService.writeOffItem(itemUUID, tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to write off item")) }

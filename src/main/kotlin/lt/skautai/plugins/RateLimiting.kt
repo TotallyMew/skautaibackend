@@ -34,11 +34,11 @@ fun Application.configureRateLimiting() {
             requestKey(::clientIpKey)
         }
         register(RegistrationRateLimit) {
-            rateLimiter(limit = 3, refillPeriod = 1.hours)
+            rateLimiter(limit = settingInt("REGISTRATION_RATE_LIMIT", 3), refillPeriod = 1.hours)
             requestKey(::clientIpKey)
         }
         register(EmailRequestRateLimit) {
-            rateLimiter(limit = 5, refillPeriod = 1.hours)
+            rateLimiter(limit = settingInt("EMAIL_REQUEST_RATE_LIMIT", 5), refillPeriod = 1.hours)
             requestKey(::clientIpKey)
         }
         register(AuthenticatedApiRateLimit) {
@@ -127,3 +127,6 @@ private fun shortHash(value: String): String =
 
 private fun setting(name: String): String? =
     (System.getenv(name) ?: System.getProperty(name))?.trim()?.takeIf(String::isNotBlank)
+
+private fun settingInt(name: String, default: Int): Int =
+    setting(name)?.toIntOrNull()?.takeIf { it > 0 } ?: default

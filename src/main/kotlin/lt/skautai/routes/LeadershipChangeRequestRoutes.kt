@@ -16,9 +16,9 @@ import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.services.LeadershipChangeRequestService
 import java.util.UUID
 
-fun Route.leadershipChangeRequestRoutes(service: LeadershipChangeRequestService) {
+fun Route.leadershipChangeRequestRoutes(service: LeadershipChangeRequestService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/leadership-change-requests") {
+        route("$apiPrefix/leadership-change-requests") {
             get {
                 val tuntasUUID = call.tuntasIdOrRespond() ?: return@get
                 val callerUserId = call.callerUserId()
@@ -35,7 +35,7 @@ fun Route.leadershipChangeRequestRoutes(service: LeadershipChangeRequestService)
                 val requestId = call.parameters["requestId"]
                     ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
-                val request = call.receive<ReviewLeadershipChangeRequest>()
+                val request = call.receiveValidated<ReviewLeadershipChangeRequest>()
 
                 service.reviewRequest(requestId, tuntasUUID, callerUserId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -43,13 +43,13 @@ fun Route.leadershipChangeRequestRoutes(service: LeadershipChangeRequestService)
             }
         }
 
-        post("/api/members/me/leadership-roles/{assignmentId}/resignation-request") {
+        post("$apiPrefix/members/me/leadership-roles/{assignmentId}/resignation-request") {
             val tuntasUUID = call.tuntasIdOrRespond() ?: return@post
             val callerUserId = call.callerUserId()
             val assignmentId = call.parameters["assignmentId"]
                 ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                 ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid assignment ID"))
-            val request = call.receive<CreateLeadershipChangeRequest>()
+            val request = call.receiveValidated<CreateLeadershipChangeRequest>()
 
             service.createResignationRequest(callerUserId, assignmentId, tuntasUUID, request)
                 .onSuccess { call.respond(HttpStatusCode.Created, it) }

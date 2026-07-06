@@ -30,10 +30,11 @@ import org.jetbrains.exposed.sql.transactions.transaction
 fun Route.bendrasInventoryRequestRoutes(
     service: BendrasInventoryRequestService,
     firebaseNotificationService: FirebaseNotificationService,
-    notificationRecipientService: NotificationRecipientService
+    notificationRecipientService: NotificationRecipientService,
+    apiPrefix: String = "/api"
 ) {
     authenticate("auth-jwt") {
-        route("/api/inventory-requests") {
+        route("$apiPrefix/inventory-requests") {
 
             get {
                 val principal = call.principal<JWTPrincipal>()!!
@@ -118,7 +119,7 @@ fun Route.bendrasInventoryRequestRoutes(
 
                 if (!checkPermission("items.request.bendras", tuntasUUID)) return@post
 
-                val request = call.receive<CreateBendrasInventoryRequestRequest>()
+                val request = call.receiveValidated<CreateBendrasInventoryRequestRequest>()
 
                 service.createRequest(tuntasUUID, requestedByUserId, request)
                     .onSuccess {
@@ -182,7 +183,7 @@ fun Route.bendrasInventoryRequestRoutes(
 
                 if (!checkPermission("items.request.forward.bendras", tuntasUUID, requestingUnitUUID)) return@post
 
-                val request = call.receive<DraugininkasReviewRequest>()
+                val request = call.receiveValidated<DraugininkasReviewRequest>()
 
                 service.draugininkasReview(requestUUID, tuntasUUID, reviewerUserId, request)
                     .onSuccess {
@@ -215,7 +216,7 @@ fun Route.bendrasInventoryRequestRoutes(
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request ID"))
                 }
 
-                val request = call.receive<TopLevelReviewRequest>()
+                val request = call.receiveValidated<TopLevelReviewRequest>()
 
                 service.topLevelReview(requestUUID, tuntasUUID, reviewerUserId, request)
                     .onSuccess {

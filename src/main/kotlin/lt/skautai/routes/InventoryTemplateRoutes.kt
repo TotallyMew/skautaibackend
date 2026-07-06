@@ -22,9 +22,9 @@ import lt.skautai.services.InventoryTemplateService
 import lt.skautai.services.PermissionContextService
 import java.util.UUID
 
-fun Route.inventoryTemplateRoutes(service: InventoryTemplateService) {
+fun Route.inventoryTemplateRoutes(service: InventoryTemplateService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/inventory-templates") {
+        route("$apiPrefix/inventory-templates") {
             get {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
@@ -42,7 +42,7 @@ fun Route.inventoryTemplateRoutes(service: InventoryTemplateService) {
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
                 val tuntasUUID = call.tuntasIdOrRespond() ?: return@post
                 if (!checkPermission("events.create", tuntasUUID, null)) return@post
-                val request = call.receive<CreateInventoryTemplateRequest>()
+                val request = call.receiveValidated<CreateInventoryTemplateRequest>()
                 service.createTemplate(tuntasUUID, userId, request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to create template")) }
@@ -52,7 +52,7 @@ fun Route.inventoryTemplateRoutes(service: InventoryTemplateService) {
                 val tuntasUUID = call.tuntasIdOrRespond() ?: return@put
                 if (!checkPermission("events.create", tuntasUUID, null)) return@put
                 val templateUUID = call.templateIdOrRespond() ?: return@put
-                val request = call.receive<UpdateInventoryTemplateRequest>()
+                val request = call.receiveValidated<UpdateInventoryTemplateRequest>()
                 service.updateTemplate(templateUUID, tuntasUUID, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to update template")) }
@@ -68,13 +68,13 @@ fun Route.inventoryTemplateRoutes(service: InventoryTemplateService) {
             }
         }
 
-        post("/api/events/{id}/inventory-plan/from-template") {
+        post("$apiPrefix/events/{id}/inventory-plan/from-template") {
             val principal = call.principal<JWTPrincipal>()!!
             val userId = UUID.fromString(principal.getClaim("userId", String::class))
             val tuntasUUID = call.tuntasIdOrRespond() ?: return@post
             if (!checkPermission("events.manage", tuntasUUID, null)) return@post
             val eventUUID = call.eventIdOrRespond() ?: return@post
-            val request = call.receive<ApplyInventoryTemplateRequest>()
+            val request = call.receiveValidated<ApplyInventoryTemplateRequest>()
             val templateUUID = try {
                 UUID.fromString(request.templateId)
             } catch (e: Exception) {
@@ -85,13 +85,13 @@ fun Route.inventoryTemplateRoutes(service: InventoryTemplateService) {
                 .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to apply template")) }
         }
 
-        post("/api/events/{id}/apply-template-with-reservation") {
+        post("$apiPrefix/events/{id}/apply-template-with-reservation") {
             val principal = call.principal<JWTPrincipal>()!!
             val userId = UUID.fromString(principal.getClaim("userId", String::class))
             val tuntasUUID = call.tuntasIdOrRespond() ?: return@post
             if (!checkPermission("events.manage", tuntasUUID, null)) return@post
             val eventUUID = call.eventIdOrRespond() ?: return@post
-            val request = call.receive<ApplyInventoryTemplateRequest>()
+            val request = call.receiveValidated<ApplyInventoryTemplateRequest>()
             val templateUUID = try {
                 UUID.fromString(request.templateId)
             } catch (e: Exception) {

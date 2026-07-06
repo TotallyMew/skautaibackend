@@ -14,9 +14,9 @@ import lt.skautai.plugins.checkPermission
 import lt.skautai.services.InvitationService
 import java.util.*
 
-fun Route.invitationRoutes(invitationService: InvitationService) {
+fun Route.invitationRoutes(invitationService: InvitationService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/invitations") {
+        route("$apiPrefix/invitations") {
             post {
                 val principal = call.principal<JWTPrincipal>()
                     ?: return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Not authenticated"))
@@ -36,7 +36,7 @@ fun Route.invitationRoutes(invitationService: InvitationService) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                 }
 
-                val request = call.receive<CreateInvitationRequest>()
+                val request = call.receiveValidated<CreateInvitationRequest>()
                 val targetOrgUnitId = request.organizationalUnitId?.let {
                     try {
                         UUID.fromString(it)
@@ -62,7 +62,7 @@ fun Route.invitationRoutes(invitationService: InvitationService) {
                     return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
                 }
 
-                val request = call.receive<AcceptInvitationRequest>()
+                val request = call.receiveValidated<AcceptInvitationRequest>()
                 invitationService.acceptInvitation(userId, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to accept invitation")) }

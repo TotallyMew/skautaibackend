@@ -25,10 +25,11 @@ import java.util.*
 fun Route.reservationRoutes(
     reservationService: ReservationService,
     firebaseNotificationService: FirebaseNotificationService,
-    notificationRecipientService: NotificationRecipientService
+    notificationRecipientService: NotificationRecipientService,
+    apiPrefix: String = "/api"
 ) {
     authenticate("auth-jwt") {
-        route("/api/reservations") {
+        route("$apiPrefix/reservations") {
 
             get {
                 val principal = call.principal<JWTPrincipal>()!!
@@ -155,7 +156,7 @@ fun Route.reservationRoutes(
 
                 if (!checkPermission("reservations.create", tuntasUUID)) return@post
 
-                val request = call.receive<CreateReservationRequest>()
+                val request = call.receiveValidated<CreateReservationRequest>()
                 val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
                 val canApproveTopLevel = resolvedPerms.any {
                     it.permissionName == "reservations.approve" && it.scope == "ALL"
@@ -210,7 +211,7 @@ fun Route.reservationRoutes(
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
 
-                val request = call.receive<ReviewReservationRequest>()
+                val request = call.receiveValidated<ReviewReservationRequest>()
                 reservationService.reviewReservation(
                     reservationUUID,
                     tuntasUUID,
@@ -252,7 +253,7 @@ fun Route.reservationRoutes(
                 if (!canApproveTopLevel) {
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
-                val request = call.receive<ReviewReservationRequest>()
+                val request = call.receiveValidated<ReviewReservationRequest>()
                 reservationService.reviewReservation(
                     reservationUUID,
                     tuntasUUID,
@@ -320,7 +321,7 @@ fun Route.reservationRoutes(
                 if (!canApproveTopLevel && approvableUnitIds.isEmpty()) {
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
-                val request = call.receive<ReservationMovementRequest>()
+                val request = call.receiveValidated<ReservationMovementRequest>()
                 reservationService.recordMovement(
                     reservationUUID,
                     tuntasUUID,
@@ -358,7 +359,7 @@ fun Route.reservationRoutes(
                 if (!canApproveTopLevel && approvableUnitIds.isEmpty()) {
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
-                val request = call.receive<ReservationMovementRequest>()
+                val request = call.receiveValidated<ReservationMovementRequest>()
                 reservationService.recordMovement(
                     reservationUUID,
                     tuntasUUID,
@@ -386,7 +387,7 @@ fun Route.reservationRoutes(
                 val reservationUUID = try { UUID.fromString(reservationId) } catch (e: Exception) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid reservation ID"))
                 }
-                val request = call.receive<ReservationMovementRequest>()
+                val request = call.receiveValidated<ReservationMovementRequest>()
                 reservationService.recordMovement(
                     reservationUUID,
                     tuntasUUID,
@@ -422,7 +423,7 @@ fun Route.reservationRoutes(
                     .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
                     .flatMap { it.userOrgUnitIds }
                     .toSet()
-                val request = call.receive<UpdateReservationPickupRequest>()
+                val request = call.receiveValidated<UpdateReservationPickupRequest>()
                 reservationService.updatePickupTime(reservationUUID, tuntasUUID, userId, canManageTopLevel, approvableUnitIds, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to update pickup time")) }
@@ -450,7 +451,7 @@ fun Route.reservationRoutes(
                     .filter { it.permissionName == "reservations.approve" && it.scope != "ALL" }
                     .flatMap { it.userOrgUnitIds }
                     .toSet()
-                val request = call.receive<UpdateReservationReturnTimeRequest>()
+                val request = call.receiveValidated<UpdateReservationReturnTimeRequest>()
                 reservationService.updateReturnTime(reservationUUID, tuntasUUID, userId, canManageTopLevel, approvableUnitIds, request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to update return time")) }

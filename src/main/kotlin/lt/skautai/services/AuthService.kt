@@ -55,6 +55,7 @@ class AuthService(
     private val personNameRegex = Regex("^[\\p{L}][\\p{L} '\\-]*[\\p{L}]$")
     private val tuntasNameRegex = Regex("^[\\p{L}\\p{N}][\\p{L}\\p{N} .,'()\\-]*$")
     private val phoneRegex = Regex("^\\+?[0-9][0-9 ()\\-]*$")
+    private val dummyPasswordHash = BCrypt.hashpw("invalid-login-password-placeholder", BCrypt.gensalt())
     private val allowedKrastai = setOf(
         "Alytaus",
         "Kauno",
@@ -322,8 +323,14 @@ class AuthService(
             val user = Users.selectAll()
                 .where { (Users.email eq email) and Users.deletedAt.isNull() }
                 .firstOrNull()
+            val admin = SuperAdmins.selectAll()
+                .where { SuperAdmins.email eq email }
+                .firstOrNull()
 
-            if (user != null && BCrypt.checkpw(request.password, user[Users.passwordHash])) {
+            val userPasswordMatches = BCrypt.checkpw(request.password, user?.get(Users.passwordHash) ?: dummyPasswordHash)
+            val adminPasswordMatches = BCrypt.checkpw(request.password, admin?.get(SuperAdmins.passwordHash) ?: dummyPasswordHash)
+
+            if (user != null && userPasswordMatches) {
                 val token = generateAccessToken(
                     user[Users.id].toString(),
                     user[Users.email],
@@ -347,11 +354,7 @@ class AuthService(
                 )
             }
 
-            val admin = SuperAdmins.selectAll()
-                .where { SuperAdmins.email eq email }
-                .firstOrNull()
-
-            if (admin != null && BCrypt.checkpw(request.password, admin[SuperAdmins.passwordHash])) {
+            if (admin != null && adminPasswordMatches) {
                 val token = generateAccessToken(
                     admin[SuperAdmins.id].toString(),
                     admin[SuperAdmins.email],
@@ -393,9 +396,9 @@ class AuthService(
             val admin = SuperAdmins.selectAll()
                 .where { SuperAdmins.email eq email }
                 .firstOrNull()
-                ?: return@transaction Result.failure(Exception("Invalid email or password"))
+            val passwordMatches = BCrypt.checkpw(request.password, admin?.get(SuperAdmins.passwordHash) ?: dummyPasswordHash)
 
-            if (!BCrypt.checkpw(request.password, admin[SuperAdmins.passwordHash])) {
+            if (admin == null || !passwordMatches) {
                 return@transaction Result.failure(Exception("Invalid email or password"))
             }
 

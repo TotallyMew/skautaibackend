@@ -12,9 +12,9 @@ import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.services.MyTaskService
 import java.util.UUID
 
-fun Route.myTaskRoutes(service: MyTaskService) {
+fun Route.myTaskRoutes(service: MyTaskService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/tasks/my") {
+        route("$apiPrefix/tasks/my") {
             get {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))

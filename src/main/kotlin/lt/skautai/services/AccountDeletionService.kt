@@ -81,25 +81,25 @@ class AccountDeletionService(
 
         // Remove live access and personal relationships. Historical operational rows remain linked
         // to the anonymized user so shared inventory and financial audit trails stay consistent.
-        exec("DELETE FROM devices WHERE user_id = '$userId'")
-        exec("DELETE FROM notifications WHERE user_id = '$userId'")
-        exec("DELETE FROM sync_operations WHERE user_id = '$userId'")
-        exec("DELETE FROM item_assignments WHERE assigned_to_user_id = '$userId'")
-        exec("DELETE FROM event_roles WHERE user_id = '$userId'")
-        exec("DELETE FROM pastovykle_members WHERE user_id = '$userId'")
-        exec("DELETE FROM user_ranks WHERE user_id = '$userId'")
-        exec("DELETE FROM unit_assignments WHERE user_id = '$userId'")
-        exec("DELETE FROM user_leadership_roles WHERE user_id = '$userId'")
-        exec("DELETE FROM user_tuntas_memberships WHERE user_id = '$userId'")
+        execForUser("DELETE FROM devices WHERE user_id = ?", userId)
+        execForUser("DELETE FROM notifications WHERE user_id = ?", userId)
+        execForUser("DELETE FROM sync_operations WHERE user_id = ?", userId)
+        execForUser("DELETE FROM item_assignments WHERE assigned_to_user_id = ?", userId)
+        execForUser("DELETE FROM event_roles WHERE user_id = ?", userId)
+        execForUser("DELETE FROM pastovykle_members WHERE user_id = ?", userId)
+        execForUser("DELETE FROM user_ranks WHERE user_id = ?", userId)
+        execForUser("DELETE FROM unit_assignments WHERE user_id = ?", userId)
+        execForUser("DELETE FROM user_leadership_roles WHERE user_id = ?", userId)
+        execForUser("DELETE FROM user_tuntas_memberships WHERE user_id = ?", userId)
 
-        exec("UPDATE items SET responsible_user_id = NULL WHERE responsible_user_id = '$userId'")
-        exec("UPDATE locations SET owner_user_id = NULL WHERE owner_user_id = '$userId'")
-        exec("UPDATE inventory_kits SET responsible_user_id = NULL WHERE responsible_user_id = '$userId'")
-        exec("UPDATE pastovykles SET responsible_user_id = NULL WHERE responsible_user_id = '$userId'")
-        exec("UPDATE event_inventory_items SET responsible_user_id = NULL WHERE responsible_user_id = '$userId'")
-        exec("UPDATE event_inventory_requests SET responsible_user_id = NULL WHERE responsible_user_id = '$userId'")
-        exec("UPDATE event_inventory_custody SET holder_user_id = NULL WHERE holder_user_id = '$userId'")
-        exec("UPDATE item_check_sessions SET scope_personal_owner_user_id = NULL WHERE scope_personal_owner_user_id = '$userId'")
+        execForUser("UPDATE items SET responsible_user_id = NULL WHERE responsible_user_id = ?", userId)
+        execForUser("UPDATE locations SET owner_user_id = NULL WHERE owner_user_id = ?", userId)
+        execForUser("UPDATE inventory_kits SET responsible_user_id = NULL WHERE responsible_user_id = ?", userId)
+        execForUser("UPDATE pastovykles SET responsible_user_id = NULL WHERE responsible_user_id = ?", userId)
+        execForUser("UPDATE event_inventory_items SET responsible_user_id = NULL WHERE responsible_user_id = ?", userId)
+        execForUser("UPDATE event_inventory_requests SET responsible_user_id = NULL WHERE responsible_user_id = ?", userId)
+        execForUser("UPDATE event_inventory_custody SET holder_user_id = NULL WHERE holder_user_id = ?", userId)
+        execForUser("UPDATE item_check_sessions SET scope_personal_owner_user_id = NULL WHERE scope_personal_owner_user_id = ?", userId)
 
         AuthRefreshSessions.update({
             (AuthRefreshSessions.subjectId eq userId) and
@@ -187,6 +187,10 @@ class AccountDeletionService(
 
     private fun setting(name: String): String? =
         (System.getenv(name) ?: System.getProperty(name))?.trim()?.takeIf(String::isNotBlank)
+}
+
+private fun Transaction.execForUser(sql: String, userId: UUID) {
+    exec(sql, listOf(UUIDColumnType() to userId))
 }
 
 enum class TokenStatus { VALID, INVALID, EXPIRED, USED }

@@ -13,18 +13,18 @@ import lt.skautai.plugins.PublicAuthRateLimit
 import lt.skautai.plugins.RegistrationRateLimit
 import lt.skautai.services.AuthService
 
-fun Route.authRoutes(authService: AuthService) {
-    route("/api/auth") {
+fun Route.authRoutes(authService: AuthService, apiPrefix: String = "/api") {
+    route("$apiPrefix/auth") {
         rateLimit(RegistrationRateLimit) {
             post("/register") {
-                val request = call.receive<RegisterTuntininkasRequest>()
+                val request = call.receiveValidated<RegisterTuntininkasRequest>()
                 authService.registerTuntininkas(request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Registracija nepavyko.")) }
             }
 
             post("/register/invite") {
-                val request = call.receive<RegisterWithInviteRequest>()
+                val request = call.receiveValidated<RegisterWithInviteRequest>()
                 authService.registerWithInvite(request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Registracija nepavyko.")) }
@@ -33,27 +33,27 @@ fun Route.authRoutes(authService: AuthService) {
 
         rateLimit(PublicAuthRateLimit) {
             post("/login") {
-                val request = call.receive<LoginRequest>()
+                val request = call.receiveValidated<LoginRequest>()
                 authService.login(request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.Unauthorized, ErrorResponse(it.message ?: "Prisijungti nepavyko.")) }
             }
 
             post("/refresh") {
-                val request = call.receive<RefreshTokenRequest>()
+                val request = call.receiveValidated<RefreshTokenRequest>()
                 authService.refreshAccessToken(request.refreshToken)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.Unauthorized, ErrorResponse(it.message ?: "Sesijos atnaujinti nepavyko.")) }
             }
 
             post("/logout") {
-                val request = call.receive<RefreshTokenRequest>()
+                val request = call.receiveValidated<RefreshTokenRequest>()
                 authService.logout(request.refreshToken)
                 call.respond(HttpStatusCode.NoContent)
             }
 
             post("/reset-password") {
-                val request = call.receive<ResetPasswordRequest>()
+                val request = call.receiveValidated<ResetPasswordRequest>()
                 authService.resetPassword(request)
                     .onSuccess { call.respond(HttpStatusCode.OK, mapOf("message" to "Slaptažodis pakeistas.")) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Slaptažodžio pakeisti nepavyko.")) }
@@ -62,7 +62,7 @@ fun Route.authRoutes(authService: AuthService) {
 
         rateLimit(EmailRequestRateLimit) {
             post("/forgot-password") {
-                val request = call.receive<ForgotPasswordRequest>()
+                val request = call.receiveValidated<ForgotPasswordRequest>()
                 authService.requestPasswordReset(request)
                     .onSuccess {
                         call.respond(
@@ -75,7 +75,8 @@ fun Route.authRoutes(authService: AuthService) {
         }
     }
 
-    get("/password-reset/open") {
+    if (apiPrefix == "/api") {
+        get("/password-reset/open") {
         call.respondText(
             """
             <!doctype html>
@@ -94,10 +95,11 @@ fun Route.authRoutes(authService: AuthService) {
             </html>
             """.trimIndent(),
             ContentType.Text.Html
-        )
+            )
+        }
     }
 
-    route("/api/setup") {
+    route("$apiPrefix/setup") {
         rateLimit(RegistrationRateLimit) {
             post("/super-admin") {
                 val bootstrapToken = application.environment.config
@@ -111,7 +113,7 @@ fun Route.authRoutes(authService: AuthService) {
                     call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Neteisingas pradinio nustatymo raktas."))
                     return@post
                 }
-                val request = call.receive<LoginRequest>()
+                val request = call.receiveValidated<LoginRequest>()
                 authService.seedSuperAdmin(request)
                     .onSuccess { call.respond(HttpStatusCode.Created, it) }
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Pradinio nustatymo atlikti nepavyko.")) }
@@ -119,10 +121,10 @@ fun Route.authRoutes(authService: AuthService) {
         }
     }
 
-    route("/api/super-admin") {
+    route("$apiPrefix/super-admin") {
         rateLimit(PublicAuthRateLimit) {
             post("/login") {
-                val request = call.receive<LoginRequest>()
+                val request = call.receiveValidated<LoginRequest>()
                 authService.loginSuperAdmin(request)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.Unauthorized, ErrorResponse(it.message ?: "Prisijungti nepavyko.")) }

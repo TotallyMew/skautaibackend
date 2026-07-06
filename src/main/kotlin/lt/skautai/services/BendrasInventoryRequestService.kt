@@ -620,7 +620,7 @@ class BendrasInventoryRequestService {
 
         val userIds = rows.map { it[BendrasInventoryRequests.requestedByUserId] }.toSet()
         val userNamesById = Users.selectAll()
-            .where { Users.id inList userIds.toList() }
+            .where { (Users.id inList userIds.toList()) and Users.deletedAt.isNull() }
             .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}".trim() }
 
         return BendrasRequestListHydration(
@@ -695,7 +695,7 @@ class BendrasInventoryRequestService {
         }
         val requestedByUserName = hydration?.userNamesById?.get(row[BendrasInventoryRequests.requestedByUserId])
             ?: Users.selectAll()
-                .where { Users.id eq row[BendrasInventoryRequests.requestedByUserId] }
+                .where { (Users.id eq row[BendrasInventoryRequests.requestedByUserId]) and Users.deletedAt.isNull() }
                 .firstOrNull()
                 ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
 

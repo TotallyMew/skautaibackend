@@ -22,9 +22,9 @@ import lt.skautai.services.LiveEventBus
 import lt.skautai.services.PermissionContextService
 import java.util.UUID
 
-fun Route.liveEventRoutes() {
+fun Route.liveEventRoutes(apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/live") {
+        route("$apiPrefix/live") {
             get("/events") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))

@@ -15,9 +15,9 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.*
 
-fun Route.rolesRoutes() {
+fun Route.rolesRoutes(apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/roles") {
+        route("$apiPrefix/roles") {
             get {
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))

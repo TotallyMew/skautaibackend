@@ -3,6 +3,9 @@ package lt.skautai.plugins
 import io.ktor.server.application.Application
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
+import io.ktor.server.auth.principal
+import io.ktor.server.auth.jwt.JWTPrincipal
+import io.ktor.server.request.header
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
 import io.ktor.util.AttributeKey
@@ -32,8 +35,14 @@ private val RequestTiming = createApplicationPlugin(name = "RequestTiming") {
         val method = call.request.httpMethod.value
         val path = call.request.path()
         val status = call.response.status()?.value ?: 200
+        val userId = call.principal<JWTPrincipal>()?.getClaim("userId", String::class) ?: "-"
+        val subjectType = call.principal<JWTPrincipal>()?.getClaim("type", String::class) ?: "-"
+        val requestId = call.request.header("X-Request-Id") ?: "-"
+        val userAgent = call.request.header("User-Agent")?.replace("\"", "'") ?: "-"
+        val forwardedFor = call.request.header("X-Forwarded-For")?.substringBefore(",")?.trim()
+        val remoteAddress = forwardedFor?.takeIf(String::isNotBlank) ?: call.request.local.remoteHost
         OperationalMetrics.requestCompleted(status, durationMs)
-        val message = "request method=$method path=$path status=$status durationMs=$durationMs"
+        val message = "access requestId=\"$requestId\" method=$method path=\"$path\" status=$status durationMs=$durationMs remoteAddress=\"$remoteAddress\" userId=\"$userId\" subjectType=\"$subjectType\" userAgent=\"$userAgent\""
         if (durationMs >= slowRequestWarnMs) {
             requestTimingLogger.warn(message)
         } else {

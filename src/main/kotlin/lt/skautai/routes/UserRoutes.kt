@@ -31,9 +31,9 @@ import java.util.*
 import org.jetbrains.exposed.sql.deleteWhere
 import java.util.Locale
 
-fun Route.userRoutes() {
+fun Route.userRoutes(apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/users/me") {
+        route("$apiPrefix/users/me") {
             get {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
@@ -61,7 +61,7 @@ fun Route.userRoutes() {
             put("/profile") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
-                val request = call.receive<UpdateMyProfileRequest>()
+                val request = call.receiveValidated<UpdateMyProfileRequest>()
 
                 val normalizedName = request.name.trim()
                 val normalizedSurname = request.surname.trim()
@@ -127,7 +127,7 @@ fun Route.userRoutes() {
             put("/password") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
-                val request = call.receive<ChangeMyPasswordRequest>()
+                val request = call.receiveValidated<ChangeMyPasswordRequest>()
 
                 if (request.currentPassword.isBlank()) {
                     return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Current password is required"))

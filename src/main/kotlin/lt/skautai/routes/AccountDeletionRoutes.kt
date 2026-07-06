@@ -17,13 +17,13 @@ import lt.skautai.services.AccountDeletionService
 import lt.skautai.services.TokenStatus
 import java.util.UUID
 
-fun Route.accountDeletionRoutes(service: AccountDeletionService) {
+fun Route.accountDeletionRoutes(service: AccountDeletionService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
         rateLimit(EmailRequestRateLimit) {
-            post("/api/users/me/account-deletion") {
+            post("$apiPrefix/users/me/account-deletion") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
-                val request = call.receive<RequestAccountDeletionRequest>()
+                val request = call.receiveValidated<RequestAccountDeletionRequest>()
                 service.requestFromApp(userId, request.password)
                     .onSuccess {
                         call.respond(
@@ -39,8 +39,8 @@ fun Route.accountDeletionRoutes(service: AccountDeletionService) {
     }
 
     rateLimit(EmailRequestRateLimit) {
-        post("/api/account-deletion/request") {
-            val request = call.receive<PublicAccountDeletionRequest>()
+        post("$apiPrefix/account-deletion/request") {
+            val request = call.receiveValidated<PublicAccountDeletionRequest>()
             service.requestFromWeb(request.email)
             call.respond(
                 HttpStatusCode.Accepted,
@@ -48,7 +48,8 @@ fun Route.accountDeletionRoutes(service: AccountDeletionService) {
             )
         }
 
-        post("/account-deletion/request") {
+        if (apiPrefix == "/api") {
+            post("/account-deletion/request") {
             val email = call.receiveParameters()["email"].orEmpty()
             service.requestFromWeb(email)
             call.respondText(
@@ -59,10 +60,12 @@ fun Route.accountDeletionRoutes(service: AccountDeletionService) {
                 ContentType.Text.Html,
                 HttpStatusCode.Accepted
             )
+            }
         }
     }
 
-    get("/account-deletion/confirm") {
+    if (apiPrefix == "/api") {
+        get("/account-deletion/confirm") {
         val token = call.request.queryParameters["token"].orEmpty()
         val body = when (service.tokenStatus(token)) {
             TokenStatus.VALID -> accountDeletionConfirmationPage(token)
@@ -71,10 +74,10 @@ fun Route.accountDeletionRoutes(service: AccountDeletionService) {
             TokenStatus.INVALID -> accountDeletionResultPage("Nuoroda netinkama", "Patikrinkite, ar nukopijavote visą nuorodą.")
         }
         call.respondText(body, ContentType.Text.Html)
-    }
+        }
 
-    rateLimit(PublicAuthRateLimit) {
-        post("/account-deletion/confirm") {
+        rateLimit(PublicAuthRateLimit) {
+            post("/account-deletion/confirm") {
             val token = call.receiveParameters()["token"].orEmpty()
             service.confirm(token)
                 .onSuccess {
@@ -93,6 +96,7 @@ fun Route.accountDeletionRoutes(service: AccountDeletionService) {
                         HttpStatusCode.BadRequest
                     )
                 }
+            }
         }
     }
 }

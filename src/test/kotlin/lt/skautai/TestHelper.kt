@@ -140,11 +140,18 @@ object TestHelper {
         }
     }
 
-    fun ApplicationTestBuilder.configureFullApp() {
+    fun ApplicationTestBuilder.configureFullApp(useProductionRateLimits: Boolean = false) {
         environment {
             config = buildTestConfig()
         }
         application {
+            if (useProductionRateLimits) {
+                System.setProperty("REGISTRATION_RATE_LIMIT", "3")
+                System.setProperty("EMAIL_REQUEST_RATE_LIMIT", "5")
+            } else {
+                System.setProperty("REGISTRATION_RATE_LIMIT", "100000")
+                System.setProperty("EMAIL_REQUEST_RATE_LIMIT", "100000")
+            }
             configureSecurity()
             configureSerialization()
             configureRateLimiting()

@@ -14,9 +14,9 @@ import lt.skautai.models.responses.MessageResponse
 import lt.skautai.services.NotificationService
 import java.util.UUID
 
-fun Route.notificationRoutes(notificationService: NotificationService) {
+fun Route.notificationRoutes(notificationService: NotificationService, apiPrefix: String = "/api") {
     authenticate("auth-jwt") {
-        route("/api/notifications") {
+        route("$apiPrefix/notifications") {
             get {
                 val userId = call.userId() ?: return@get
                 val unreadOnly = call.request.queryParameters["unreadOnly"]?.toBooleanStrictOrNull() ?: false

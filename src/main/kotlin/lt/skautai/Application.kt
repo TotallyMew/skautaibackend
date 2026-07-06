@@ -4,6 +4,7 @@ import io.ktor.http.*
 import io.ktor.server.config.ApplicationConfig
 import io.ktor.server.application.*
 import io.ktor.server.netty.*
+import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.plugins.defaultheaders.*
 import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.statuspages.*
@@ -54,10 +55,28 @@ fun Application.module() {
     configureCompression()
     configureRequestTiming()
     configureLiveEventPublisher()
+    install(CORS) {
+        allowMethod(HttpMethod.Get)
+        allowMethod(HttpMethod.Post)
+        allowMethod(HttpMethod.Put)
+        allowMethod(HttpMethod.Patch)
+        allowMethod(HttpMethod.Delete)
+        allowMethod(HttpMethod.Options)
+        allowHeader(HttpHeaders.Authorization)
+        allowHeader(HttpHeaders.ContentType)
+        allowHeader("X-Tuntas-Id")
+        allowHeader("X-Org-Unit-Id")
+        allowCredentials = true
+
+        configuredCorsHosts().forEach { host ->
+            allowHost(host.host, schemes = host.schemes)
+        }
+    }
     install(DefaultHeaders) {
         header("X-Content-Type-Options", "nosniff")
         header("X-Frame-Options", "DENY")
         header("Referrer-Policy", "strict-origin-when-cross-origin")
+        header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     }
     install(StatusPages) {
         status(HttpStatusCode.TooManyRequests) { call, status ->
@@ -251,7 +270,34 @@ private val supportedDotEnvKeys = setOf(
     ,"PASSWORD_RESET_EMAIL_FROM"
     ,"PASSWORD_RESET_PUBLIC_BASE_URL"
     ,"ACCOUNT_DELETION_PUBLIC_BASE_URL"
+    ,"CORS_ALLOWED_ORIGINS"
 )
+
+private data class CorsHost(val host: String, val schemes: List<String>)
+
+private fun configuredCorsHosts(): List<CorsHost> {
+    val configured = (System.getenv("CORS_ALLOWED_ORIGINS") ?: System.getProperty("CORS_ALLOWED_ORIGINS"))
+        ?.split(",")
+        ?.mapNotNull { it.trim().takeIf(String::isNotBlank)?.toCorsHost() }
+        .orEmpty()
+    if (configured.isNotEmpty()) return configured
+    return listOf(
+        CorsHost("localhost:3000", listOf("http")),
+        CorsHost("localhost:5173", listOf("http")),
+        CorsHost("127.0.0.1:3000", listOf("http")),
+        CorsHost("127.0.0.1:5173", listOf("http"))
+    )
+}
+
+private fun String.toCorsHost(): CorsHost? {
+    val uri = runCatching {
+        if (contains("://")) URI(this) else URI("https://$this")
+    }.getOrNull() ?: return null
+    val host = uri.host ?: return null
+    val port = if (uri.port > 0) ":${uri.port}" else ""
+    val scheme = uri.scheme?.takeIf { it == "http" || it == "https" } ?: "https"
+    return CorsHost("$host$port", listOf(scheme))
+}
 
 private fun loadDotEnvIntoSystemProperties(dotEnvPath: Path = Path(".env")) {
     val resolvedDotEnvPath = listOf(

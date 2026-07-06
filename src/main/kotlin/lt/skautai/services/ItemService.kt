@@ -44,7 +44,10 @@ import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.transaction
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.util.*
 
 class DuplicateItemConflictException(val duplicateItem: ItemResponse) :
@@ -335,6 +338,14 @@ class ItemService {
                 }
             }
 
+            lockDuplicateItemKey(
+                tuntasId = tuntasId,
+                custodianId = custodianUUID,
+                name = normalizedName,
+                type = request.type,
+                category = request.category
+            )
+
             val duplicateItem = findDuplicateItem(
                 tuntasId = tuntasId,
                 custodianId = custodianUUID,
@@ -479,6 +490,25 @@ class ItemService {
     }
 
     private fun normalizeItemName(value: String): String = value.trim().lowercase()
+
+    private fun lockDuplicateItemKey(
+        tuntasId: UUID,
+        custodianId: UUID?,
+        name: String,
+        type: String,
+        category: String
+    ) {
+        val payload = listOf(
+            tuntasId.toString(),
+            custodianId?.toString() ?: "SHARED",
+            normalizeItemName(name),
+            type,
+            category
+        ).joinToString("|")
+        val digest = MessageDigest.getInstance("SHA-256").digest(payload.toByteArray(Charsets.UTF_8))
+        val lockKey = ByteBuffer.wrap(digest, 0, Long.SIZE_BYTES).long
+        TransactionManager.current().exec("SELECT pg_advisory_xact_lock($lockKey)")
+    }
 
     private fun toSingleItemResponse(row: ResultRow, tuntasId: UUID): ItemResponse =
         toItemResponse(row, buildItemListHydration(listOf(row), tuntasId))
@@ -1474,7 +1504,7 @@ class ItemService {
             emptyMap()
         } else {
             Users.selectAll()
-                .where { Users.id inList userIds.toList() }
+                .where { (Users.id inList userIds.toList()) and Users.deletedAt.isNull() }
                 .associate { it[Users.id] to "${it[Users.name]} ${it[Users.surname]}" }
         }
         val quantityBreakdowns = linkedRows
@@ -1695,7 +1725,7 @@ class ItemService {
         if (userId == null) return null
         Users.selectAll()
             .where {
-                Users.id eq userId
+                (Users.id eq userId) and Users.deletedAt.isNull()
             }
             .firstOrNull()
             ?: return Exception("Responsible user not found")
@@ -1746,7 +1776,7 @@ class ItemService {
     private fun userDisplayName(userId: UUID?): String? {
         if (userId == null) return null
         return Users.selectAll()
-            .where { Users.id eq userId }
+            .where { (Users.id eq userId) and Users.deletedAt.isNull() }
             .firstOrNull()
             ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
     }
