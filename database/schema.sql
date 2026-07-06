@@ -24,7 +24,7 @@ CREATE TABLE tuntai (
                         name VARCHAR(100) UNIQUE NOT NULL,
                         krastas VARCHAR(100),
                         contact_email VARCHAR(255),
-                        status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACTIVE', 'SUSPENDED', 'REJECTED')),
+                        status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACTIVE', 'SUSPENDED', 'REJECTED', 'DELETED')),
                         approved_by_super_admin_id UUID REFERENCES super_admins(id),
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         approved_at TIMESTAMP,
@@ -240,6 +240,24 @@ CREATE TABLE item_assignments (
                                   unassigned_at TIMESTAMP,
                                   reason TEXT,
                                   notes TEXT
+);
+
+-- Direct item loans without reservation
+CREATE TABLE direct_item_loans (
+                                   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                   item_id UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                                   tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
+                                   issued_to_user_id UUID NOT NULL REFERENCES users(id),
+                                   issued_by_user_id UUID NOT NULL REFERENCES users(id),
+                                   quantity INTEGER NOT NULL CHECK (quantity > 0),
+                                   returned_quantity INTEGER NOT NULL DEFAULT 0 CHECK (returned_quantity >= 0),
+                                   status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+                                   issued_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                   returned_at TIMESTAMP,
+                                   due_at TIMESTAMP,
+                                   notes TEXT,
+                                   CONSTRAINT chk_direct_item_loans_returned_quantity CHECK (returned_quantity <= quantity),
+                                   CONSTRAINT chk_direct_item_loans_status CHECK (status IN ('ACTIVE', 'RETURNED'))
 );
 
 -- Item condition log
@@ -943,6 +961,8 @@ CREATE INDEX idx_event_purchase_items_inventory_item ON event_purchase_items(eve
 CREATE INDEX idx_event_purchase_item_reconciliations_item ON event_purchase_item_reconciliations(purchase_item_id);
 CREATE INDEX idx_item_assignments_item ON item_assignments(item_id);
 CREATE INDEX idx_item_assignments_user ON item_assignments(assigned_to_user_id);
+CREATE INDEX idx_direct_item_loans_item_status ON direct_item_loans(item_id, status);
+CREATE INDEX idx_direct_item_loans_tuntas_user ON direct_item_loans(tuntas_id, issued_to_user_id);
 CREATE INDEX idx_item_custom_fields_item_field ON item_custom_fields(item_id, field_name);
 CREATE INDEX idx_inventory_kit_items_item ON inventory_kit_items(item_id);
 CREATE INDEX idx_inventory_kits_status ON inventory_kits(status);

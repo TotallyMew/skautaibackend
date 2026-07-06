@@ -565,22 +565,27 @@ class AuthService(
             }
         } ?: return Result.success(Unit)
 
+        val publicBaseUrl = setting("PASSWORD_RESET_PUBLIC_BASE_URL")
+        if (publicBaseUrl == null) {
+            environment.log.error("Password reset requested but PASSWORD_RESET_PUBLIC_BASE_URL is not configured")
+            return Result.success(Unit)
+        }
+        val rawToken = randomUrlToken()
+        val tokenId = UUID.randomUUID()
         val now = kotlinx.datetime.Clock.System.now()
         val windowStart = kotlinx.datetime.Instant.fromEpochMilliseconds(
             now.toEpochMilliseconds() - passwordResetRequestWindowMs
         )
-        val tooManyRequests = transaction {
-            PasswordResetTokens.selectAll().where {
+        val created = transaction {
+            exec("SELECT pg_advisory_xact_lock(${passwordResetThrottleLockKey(subject.id, subject.type)})")
+            val tooManyRequests = PasswordResetTokens.selectAll().where {
                 (PasswordResetTokens.subjectId eq subject.id) and
                     (PasswordResetTokens.subjectType eq subject.type) and
                     (PasswordResetTokens.createdAt greaterEq windowStart)
             }.count() >= maxPasswordResetRequestsPerWindow
-        }
-        if (tooManyRequests) return Result.success(Unit)
-
-        val rawToken = randomUrlToken()
-        val tokenId = UUID.randomUUID()
-        transaction {
+            if (tooManyRequests) {
+                return@transaction false
+            }
             PasswordResetTokens.update({
                 (PasswordResetTokens.subjectId eq subject.id) and
                     (PasswordResetTokens.subjectType eq subject.type) and
@@ -598,14 +603,10 @@ class AuthService(
                 )
                 it[createdAt] = now
             }
+            true
         }
+        if (!created) return Result.success(Unit)
 
-        val publicBaseUrl = setting("PASSWORD_RESET_PUBLIC_BASE_URL")
-        if (publicBaseUrl == null) {
-            transaction { PasswordResetTokens.deleteWhere { id eq tokenId } }
-            environment.log.error("Password reset requested but PASSWORD_RESET_PUBLIC_BASE_URL is not configured")
-            return Result.success(Unit)
-        }
         val resetUrl = "${publicBaseUrl.trimEnd('/')}/password-reset/open?token=${
             URLEncoder.encode(rawToken, StandardCharsets.UTF_8)
         }"
@@ -613,9 +614,12 @@ class AuthService(
             .onFailure {
                 transaction { PasswordResetTokens.deleteWhere { id eq tokenId } }
                 environment.log.error("Failed to deliver password reset email", it)
-            }
+        }
         return Result.success(Unit)
     }
+
+    private fun passwordResetThrottleLockKey(subjectId: UUID, subjectType: String): Long =
+        subjectId.mostSignificantBits xor subjectId.leastSignificantBits xor subjectType.hashCode().toLong()
 
     fun resetPassword(request: ResetPasswordRequest): Result<Unit> {
         val token = request.token.trim()

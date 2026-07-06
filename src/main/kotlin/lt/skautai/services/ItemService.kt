@@ -1,6 +1,7 @@
 package lt.skautai.services
 
 import lt.skautai.database.tables.Items
+import lt.skautai.database.tables.DirectItemLoans
 import lt.skautai.database.tables.ItemAssignments
 import lt.skautai.database.tables.ItemConditionLog
 import lt.skautai.database.tables.ItemHistory
@@ -18,9 +19,11 @@ import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.ConsumeItemRequest
+import lt.skautai.models.requests.DirectItemLoanRequest
 import lt.skautai.models.requests.ReviewItemAdditionRequest
 import lt.skautai.plugins.ResolvedPermission
 import lt.skautai.models.requests.ItemCustomFieldRequest
+import lt.skautai.models.requests.ReturnDirectItemLoanRequest
 import lt.skautai.models.requests.ReturnItemToSharedRequest
 import lt.skautai.models.requests.RestockItemRequest
 import lt.skautai.models.requests.TransferItemToUnitRequest
@@ -29,6 +32,8 @@ import lt.skautai.models.requests.WriteOffItemRequest
 import lt.skautai.models.responses.ItemCustomFieldResponse
 import lt.skautai.models.responses.ItemAssignmentListResponse
 import lt.skautai.models.responses.ItemAssignmentResponse
+import lt.skautai.models.responses.DirectItemLoanListResponse
+import lt.skautai.models.responses.DirectItemLoanResponse
 import lt.skautai.models.responses.ItemConditionLogListResponse
 import lt.skautai.models.responses.ItemConditionLogResponse
 import lt.skautai.models.responses.ItemHistoryListResponse
@@ -1073,6 +1078,185 @@ class ItemService {
         }
     }
 
+    fun getDirectItemLoans(
+        itemId: UUID,
+        tuntasId: UUID,
+        requestingUserId: UUID
+    ): Result<DirectItemLoanListResponse> {
+        return transaction {
+            val item = getVisibleItemRow(itemId, tuntasId, requestingUserId)
+                ?: return@transaction Result.failure(Exception("Item not found"))
+            val loans = DirectItemLoans.selectAll()
+                .where { (DirectItemLoans.itemId eq itemId) and (DirectItemLoans.tuntasId eq tuntasId) }
+                .orderBy(DirectItemLoans.status to SortOrder.ASC, DirectItemLoans.issuedAt to SortOrder.DESC)
+                .map { row -> directLoanResponse(row, item[Items.name]) }
+            Result.success(
+                DirectItemLoanListResponse(
+                    loans = loans,
+                    total = loans.size,
+                    activeOutstandingQuantity = loans.sumOf { it.outstandingQuantity }
+                )
+            )
+        }
+    }
+
+    fun getDirectItemLoansForTuntas(
+        tuntasId: UUID,
+        requestingUserId: UUID,
+        activeOnly: Boolean = true
+    ): Result<DirectItemLoanListResponse> {
+        return transaction {
+            val canSeeAllInventory = userCanManageAllInventory(requestingUserId, tuntasId)
+            val visibleUnitIds = if (canSeeAllInventory) emptySet() else userVisibleUnitIds(requestingUserId, tuntasId)
+            var query = DirectItemLoans.innerJoin(Items)
+                .selectAll()
+                .where { DirectItemLoans.tuntasId eq tuntasId }
+            if (activeOnly) {
+                query = query.andWhere { DirectItemLoans.status eq "ACTIVE" }
+            }
+            if (!canSeeAllInventory) {
+                query = if (visibleUnitIds.isEmpty()) {
+                    query.andWhere { Items.custodianId.isNull() }
+                } else {
+                    query.andWhere { Items.custodianId.isNull() or (Items.custodianId inList visibleUnitIds.toList()) }
+                }
+            }
+            val loans = query
+                .orderBy(DirectItemLoans.issuedAt to SortOrder.DESC)
+                .map { row -> directLoanResponse(row, row[Items.name]) }
+            Result.success(
+                DirectItemLoanListResponse(
+                    loans = loans,
+                    total = loans.size,
+                    activeOutstandingQuantity = loans.sumOf { it.outstandingQuantity }
+                )
+            )
+        }
+    }
+
+    fun issueDirectItemLoan(
+        itemId: UUID,
+        tuntasId: UUID,
+        issuedByUserId: UUID,
+        request: DirectItemLoanRequest
+    ): Result<DirectItemLoanResponse> {
+        return transaction {
+            if (request.quantity <= 0) return@transaction Result.failure(Exception("Quantity must be positive"))
+            val issuedToUserId = try {
+                UUID.fromString(request.issuedToUserId)
+            } catch (_: Exception) {
+                return@transaction Result.failure(Exception("Invalid user ID"))
+            }
+            validateResponsibleUser(issuedToUserId, tuntasId)?.let {
+                return@transaction Result.failure(it)
+            }
+            val dueAt = request.dueAt?.takeIf { it.isNotBlank() }?.let { raw ->
+                try {
+                    Instant.parse(raw)
+                } catch (_: Exception) {
+                    return@transaction Result.failure(Exception("Invalid dueAt"))
+                }
+            }
+            val item = Items.selectAll()
+                .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Item not found"))
+            if (item[Items.status] != "ACTIVE") {
+                return@transaction Result.failure(Exception("Only active items can be issued"))
+            }
+            val activeLoanQuantity = activeDirectLoanQuantity(itemId)
+            val availableQuantity = item[Items.quantity] - activeLoanQuantity
+            if (request.quantity > availableQuantity) {
+                return@transaction Result.failure(Exception("Not enough available quantity"))
+            }
+            val now = Clock.System.now()
+            val loanId = UUID.randomUUID()
+            DirectItemLoans.insert {
+                it[id] = loanId
+                it[this.itemId] = itemId
+                it[this.tuntasId] = tuntasId
+                it[this.issuedToUserId] = issuedToUserId
+                it[this.issuedByUserId] = issuedByUserId
+                it[quantity] = request.quantity
+                it[returnedQuantity] = 0
+                it[status] = "ACTIVE"
+                it[issuedAt] = now
+                it[this.dueAt] = dueAt
+                it[notes] = request.notes?.takeIf { note -> note.isNotBlank() }
+            }
+            recordItemHistory(
+                itemId = itemId,
+                eventType = "DIRECT_ISSUED",
+                quantityChange = -request.quantity,
+                performedByUserId = issuedByUserId,
+                notes = request.notes ?: "Isduota tiesiogiai: ${userDisplayName(issuedToUserId) ?: issuedToUserId}",
+                createdAt = now
+            )
+            val loan = DirectItemLoans.selectAll()
+                .where { DirectItemLoans.id eq loanId }
+                .first()
+            Result.success(directLoanResponse(loan, item[Items.name]))
+        }
+    }
+
+    fun returnDirectItemLoan(
+        itemId: UUID,
+        loanId: UUID,
+        tuntasId: UUID,
+        returnedByUserId: UUID,
+        request: ReturnDirectItemLoanRequest
+    ): Result<DirectItemLoanResponse> {
+        return transaction {
+            if (request.quantity <= 0) return@transaction Result.failure(Exception("Quantity must be positive"))
+            val item = Items.selectAll()
+                .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Item not found"))
+            val loan = DirectItemLoans.selectAll()
+                .where {
+                    (DirectItemLoans.id eq loanId) and
+                        (DirectItemLoans.itemId eq itemId) and
+                        (DirectItemLoans.tuntasId eq tuntasId)
+                }
+                .forUpdate()
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Loan not found"))
+            if (loan[DirectItemLoans.status] != "ACTIVE") {
+                return@transaction Result.failure(Exception("Loan is already returned"))
+            }
+            val outstandingQuantity = loan[DirectItemLoans.quantity] - loan[DirectItemLoans.returnedQuantity]
+            if (request.quantity > outstandingQuantity) {
+                return@transaction Result.failure(Exception("Return quantity exceeds outstanding quantity"))
+            }
+            val now = Clock.System.now()
+            val nextReturnedQuantity = loan[DirectItemLoans.returnedQuantity] + request.quantity
+            val fullyReturned = nextReturnedQuantity == loan[DirectItemLoans.quantity]
+            DirectItemLoans.update({ DirectItemLoans.id eq loanId }) {
+                it[returnedQuantity] = nextReturnedQuantity
+                if (fullyReturned) {
+                    it[status] = "RETURNED"
+                    it[returnedAt] = now
+                }
+                request.notes?.takeIf { note -> note.isNotBlank() }?.let { note ->
+                    it[notes] = note
+                }
+            }
+            recordItemHistory(
+                itemId = itemId,
+                eventType = "DIRECT_RETURNED",
+                quantityChange = request.quantity,
+                performedByUserId = returnedByUserId,
+                notes = request.notes ?: "Grazinta tiesiogiai: ${userDisplayName(loan[DirectItemLoans.issuedToUserId]) ?: loan[DirectItemLoans.issuedToUserId]}",
+                createdAt = now
+            )
+            val updatedLoan = DirectItemLoans.selectAll()
+                .where { DirectItemLoans.id eq loanId }
+                .first()
+            Result.success(directLoanResponse(updatedLoan, item[Items.name]))
+        }
+    }
+
     fun getItemConditionLog(
         itemId: UUID,
         tuntasId: UUID,
@@ -1779,6 +1963,34 @@ class ItemService {
             .where { (Users.id eq userId) and Users.deletedAt.isNull() }
             .firstOrNull()
             ?.let { "${it[Users.name]} ${it[Users.surname]}".trim() }
+    }
+
+    private fun activeDirectLoanQuantity(itemId: UUID): Int {
+        return DirectItemLoans.selectAll()
+            .where { (DirectItemLoans.itemId eq itemId) and (DirectItemLoans.status eq "ACTIVE") }
+            .sumOf { row -> row[DirectItemLoans.quantity] - row[DirectItemLoans.returnedQuantity] }
+    }
+
+    private fun directLoanResponse(row: ResultRow, itemName: String? = null): DirectItemLoanResponse {
+        val quantity = row[DirectItemLoans.quantity]
+        val returnedQuantity = row[DirectItemLoans.returnedQuantity]
+        return DirectItemLoanResponse(
+            id = row[DirectItemLoans.id].toString(),
+            itemId = row[DirectItemLoans.itemId].toString(),
+            itemName = itemName,
+            issuedToUserId = row[DirectItemLoans.issuedToUserId].toString(),
+            issuedToUserName = userDisplayName(row[DirectItemLoans.issuedToUserId]),
+            issuedByUserId = row[DirectItemLoans.issuedByUserId].toString(),
+            issuedByUserName = userDisplayName(row[DirectItemLoans.issuedByUserId]),
+            quantity = quantity,
+            returnedQuantity = returnedQuantity,
+            outstandingQuantity = quantity - returnedQuantity,
+            status = row[DirectItemLoans.status],
+            issuedAt = row[DirectItemLoans.issuedAt].toString(),
+            returnedAt = row[DirectItemLoans.returnedAt]?.toString(),
+            dueAt = row[DirectItemLoans.dueAt]?.toString(),
+            notes = row[DirectItemLoans.notes]
+        )
     }
 
     private fun orgUnitName(orgUnitId: UUID?): String? {

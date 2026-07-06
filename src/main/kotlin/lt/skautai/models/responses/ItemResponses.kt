@@ -91,6 +91,32 @@ data class ItemAssignmentListResponse(
 )
 
 @Serializable
+data class DirectItemLoanResponse(
+    val id: String,
+    val itemId: String,
+    val itemName: String? = null,
+    val issuedToUserId: String,
+    val issuedToUserName: String? = null,
+    val issuedByUserId: String,
+    val issuedByUserName: String? = null,
+    val quantity: Int,
+    val returnedQuantity: Int,
+    val outstandingQuantity: Int,
+    val status: String,
+    val issuedAt: String,
+    val returnedAt: String? = null,
+    val dueAt: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class DirectItemLoanListResponse(
+    val loans: List<DirectItemLoanResponse>,
+    val total: Int,
+    val activeOutstandingQuantity: Int
+)
+
+@Serializable
 data class ItemConditionLogResponse(
     val id: String,
     val itemId: String,

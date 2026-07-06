@@ -171,6 +171,36 @@ fun Route.superAdminRoutes(
                     .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Rejection failed")) }
             }
 
+            delete("/{id}") {
+                val tuntasId = try {
+                    UUID.fromString(call.parameters["id"])
+                } catch (e: Exception) {
+                    return@delete call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val result = transaction {
+                    val tuntas = Tuntai.selectAll()
+                        .where { Tuntai.id eq tuntasId }
+                        .firstOrNull()
+                        ?: return@transaction Result.failure(Exception("Tuntas not found"))
+
+                    if (tuntas[Tuntai.status] == "DELETED") {
+                        return@transaction Result.failure(Exception("Tuntas already deleted"))
+                    }
+
+                    Tuntai.update({ Tuntai.id eq tuntasId }) {
+                        it[status] = "DELETED"
+                        it[rejectedAt] = Clock.System.now()
+                    }
+
+                    Result.success(MessageResponse("Tuntas deleted"))
+                }
+
+                result
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Delete failed")) }
+            }
+
             route("/{id}") {
                 get("/roles") {
                     val tuntasId = parseTuntasId() ?: return@get

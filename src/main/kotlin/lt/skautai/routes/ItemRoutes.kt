@@ -9,6 +9,8 @@ import io.ktor.server.routing.*
 import lt.skautai.models.requests.CreateItemRequest
 import lt.skautai.models.requests.CreateStorageAuditSessionRequest
 import lt.skautai.models.requests.ConsumeItemRequest
+import lt.skautai.models.requests.DirectItemLoanRequest
+import lt.skautai.models.requests.ReturnDirectItemLoanRequest
 import lt.skautai.models.requests.ReturnItemToSharedRequest
 import lt.skautai.models.requests.RestockItemRequest
 import lt.skautai.models.requests.ReviewItemAdditionRequest
@@ -85,6 +87,26 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch items")) }
             }
 
+            get("direct-loans") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val activeOnly = call.request.queryParameters["activeOnly"]?.toBooleanStrictOrNull() ?: true
+                itemService.getDirectItemLoansForTuntas(tuntasUUID, userId, activeOnly)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to fetch direct loans")) }
+            }
+
             get("{id}") {
                 val principal = call.principal<JWTPrincipal>()!!
                 val userId = UUID.fromString(principal.getClaim("userId", String::class))
@@ -133,6 +155,106 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 itemService.getItemAssignments(itemUUID, tuntasUUID, userId)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Item not found")) }
+            }
+
+            get("{id}/direct-loans") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                itemService.getDirectItemLoans(itemUUID, tuntasUUID, userId)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Item not found")) }
+            }
+
+            post("{id}/direct-loans") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+
+                val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
+                    ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                if (!canAccessSeniorOwnedInventory(userId, tuntasUUID, scopeInfo.custodianId, scopeInfo.origin)) {
+                    return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                }
+                if (!checkPermission("items.update", tuntasUUID, scopeInfo.custodianId)) return@post
+                if (
+                    scopeInfo.origin in listOf("TRANSFERRED_FROM_TUNTAS", "from_shared") &&
+                    !PermissionContextService.resolve(userId, tuntasUUID).hasAll("items.update")
+                ) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val request = call.receiveValidated<DirectItemLoanRequest>()
+                itemService.issueDirectItemLoan(itemUUID, tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.Created, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to issue item")) }
+            }
+
+            post("{id}/direct-loans/{loanId}/return") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+
+                val itemId = call.parameters["id"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Item ID required"))
+                val itemUUID = try { UUID.fromString(itemId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid item ID"))
+                }
+                val loanId = call.parameters["loanId"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Loan ID required"))
+                val loanUUID = try { UUID.fromString(loanId) } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid loan ID"))
+                }
+
+                val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
+                    ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                if (!canAccessSeniorOwnedInventory(userId, tuntasUUID, scopeInfo.custodianId, scopeInfo.origin)) {
+                    return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
+                }
+                if (!checkPermission("items.update", tuntasUUID, scopeInfo.custodianId)) return@post
+                if (
+                    scopeInfo.origin in listOf("TRANSFERRED_FROM_TUNTAS", "from_shared") &&
+                    !PermissionContextService.resolve(userId, tuntasUUID).hasAll("items.update")
+                ) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                }
+
+                val request = call.receiveValidated<ReturnDirectItemLoanRequest>()
+                itemService.returnDirectItemLoan(itemUUID, loanUUID, tuntasUUID, userId, request)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to return item")) }
             }
 
             get("{id}/condition-log") {

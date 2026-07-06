@@ -77,6 +77,20 @@ data class ReturnItemToSharedRequest(
 )
 
 @Serializable
+data class DirectItemLoanRequest(
+    val issuedToUserId: String,
+    val quantity: Int,
+    val dueAt: String? = null,
+    val notes: String? = null
+)
+
+@Serializable
+data class ReturnDirectItemLoanRequest(
+    val quantity: Int,
+    val notes: String? = null
+)
+
+@Serializable
 data class RestockItemRequest(
     val quantity: Int,
     val purchaseDate: String? = null,

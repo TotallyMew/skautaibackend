@@ -5,6 +5,7 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import lt.skautai.TestHelper.configureFullApp
@@ -85,6 +86,33 @@ class SuperAdminRoutesTest {
         return Json.parseToJsonElement(registerResponse.bodyAsText())
             .jsonObject["userId"]!!
             .jsonPrimitive.content
+    }
+
+    @Test
+    fun `super admin can delete tuntas`() = testApplication {
+        configureFullApp()
+
+        val adminToken = seedAndLoginSuperAdmin()
+        val (_, tuntasId) = client.registerAndActivateTuntininkas(
+            email = "delete-me@test.com",
+            tuntasName = "Delete Me Tuntas"
+        )
+
+        val deleteResponse = client.delete("/api/super-admin/tuntai/$tuntasId") {
+            header("Authorization", "Bearer $adminToken")
+        }
+
+        assertEquals(HttpStatusCode.OK, deleteResponse.status)
+
+        val listResponse = client.get("/api/super-admin/tuntai") {
+            header("Authorization", "Bearer $adminToken")
+        }
+        val deletedTuntas = Json.parseToJsonElement(listResponse.bodyAsText())
+            .jsonArray
+            .firstOrNull { it.jsonObject["id"]?.jsonPrimitive?.content == tuntasId }
+
+        assertNotNull(deletedTuntas)
+        assertEquals("DELETED", deletedTuntas!!.jsonObject["status"]?.jsonPrimitive?.content)
     }
 
     @Test
