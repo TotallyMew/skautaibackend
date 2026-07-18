@@ -95,7 +95,7 @@ fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermissio
 
         if (!isActiveTuntasMember) return@transaction emptyList()
 
-        val leadershipRoleIds = UserLeadershipRoles
+        val leadershipRoleRows = UserLeadershipRoles
             .selectAll()
             .where {
                 (UserLeadershipRoles.userId eq userId) and
@@ -103,31 +103,15 @@ fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermissio
                         (UserLeadershipRoles.termStatus eq "ACTIVE") and
                         (UserLeadershipRoles.leftAt.isNull())
             }
-            .map { it[UserLeadershipRoles.roleId] }
+            .toList()
 
-        val rankRoleIds = UserRanks
+        val rankRoleRows = UserRanks
             .selectAll()
             .where {
                 (UserRanks.userId eq userId) and
                         (UserRanks.tuntasId eq tuntasId)
             }
-            .map { it[UserRanks.roleId] }
-
-        val allRoleIds = leadershipRoleIds + rankRoleIds
-        if (allRoleIds.isEmpty()) return@transaction emptyList()
-
-        // Collect all unit IDs from leadership roles and active unit memberships.
-        val leadershipUnitIds = UserLeadershipRoles
-            .selectAll()
-            .where {
-                (UserLeadershipRoles.userId eq userId) and
-                        (UserLeadershipRoles.tuntasId eq tuntasId) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                        (UserLeadershipRoles.leftAt.isNull()) and
-                        (UserLeadershipRoles.organizationalUnitId.isNotNull())
-            }
-            .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
-            .toSet()
+            .toList()
 
         val membershipUnitIds = UnitAssignments
             .selectAll()
@@ -139,17 +123,27 @@ fun resolveUserPermissions(userId: UUID, tuntasId: UUID): List<ResolvedPermissio
             .map { it[UnitAssignments.organizationalUnitId] }
             .toSet()
 
-        val allUnitIds = leadershipUnitIds + membershipUnitIds
+        val roleUnitIds = mutableMapOf<UUID, MutableSet<UUID>>()
+        leadershipRoleRows.forEach { row ->
+            val units = roleUnitIds.getOrPut(row[UserLeadershipRoles.roleId]) { mutableSetOf() }
+            row[UserLeadershipRoles.organizationalUnitId]?.let(units::add)
+        }
+        rankRoleRows.forEach { row ->
+            roleUnitIds.getOrPut(row[UserRanks.roleId]) { mutableSetOf() }
+                .addAll(membershipUnitIds)
+        }
+
+        if (roleUnitIds.isEmpty()) return@transaction emptyList()
 
         RolePermissions
             .innerJoin(Permissions, { RolePermissions.permissionId }, { Permissions.id })
             .selectAll()
-            .where { RolePermissions.roleId inList allRoleIds }
+            .where { RolePermissions.roleId inList roleUnitIds.keys.toList() }
             .map {
                 ResolvedPermission(
                     permissionName = it[Permissions.name],
                     scope = it[RolePermissions.scope],
-                    userOrgUnitIds = allUnitIds
+                    userOrgUnitIds = roleUnitIds[it[RolePermissions.roleId]].orEmpty()
                 )
             }
     }

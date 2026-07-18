@@ -550,6 +550,12 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 if (!canAccessSeniorOwnedInventory(userId, tuntasUUID, newCustodianId, scopeInfo?.origin)) {
                     return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }
+                if (
+                    scopeInfo?.origin in listOf("TRANSFERRED_FROM_TUNTAS", "from_shared") &&
+                    !PermissionContextService.resolve(userId, tuntasUUID).hasAll("items.update")
+                ) {
+                    return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Transferred tuntas inventory is read-only for unit leadership"))
+                }
 
                 if (!checkPermission("items.update", tuntasUUID, targetOrgUnitId)) return@put
                 if (newCustodianId != null && newCustodianId != targetOrgUnitId) {
@@ -619,6 +625,12 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
                 }
                 if (!checkPermission("items.update", tuntasUUID, scopeInfo.custodianId)) return@post
+                if (
+                    scopeInfo.origin in listOf("TRANSFERRED_FROM_TUNTAS", "from_shared") &&
+                    !PermissionContextService.resolve(userId, tuntasUUID).hasAll("items.update")
+                ) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Transferred tuntas inventory is read-only for unit leadership"))
+                }
 
                 val request = call.receiveValidated<ConsumeItemRequest>()
                 itemService.consumeItem(itemUUID, tuntasUUID, userId, request)
@@ -702,6 +714,9 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                 val scopeInfo = ItemScopeHelper.getItemScopeInfo(itemUUID, tuntasUUID)
                     ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Item not found"))
                 val permissions = PermissionContextService.resolve(userId, tuntasUUID)
+                if (scopeInfo.origin == "TRANSFERRED_FROM_TUNTAS" && !permissions.hasAll("items.transfer")) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Transferred tuntas inventory is read-only for unit leadership"))
+                }
                 if (!permissions.hasAll("items.transfer") && !permissions.targetAllowed("items.update", scopeInfo.custodianId)) {
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                 }

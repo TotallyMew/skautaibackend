@@ -78,6 +78,7 @@ class MemberServiceDirectTest {
         configureFullApp()
         val (token, tuntasIdText) = client.registerAndActivateTuntininkas()
         val tuntasId = UUID.fromString(tuntasIdText)
+        val unitId = createUnit(token, tuntasIdText, "Leadership unit")
         val (_, memberIdText) = client.registerInvitedUser(token, tuntasIdText, "Skautas", randomEmail("lead-target"))
         val memberId = UUID.fromString(memberIdText)
         val draugininkasRoleId = getRoleId(tuntasIdText, "Draugininkas")
@@ -119,7 +120,7 @@ class MemberServiceDirectTest {
             memberId,
             tuntasId,
             null,
-            AssignLeadershipRoleRequest(roleId = draugininkasRoleId, startsAt = "2026/01/01")
+            AssignLeadershipRoleRequest(roleId = draugininkasRoleId, organizationalUnitId = unitId, startsAt = "2026/01/01")
         )
         assertEquals("Invalid startsAt format, use ISO 8601", badStart.exceptionOrNull()?.message)
 
@@ -127,7 +128,7 @@ class MemberServiceDirectTest {
             memberId,
             tuntasId,
             null,
-            AssignLeadershipRoleRequest(roleId = draugininkasRoleId, expiresAt = "2026/01/01")
+            AssignLeadershipRoleRequest(roleId = draugininkasRoleId, organizationalUnitId = unitId, expiresAt = "2026/01/01")
         )
         assertEquals("Invalid expiresAt format, use ISO 8601", badExpiry.exceptionOrNull()?.message)
     }

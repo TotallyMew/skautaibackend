@@ -1278,7 +1278,7 @@ class ItemRoutesTest {
     }
 
     @Test
-    fun `unit leader can return transferred item to shared but cannot restock transferred inventory`() = testApplication {
+    fun `only shared inventory manager can return or restock transferred inventory`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val unitId = createUnit(token, tuntasId, "Transfer Unit")
@@ -1315,8 +1315,16 @@ class ItemRoutesTest {
             header("X-Tuntas-Id", tuntasId)
             setBody("""{ "quantity": 3, "notes": "Grazinta i sandeli" }""")
         }
-        assertEquals(HttpStatusCode.OK, leaderReturn.status)
-        val returnedUnitBody = Json.parseToJsonElement(leaderReturn.bodyAsText()).jsonObject
+        assertEquals(HttpStatusCode.Forbidden, leaderReturn.status)
+
+        val managerReturn = client.post("/api/items/$unitItemId/return-to-shared") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasId)
+            setBody("""{ "quantity": 3, "notes": "Grazinta i sandeli" }""")
+        }
+        assertEquals(HttpStatusCode.OK, managerReturn.status)
+        val returnedUnitBody = Json.parseToJsonElement(managerReturn.bodyAsText()).jsonObject
         assertEquals(1, returnedUnitBody["quantity"]!!.jsonPrimitive.content.toInt())
         assertEquals("ACTIVE", returnedUnitBody["status"]!!.jsonPrimitive.content)
 

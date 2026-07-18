@@ -149,6 +149,17 @@ class ReservationRoutesTest {
         }
     }
 
+    private suspend fun ApplicationTestBuilder.approveTopLevelReservation(
+        managerToken: String,
+        tuntasId: String,
+        reservationId: String
+    ) = client.post("/api/reservations/$reservationId/top-level-review") {
+        contentType(ContentType.Application.Json)
+        header("Authorization", "Bearer $managerToken")
+        header("X-Tuntas-Id", tuntasId)
+        setBody("""{ "status": "APPROVED" }""")
+    }
+
     private suspend fun ApplicationTestBuilder.createLocation(
         token: String,
         tuntasId: String,
@@ -188,7 +199,7 @@ class ReservationRoutesTest {
 
         assertEquals(HttpStatusCode.Created, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("APPROVED", body["status"]?.jsonPrimitive?.content)
+        assertEquals("PENDING", body["status"]?.jsonPrimitive?.content)
         assertEquals(2, body["totalQuantity"]?.jsonPrimitive?.content?.toInt())
         val item = body["items"]!!.jsonArray.first().jsonObject
         assertEquals(2, item["quantity"]?.jsonPrimitive?.content?.toInt())
@@ -329,7 +340,9 @@ class ReservationRoutesTest {
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = client.createTestItem(token, tuntasId, quantity = 2)
 
-        // Create first reservation. Tuntas leadership reservations are auto-approved.
+        val (managerToken, _) = registerUserWithRole(token, tuntasId, "Inventorininkas", "conflict-reviewer@test.com")
+
+        // Approve the first reservation so it consumes availability.
         val firstResponse = client.post("/api/reservations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
@@ -343,6 +356,8 @@ class ReservationRoutesTest {
                 }
             """.trimIndent())
         }
+        val firstReservationId = Json.parseToJsonElement(firstResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        assertEquals(HttpStatusCode.OK, approveTopLevelReservation(managerToken, tuntasId, firstReservationId).status)
 
         // Try to reserve same item overlapping dates - quantity now 0
         val conflictResponse = client.post("/api/reservations") {
@@ -413,7 +428,6 @@ class ReservationRoutesTest {
                 )
             }
         }
-
         val response = client.get("/api/reservations?limit=2&offset=0") {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
@@ -616,7 +630,7 @@ class ReservationRoutesTest {
 
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals(1, body["total"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(2, body["total"]?.jsonPrimitive?.content?.toInt())
     }
 
     @Test
@@ -624,6 +638,7 @@ class ReservationRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = client.createTestItem(token, tuntasId, quantity = 5)
+        val (managerToken, _) = registerUserWithRole(token, tuntasId, "Inventorininkas", "remaining-reviewer@test.com")
 
         val createResponse = client.post("/api/reservations") {
             contentType(ContentType.Application.Json)
@@ -644,6 +659,7 @@ class ReservationRoutesTest {
         assertEquals(HttpStatusCode.Created, createResponse.status)
         val reservationId = Json.parseToJsonElement(createResponse.bodyAsText())
             .jsonObject["id"]!!.jsonPrimitive.content
+        assertEquals(HttpStatusCode.OK, approveTopLevelReservation(managerToken, tuntasId, reservationId).status)
 
         val response = client.get("/api/reservations/$reservationId") {
             header("Authorization", "Bearer $token")
@@ -669,6 +685,7 @@ class ReservationRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val itemId = client.createTestItem(token, tuntasId, quantity = 5)
+        val (managerToken, _) = registerUserWithRole(token, tuntasId, "Inventorininkas", "issue-reviewer@test.com")
 
         val createResponse = client.post("/api/reservations") {
             contentType(ContentType.Application.Json)
@@ -689,6 +706,7 @@ class ReservationRoutesTest {
         assertEquals(HttpStatusCode.Created, createResponse.status)
         val reservationId = Json.parseToJsonElement(createResponse.bodyAsText())
             .jsonObject["id"]!!.jsonPrimitive.content
+        assertEquals(HttpStatusCode.OK, approveTopLevelReservation(managerToken, tuntasId, reservationId).status)
 
         val issueResponse = client.post("/api/reservations/$reservationId/issue") {
             contentType(ContentType.Application.Json)
@@ -1047,6 +1065,7 @@ class ReservationRoutesTest {
         val itemId = client.createTestItem(token, tuntasId, quantity = 3)
         val publicLocationId = createLocation(token, tuntasId, "Public spot")
         val (managerToken, _) = registerUserWithRole(token, tuntasId, "Tuntininko pavaduotojas", "pickup-manager@test.com")
+        val (inventoryToken, _) = registerUserWithRole(token, tuntasId, "Inventorininkas", "pickup-reviewer@test.com")
 
         val createResponse = client.post("/api/reservations") {
             contentType(ContentType.Application.Json)
@@ -1055,6 +1074,7 @@ class ReservationRoutesTest {
             setBody("""{ "itemId": "$itemId", "quantity": 1, "startDate": "2026-10-18", "endDate": "2026-10-19" }""")
         }
         val reservationId = Json.parseToJsonElement(createResponse.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        assertEquals(HttpStatusCode.OK, approveTopLevelReservation(inventoryToken, tuntasId, reservationId).status)
 
         val invalidPickupResponse = client.put("/api/reservations/$reservationId/pickup-time") {
             contentType(ContentType.Application.Json)

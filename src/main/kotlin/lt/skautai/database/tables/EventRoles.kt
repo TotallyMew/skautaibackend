@@ -15,7 +15,4 @@ object EventRoles : Table("event_roles") {
 
     override val primaryKey = PrimaryKey(id)
 
-    init {
-        uniqueIndex(eventId, userId, role)
-    }
 }

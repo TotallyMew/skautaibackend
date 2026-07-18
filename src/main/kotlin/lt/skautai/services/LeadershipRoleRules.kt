@@ -37,6 +37,16 @@ object LeadershipRoleRules {
     fun requiresOrganizationalUnit(roleName: String): Boolean = roleName in unitScopedLeadershipRoleNames
     fun isTuntininkas(roleName: String): Boolean = roleName == "Tuntininkas"
 
+    fun validateOrganizationalUnitScope(roleName: String, organizationalUnitId: UUID?): String? {
+        return when {
+            requiresOrganizationalUnit(roleName) && organizationalUnitId == null ->
+                "This leadership role must be assigned to an organizational unit"
+            !requiresOrganizationalUnit(roleName) && organizationalUnitId != null ->
+                "This tuntas-level leadership role cannot be assigned to an organizational unit"
+            else -> null
+        }
+    }
+
     fun validatePrincipalUnitLeaderSlot(
         roleId: UUID,
         tuntasId: UUID,

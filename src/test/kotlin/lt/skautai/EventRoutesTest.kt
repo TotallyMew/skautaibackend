@@ -861,7 +861,7 @@ class EventRoutesTest {
     }
 
     @Test
-    fun `event staff member cannot hold multiple roles`() = testApplication {
+    fun `event staff member can hold multiple roles`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val eventId = client.createTestEvent(token, tuntasId)
@@ -881,8 +881,8 @@ class EventRoutesTest {
             header("X-Tuntas-Id", tuntasId)
             setBody("""{ "userId": "$userId", "role": "KOMENDANTAS" }""")
         }
-        assertEquals(HttpStatusCode.BadRequest, secondResponse.status)
-        assertTrue(secondResponse.bodyAsText().contains("Narys jau turi renginio štabo pareigas", ignoreCase = true))
+        assertEquals(HttpStatusCode.Created, secondResponse.status)
+        assertEquals("KOMENDANTAS", Json.parseToJsonElement(secondResponse.bodyAsText()).jsonObject["role"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -1246,7 +1246,7 @@ class EventRoutesTest {
     }
 
     @Test
-    fun `pastovykle responsible user cannot already hold event role`() = testApplication {
+    fun `pastovykle responsible user can also hold event role`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val eventId = client.createTestEvent(token, tuntasId)
@@ -1267,11 +1267,11 @@ class EventRoutesTest {
             setBody("""{ "name": "Skautai", "responsibleUserId": "$userId" }""")
         }
 
-        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assertEquals(HttpStatusCode.Created, response.status)
     }
 
     @Test
-    fun `event role user cannot already be pastovykle responsible`() = testApplication {
+    fun `event role user can also be pastovykle responsible`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val eventId = client.createTestEvent(token, tuntasId)
@@ -1285,7 +1285,7 @@ class EventRoutesTest {
             setBody("""{ "userId": "$userId", "role": "MAISTININKAS" }""")
         }
 
-        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assertEquals(HttpStatusCode.Created, response.status)
     }
 
     @Test

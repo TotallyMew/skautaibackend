@@ -13,4 +13,8 @@ object UserRanks : Table("user_ranks") {
     val assignedAt = timestamp("assigned_at")
 
     override val primaryKey = PrimaryKey(id)
+
+    init {
+        uniqueIndex(userId, tuntasId)
+    }
 }

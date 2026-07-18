@@ -431,8 +431,9 @@ class BendrasInventoryRequestRoutesTest {
         val itemId = createItem(token, tuntasId)
         val draugoveId = createDraugove(token, tuntasId)
         assignToUnit(token, tuntasId, draugoveId, firstMemberId(tuntasId))
+        val (reviewerToken, _) = registerSecondUser(token, tuntasId, "Inventorininkas", "shared-approve-reviewer@test.com")
 
-        // Tuntininkas creates and approves own request (no draugininkas needed)
+        // Tuntininkas creates the request; a different inventory manager reviews it.
         val createResponse = client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
@@ -452,7 +453,7 @@ class BendrasInventoryRequestRoutesTest {
 
         val response = client.post("/api/inventory-requests/$requestId/top-level-review") {
             contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
+            header("Authorization", "Bearer $reviewerToken")
             header("X-Tuntas-Id", tuntasId)
             setBody("""{ "action": "APPROVED" }""")
         }
@@ -482,6 +483,7 @@ class BendrasInventoryRequestRoutesTest {
         val itemId = createItem(token, tuntasId)
         val draugoveId = createDraugove(token, tuntasId)
         assignToUnit(token, tuntasId, draugoveId, firstMemberId(tuntasId))
+        val (reviewerToken, _) = registerSecondUser(token, tuntasId, "Inventorininkas", "shared-reject-reviewer@test.com")
 
         val createResponse = client.post("/api/inventory-requests") {
             contentType(ContentType.Application.Json)
@@ -502,7 +504,7 @@ class BendrasInventoryRequestRoutesTest {
 
         val response = client.post("/api/inventory-requests/$requestId/top-level-review") {
             contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
+            header("Authorization", "Bearer $reviewerToken")
             header("X-Tuntas-Id", tuntasId)
             setBody("""{ "action": "REJECTED", "rejectionReason": "Not needed" }""")
         }

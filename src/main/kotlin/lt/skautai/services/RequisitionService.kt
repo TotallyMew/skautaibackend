@@ -137,7 +137,7 @@ class RequisitionService {
                 }
             }
 
-            val creatorIsRequestingUnitLeader = requestingUnitId?.let { unitId ->
+            requestingUnitId?.let { unitId ->
                 OrganizationalUnits.selectAll()
                     .where {
                         (OrganizationalUnits.id eq unitId) and
@@ -160,8 +160,7 @@ class RequisitionService {
                     return@transaction Result.failure(Exception("You can only create a request for your own unit"))
                 }
 
-                hasLeadershipInUnit
-            } ?: false
+            }
 
             if (requestingUnitId == null && !canCreateTopLevelRequest(createdByUserId, tuntasId)) {
                 return@transaction Result.failure(Exception("Tik aktyvus draugininkas arba tuntinio lygio vadovas gali kurti prašymą tuntui"))
@@ -175,26 +174,22 @@ class RequisitionService {
                 }
             }
 
-            val autoApproveInUnit = requestingUnitId != null && creatorIsRequestingUnitLeader
             val unitReviewStatus = when {
-                autoApproveInUnit -> "APPROVED"
                 requestingUnitId != null -> "PENDING"
                 else -> "SKIPPED"
             }
             val topLevelReviewStatus = if (requestingUnitId == null) "PENDING" else "NOT_REQUIRED"
-            val createdStatus = if (autoApproveInUnit) "APPROVED" else "SUBMITTED"
-            val now = kotlinx.datetime.Clock.System.now()
 
             val requisitionId = DraugoveRequisitions.insert {
                 it[this.tuntasId] = tuntasId
                 it[organizationalUnitId] = requestingUnitId
                 it[eventId] = null
                 it[this.createdByUserId] = createdByUserId
-                it[reviewedByUserId] = if (autoApproveInUnit) createdByUserId else null
-                it[status] = createdStatus
+                it[reviewedByUserId] = null
+                it[status] = "SUBMITTED"
                 it[this.unitReviewStatus] = unitReviewStatus
-                it[this.unitReviewedByUserId] = if (autoApproveInUnit) createdByUserId else null
-                it[this.unitReviewedAt] = if (autoApproveInUnit) now else null
+                it[this.unitReviewedByUserId] = null
+                it[this.unitReviewedAt] = null
                 it[this.topLevelReviewStatus] = topLevelReviewStatus
                 it[this.topLevelReviewedByUserId] = null
                 it[this.topLevelReviewedAt] = null
@@ -243,10 +238,6 @@ class RequisitionService {
                 }
             }
 
-            if (autoApproveInUnit) {
-                approveAllItems(requisitionId)
-            }
-
             val saved = DraugoveRequisitions.selectAll()
                 .where { DraugoveRequisitions.id eq requisitionId }
                 .first()
@@ -277,7 +268,14 @@ class RequisitionService {
             val unitId = existing[DraugoveRequisitions.organizationalUnitId]
                 ?: return@transaction Result.failure(Exception("Only unit requests can be reviewed at unit level"))
 
-            if (!isUnitLeader(reviewerUserId, tuntasId, unitId)) {
+            if (existing[DraugoveRequisitions.createdByUserId] == reviewerUserId) {
+                return@transaction Result.failure(Exception("You cannot review your own requisition"))
+            }
+
+            if (
+                !isUnitLeader(reviewerUserId, tuntasId, unitId) &&
+                !isTopLevelRequisitionReviewer(reviewerUserId, tuntasId)
+            ) {
                 return@transaction Result.failure(Exception("You are not a leader of this unit"))
             }
 
@@ -403,6 +401,10 @@ class RequisitionService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Request not found"))
+
+            if (existing[DraugoveRequisitions.createdByUserId] == reviewerUserId) {
+                return@transaction Result.failure(Exception("You cannot review your own requisition"))
+            }
 
             if (existing[DraugoveRequisitions.topLevelReviewStatus] != "PENDING") {
                 return@transaction Result.failure(Exception("Request is not waiting for top level review"))
@@ -668,6 +670,21 @@ class RequisitionService {
                     (UserLeadershipRoles.termStatus eq "ACTIVE") and
                     UserLeadershipRoles.leftAt.isNull() and
                     (Roles.name inList unitLeaderRoles)
+            }
+            .any()
+    }
+
+    private fun isTopLevelRequisitionReviewer(userId: UUID, tuntasId: UUID): Boolean {
+        return UserLeadershipRoles
+            .innerJoin(Roles)
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.leftAt.isNull() and
+                    UserLeadershipRoles.organizationalUnitId.isNull() and
+                    (Roles.name inList listOf("Tuntininkas", "Tuntininko pavaduotojas", "Inventorininkas"))
             }
             .any()
     }

@@ -8,6 +8,8 @@ import lt.skautai.database.tables.Locations
 import lt.skautai.database.tables.OrganizationalUnits
 import lt.skautai.database.tables.ReservationMovements
 import lt.skautai.database.tables.Reservations
+import lt.skautai.database.tables.Roles
+import lt.skautai.database.tables.UserLeadershipRoles
 import lt.skautai.database.tables.Users
 import lt.skautai.models.requests.CreateReservationItemRequest
 import lt.skautai.models.requests.CreateReservationRequest
@@ -250,19 +252,15 @@ class ReservationService {
             }
 
             val inferredRequestingUnitUUID = requestingUnitUUID ?: unitItemCustodianIds.singleOrNull()
-            val canApproveUnit = canApproveTopLevel || unitItemCustodianIds.all { it in approvableUnitIds }
             val unitReviewStatus = when {
                 !hasUnitItems -> "NOT_REQUIRED"
-                canApproveUnit -> "APPROVED"
                 else -> "PENDING"
             }
             val topLevelReviewStatus = when {
                 !hasSharedItems -> "NOT_REQUIRED"
-                canApproveTopLevel -> "APPROVED"
                 else -> "PENDING"
             }
             val initialStatus = computeOverallStatus(unitReviewStatus, topLevelReviewStatus)
-            val now = Clock.System.now()
 
             val eventUUID = request.eventId?.let {
                 try {
@@ -332,15 +330,7 @@ class ReservationService {
                     it[this.startDate] = startDate
                     it[this.endDate] = endDate
                     it[this.unitReviewStatus] = unitReviewStatus
-                    if (unitReviewStatus == "APPROVED") {
-                        it[unitReviewedByUserId] = reservedByUserId
-                        it[unitReviewedAt] = now
-                    }
                     it[this.topLevelReviewStatus] = topLevelReviewStatus
-                    if (topLevelReviewStatus == "APPROVED") {
-                        it[topLevelReviewedByUserId] = reservedByUserId
-                        it[topLevelReviewedAt] = now
-                    }
                     it[pickupLocationId] = pickupLocationUUID
                     it[returnLocationId] = returnLocationUUID
                     it[status] = initialStatus
@@ -459,6 +449,18 @@ class ReservationService {
             if (rows.isEmpty()) {
                 return@transaction Result.failure(Exception("Reservation not found"))
             }
+            val requesterUserId = rows.first()[Reservations.reservedByUserId]
+            if (requesterUserId == approvedByUserId) {
+                return@transaction Result.failure(Exception("You cannot review your own reservation"))
+            }
+            if (
+                isTopLevelLeader(requesterUserId, tuntasId) &&
+                !hasLeadershipRole(approvedByUserId, tuntasId, "Inventorininkas")
+            ) {
+                return@transaction Result.failure(
+                    Exception("Tuntininkas reservations must be reviewed by an Inventorininkas")
+                )
+            }
 
             val currentStatuses = rows.map { it[Reservations.status] }.distinct()
             if (currentStatuses.size != 1) {
@@ -521,6 +523,18 @@ class ReservationService {
             val rows = reservationRows(groupId, tuntasId)
             if (rows.isEmpty()) {
                 return@transaction Result.failure(Exception("Reservation not found"))
+            }
+            val requesterUserId = rows.first()[Reservations.reservedByUserId]
+            if (requesterUserId == reviewerUserId) {
+                return@transaction Result.failure(Exception("You cannot review your own reservation"))
+            }
+            if (
+                isTopLevelLeader(requesterUserId, tuntasId) &&
+                !hasLeadershipRole(reviewerUserId, tuntasId, "Inventorininkas")
+            ) {
+                return@transaction Result.failure(
+                    Exception("Tuntininkas reservations must be reviewed by an Inventorininkas")
+                )
             }
             if (hasProtectedSeniorOwnedItem(rows, reviewerUserId, tuntasId)) {
                 return@transaction Result.failure(Exception("Reservation not found"))
@@ -586,6 +600,26 @@ class ReservationService {
             Result.success(toReservationResponse(reservationRows(groupId, tuntasId)))
         }
     }
+
+    private fun isTopLevelLeader(userId: UUID, tuntasId: UUID): Boolean =
+        activeLeadershipRoleNames(userId, tuntasId)
+            .any { it in setOf("Tuntininkas", "Tuntininko pavaduotojas") }
+
+    private fun hasLeadershipRole(userId: UUID, tuntasId: UUID, roleName: String): Boolean =
+        roleName in activeLeadershipRoleNames(userId, tuntasId)
+
+    private fun activeLeadershipRoleNames(userId: UUID, tuntasId: UUID): Set<String> =
+        UserLeadershipRoles
+            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+            .select(Roles.name)
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.leftAt.isNull()
+            }
+            .map { it[Roles.name] }
+            .toSet()
 
     fun getMovements(
         groupId: UUID,

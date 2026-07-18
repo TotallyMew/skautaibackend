@@ -154,7 +154,7 @@ class RequisitionRoutesTest {
     }
 
     @Test
-    fun `unit leader creates own unit requisition as approved`() = testApplication {
+    fun `unit leader cannot auto approve own unit requisition`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
         val unitId = createUnit(token, tuntasId)
@@ -170,11 +170,11 @@ class RequisitionRoutesTest {
 
         assertEquals(HttpStatusCode.Created, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("APPROVED", body["status"]?.jsonPrimitive?.content)
-        assertEquals("APPROVED", body["unitReviewStatus"]?.jsonPrimitive?.content)
+        assertEquals("SUBMITTED", body["status"]?.jsonPrimitive?.content)
+        assertEquals("PENDING", body["unitReviewStatus"]?.jsonPrimitive?.content)
         assertEquals("NOT_REQUIRED", body["topLevelReviewStatus"]?.jsonPrimitive?.content)
         val item = body["items"]!!.jsonArray.first().jsonObject
-        assertEquals("2", item["quantityApproved"]?.jsonPrimitive?.content)
+        assertEquals(null, item["quantityApproved"])
     }
 
     @Test
@@ -545,9 +545,10 @@ class RequisitionRoutesTest {
 
         val approvedRequestId = Json.parseToJsonElement(createRequisition(token, tuntasId, null).bodyAsText())
             .jsonObject["id"]!!.jsonPrimitive.content
+        val (reviewerToken, _) = registerUserWithRole(token, tuntasId, "Inventorininkas", "cancel-reviewer@test.com")
         client.post("/api/requisitions/$approvedRequestId/top-level-review") {
             contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
+            header("Authorization", "Bearer $reviewerToken")
             header("X-Tuntas-Id", tuntasId)
             setBody("""{ "action": "APPROVED" }""")
         }
@@ -563,6 +564,7 @@ class RequisitionRoutesTest {
     fun `mark purchased and add to inventory handle new item and restock flows`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
+        val (reviewerToken, _) = registerUserWithRole(token, tuntasId, "Inventorininkas", "purchase-reviewer@test.com")
         val existingItemId = createItem(token, tuntasId, "Esamas kirvis", quantity = 2)
 
         val createResponse = client.post("/api/requisitions") {
@@ -584,7 +586,7 @@ class RequisitionRoutesTest {
 
         val approveResponse = client.post("/api/requisitions/$requestId/top-level-review") {
             contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $token")
+            header("Authorization", "Bearer $reviewerToken")
             header("X-Tuntas-Id", tuntasId)
             setBody("""{ "action": "APPROVED" }""")
         }

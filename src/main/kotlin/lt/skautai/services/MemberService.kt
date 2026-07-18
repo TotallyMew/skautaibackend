@@ -187,6 +187,9 @@ class MemberService {
                     ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
             }
 
+            LeadershipRoleRules.validateOrganizationalUnitScope(role[Roles.name], orgUnitUUID)
+                ?.let { return@transaction Result.failure(Exception(it)) }
+
             LeadershipRoleRules.validatePrincipalUnitLeaderSlot(roleUUID, tuntasId, orgUnitUUID)
                 ?.let { return@transaction Result.failure(Exception(it)) }
 
@@ -304,6 +307,11 @@ class MemberService {
             val finalStatus = request.termStatus ?: assignment[UserLeadershipRoles.termStatus]
             val finalOrgUnit = orgUnitUUID ?: assignment[UserLeadershipRoles.organizationalUnitId]
             if (finalStatus == "ACTIVE") {
+                val roleName = Roles.selectAll()
+                    .where { Roles.id eq assignment[UserLeadershipRoles.roleId] }
+                    .first()[Roles.name]
+                LeadershipRoleRules.validateOrganizationalUnitScope(roleName, finalOrgUnit)
+                    ?.let { return@transaction Result.failure(Exception(it)) }
                 LeadershipRoleRules.validatePrincipalUnitLeaderSlot(
                     roleId = assignment[UserLeadershipRoles.roleId],
                     tuntasId = tuntasId,
@@ -533,6 +541,33 @@ class MemberService {
                 return@transaction Result.failure(Exception("Selected rank is not available"))
             }
 
+            val hasActiveLeadership = UserLeadershipRoles.selectAll()
+                .where {
+                    (UserLeadershipRoles.userId eq targetUserId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        UserLeadershipRoles.leftAt.isNull()
+                }
+                .firstOrNull() != null
+            if (hasActiveLeadership && role[Roles.name] != "Vadovas") {
+                return@transaction Result.failure(Exception("Active leaders must keep the Vadovas rank"))
+            }
+
+            val existingRank = UserRanks.selectAll()
+                .where {
+                    (UserRanks.userId eq targetUserId) and
+                        (UserRanks.tuntasId eq tuntasId)
+                }
+                .firstOrNull()
+            if (existingRank?.get(UserRanks.roleId) == roleUUID) {
+                return@transaction Result.success(toRankResponse(existingRank, role[Roles.name]))
+            }
+
+            UserRanks.deleteWhere {
+                (UserRanks.userId eq targetUserId) and
+                    (UserRanks.tuntasId eq tuntasId)
+            }
+
             val rankId = UserRanks.insert {
                 it[userId] = targetUserId
                 it[roleId] = roleUUID
@@ -554,7 +589,7 @@ class MemberService {
         tuntasId: UUID
     ): Result<Unit> {
         return transaction {
-            UserRanks.selectAll()
+            val rank = UserRanks.selectAll()
                 .where {
                     (UserRanks.id eq rankId) and
                             (UserRanks.userId eq targetUserId) and
@@ -562,6 +597,24 @@ class MemberService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Rank assignment not found"))
+
+            val hasActiveLeadership = UserLeadershipRoles.selectAll()
+                .where {
+                    (UserLeadershipRoles.userId eq targetUserId) and
+                        (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        UserLeadershipRoles.leftAt.isNull()
+                }
+                .firstOrNull() != null
+            if (hasActiveLeadership) {
+                val rankRoleName = Roles.selectAll()
+                    .where { Roles.id eq rank[UserRanks.roleId] }
+                    .firstOrNull()
+                    ?.get(Roles.name)
+                if (rankRoleName == "Vadovas") {
+                    return@transaction Result.failure(Exception("The Vadovas rank cannot be removed while the member has an active leadership role"))
+                }
+            }
 
             UserRanks.deleteWhere {
                 (UserRanks.id eq rankId) and
@@ -946,6 +999,8 @@ class MemberService {
                 targetUserId = targetUserId,
                 tuntasId = tuntasId
             )?.let { return@transaction Result.failure(Exception(it)) }
+            validateCanLeaveWithoutOrphaningResponsibilities(targetUserId, tuntasId)
+                ?.let { return@transaction Result.failure(Exception(it)) }
 
             val now = kotlinx.datetime.Clock.System.now()
 
@@ -971,6 +1026,11 @@ class MemberService {
                         (UnitAssignments.leftAt.isNull())
             }) {
                 it[leftAt] = now
+            }
+
+            UserRanks.deleteWhere {
+                (UserRanks.userId eq targetUserId) and
+                    (UserRanks.tuntasId eq tuntasId)
             }
 
             Result.success(Unit)
@@ -1022,6 +1082,8 @@ class MemberService {
                 callerUserId = callerUserId,
                 tuntasId = tuntasId
             )?.let { return@transaction Result.failure(Exception(it)) }
+            validateCanLeaveWithoutOrphaningResponsibilities(callerUserId, tuntasId)
+                ?.let { return@transaction Result.failure(Exception(it)) }
 
             val now = kotlinx.datetime.Clock.System.now()
 
@@ -1047,6 +1109,11 @@ class MemberService {
                         (UnitAssignments.leftAt.isNull())
             }) {
                 it[leftAt] = now
+            }
+
+            UserRanks.deleteWhere {
+                (UserRanks.userId eq callerUserId) and
+                    (UserRanks.tuntasId eq tuntasId)
             }
 
             Result.success(Unit)
@@ -1142,6 +1209,106 @@ class MemberService {
         } else {
             "Negalite atsistatydinti is tuntininko pareigu, kol ju neperleidote kitam nariui"
         }
+    }
+
+    private fun validateCanLeaveWithoutOrphaningResponsibilities(userId: UUID, tuntasId: UUID): String? {
+        val hasPrincipalUnitRole = UserLeadershipRoles
+            .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserLeadershipRoles.userId eq userId) and
+                    (UserLeadershipRoles.tuntasId eq tuntasId) and
+                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.leftAt.isNull()
+            }
+            .any { LeadershipRoleRules.isPrincipalUnitLeader(it[Roles.name]) }
+        if (hasPrincipalUnitRole) {
+            return "Vieneto vadovas negali palikti tunto be pakeitejo. Pirmiausia uzbaikite vadovo keitimo procesa."
+        }
+
+        val activeEventStatuses = listOf("PLANNING", "ACTIVE", "WRAP_UP")
+        val hasActiveEventRole = EventRoles
+            .innerJoin(Events, { EventRoles.eventId }, { Events.id })
+            .selectAll()
+            .where {
+                (EventRoles.userId eq userId) and
+                    (Events.tuntasId eq tuntasId) and
+                    (Events.status inList activeEventStatuses)
+            }
+            .firstOrNull() != null
+        val leadsActivePastovykle = Pastovykles
+            .innerJoin(Events, { Pastovykles.eventId }, { Events.id })
+            .selectAll()
+            .where {
+                (Pastovykles.responsibleUserId eq userId) and
+                    (Events.tuntasId eq tuntasId) and
+                    (Events.status inList activeEventStatuses)
+            }
+            .firstOrNull() != null
+        if (hasActiveEventRole || leadsActivePastovykle) {
+            return "Member still has an active event or pastovykle responsibility that must be reassigned"
+        }
+
+        val ownsActiveItem = Items.selectAll()
+            .where {
+                (Items.tuntasId eq tuntasId) and
+                    (Items.responsibleUserId eq userId) and
+                    (Items.status eq "ACTIVE")
+            }
+            .firstOrNull() != null
+        val ownsActiveKit = InventoryKits.selectAll()
+            .where {
+                (InventoryKits.tuntasId eq tuntasId) and
+                    (InventoryKits.responsibleUserId eq userId) and
+                    (InventoryKits.status eq "ACTIVE")
+            }
+            .firstOrNull() != null
+        if (ownsActiveItem || ownsActiveKit) {
+            return "Member is responsible for active inventory that must be reassigned"
+        }
+
+        val hasActiveAssignment = ItemAssignments
+            .innerJoin(Items, { ItemAssignments.itemId }, { Items.id })
+            .selectAll()
+            .where {
+                (ItemAssignments.assignedToUserId eq userId) and
+                    ItemAssignments.unassignedAt.isNull() and
+                    (Items.tuntasId eq tuntasId)
+            }
+            .firstOrNull() != null
+        val hasActiveLoan = DirectItemLoans.selectAll()
+            .where {
+                (DirectItemLoans.tuntasId eq tuntasId) and
+                    (DirectItemLoans.issuedToUserId eq userId) and
+                    (DirectItemLoans.status eq "ACTIVE")
+            }
+            .firstOrNull() != null
+        val hasActiveReservation = Reservations.selectAll()
+            .where {
+                (Reservations.tuntasId eq tuntasId) and
+                    (Reservations.reservedByUserId eq userId) and
+                    (Reservations.status inList listOf("PENDING", "APPROVED", "ACTIVE"))
+            }
+            .firstOrNull() != null
+        if (hasActiveAssignment || hasActiveLoan || hasActiveReservation) {
+            return "Member has active inventory assignments, loans, or reservations that must be closed first"
+        }
+
+        val hasOpenCustody = EventInventoryCustody
+            .innerJoin(EventInventoryItems, { EventInventoryCustody.eventInventoryItemId }, { EventInventoryItems.id })
+            .innerJoin(Events, { EventInventoryItems.eventId }, { Events.id })
+            .selectAll()
+            .where {
+                (EventInventoryCustody.holderUserId eq userId) and
+                    (EventInventoryCustody.status eq "OPEN") and
+                    (Events.tuntasId eq tuntasId)
+            }
+            .firstOrNull() != null
+        if (hasOpenCustody) {
+            return "Member still holds event inventory that must be returned or transferred"
+        }
+
+        return null
     }
 
     private fun highestActiveLeadershipRank(userId: UUID, tuntasId: UUID): Int {

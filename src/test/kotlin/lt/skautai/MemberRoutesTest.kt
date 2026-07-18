@@ -767,14 +767,8 @@ class MemberRoutesTest {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
 
-        val listResponse = client.get("/api/members") {
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-        }
-        val userId = Json.parseToJsonElement(listResponse.bodyAsText())
-            .jsonObject["members"]!!.jsonArray[0].jsonObject["userId"]!!.jsonPrimitive.content
-
-        val skautasRoleId = TestHelper.getRoleId(tuntasId, "Skautas")
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Skautas", "rank-assign@test.com")
+        val skautasRoleId = TestHelper.getRoleId(tuntasId, "Vadovas")
 
         val response = client.post("/api/members/$userId/ranks") {
             contentType(ContentType.Application.Json)
@@ -785,7 +779,7 @@ class MemberRoutesTest {
 
         assertEquals(HttpStatusCode.Created, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Skautas", body["roleName"]?.jsonPrimitive?.content)
+        assertEquals("Vadovas", body["roleName"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -817,15 +811,8 @@ class MemberRoutesTest {
     fun `remove rank returns 200`() = testApplication {
         configureFullApp()
         val (token, tuntasId) = client.registerAndActivateTuntininkas()
-
-        val listResponse = client.get("/api/members") {
-            header("Authorization", "Bearer $token")
-            header("X-Tuntas-Id", tuntasId)
-        }
-        val userId = Json.parseToJsonElement(listResponse.bodyAsText())
-            .jsonObject["members"]!!.jsonArray[0].jsonObject["userId"]!!.jsonPrimitive.content
-
-        val skautasRoleId = TestHelper.getRoleId(tuntasId, "Skautas")
+        val (_, userId) = registerUserWithRole(token, tuntasId, "Skautas", "rank-remove@test.com")
+        val skautasRoleId = TestHelper.getRoleId(tuntasId, "Vadovas")
 
         val assignResponse = client.post("/api/members/$userId/ranks") {
             contentType(ContentType.Application.Json)

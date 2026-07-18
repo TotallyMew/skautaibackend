@@ -7,6 +7,7 @@ import lt.skautai.database.tables.UserRanks
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -26,12 +27,16 @@ object VadovasRankSupport {
         val existingRank = UserRanks.selectAll()
             .where {
                 (UserRanks.userId eq userId) and
-                    (UserRanks.tuntasId eq tuntasId) and
-                    (UserRanks.roleId eq vadovasRole[Roles.id])
+                    (UserRanks.tuntasId eq tuntasId)
             }
             .firstOrNull()
 
-        if (existingRank != null) return
+        if (existingRank?.get(UserRanks.roleId) == vadovasRole[Roles.id]) return
+
+        UserRanks.deleteWhere {
+            (UserRanks.userId eq userId) and
+                (UserRanks.tuntasId eq tuntasId)
+        }
 
         UserRanks.insert {
             it[UserRanks.userId] = userId

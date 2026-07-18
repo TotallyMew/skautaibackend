@@ -16,6 +16,11 @@ class EventService {
 
     private val validTypes = listOf("STOVYKLA", "SUEIGA", "RENGINYS")
     private val validStatuses = listOf("PLANNING", "ACTIVE", "WRAP_UP", "COMPLETED", "CANCELLED")
+    private val allowedStatusTransitions = mapOf(
+        "PLANNING" to setOf("ACTIVE"),
+        "ACTIVE" to setOf("WRAP_UP"),
+        "WRAP_UP" to setOf("COMPLETED")
+    )
     private val readOnlyEventStatuses = listOf("COMPLETED", "CANCELLED")
     private val validEventRoles = listOf(
         "VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "FINANSININKAS", "PASTOVYKLES_GURU",
@@ -25,7 +30,8 @@ class EventService {
     private val validTargetGroups = listOf("VILKAI", "SKAUTAI", "PATYRE_SKAUTAI", "VYR_SKAUTAI", "VYR_SKAUTES", "SKAUTAI_VILKAI", "TEVAI", "PROGRAMA")
     private val eventManagerRoles = listOf("VIRSININKAS")
     private val eventInventoryRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS")
-    private val eventFinanceRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "FINANSININKAS")
+    private val eventFinanceRoles = listOf("VIRSININKAS", "FINANSININKAS")
+    private val eventPurchaseRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "FINANSININKAS")
     private val eventViewerRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "PROGRAMERIS")
     private val eventInventoryRequesterRoles = listOf("VIRSININKAS", "KOMENDANTAS", "UKVEDYS", "PROGRAMERIS")
     private val validBucketTypes = listOf("PROGRAM", "KITCHEN", "ADMIN", "MEDICAL", "PASTOVYKLE", "OTHER")
@@ -65,33 +71,7 @@ class EventService {
         eventId: UUID,
         userId: UUID,
         excludingPastovykleId: UUID? = null
-    ): Exception? {
-        val existingRole = EventRoles.selectAll()
-            .where {
-                (EventRoles.eventId eq eventId) and
-                    (EventRoles.userId eq userId)
-            }
-            .firstOrNull()
-
-        if (existingRole != null) {
-            return Exception("User already has an event staff role")
-        }
-
-        val existingPastovykle = Pastovykles.selectAll()
-            .where {
-                (Pastovykles.eventId eq eventId) and
-                    (Pastovykles.responsibleUserId eq userId)
-            }
-            .firstOrNull { row ->
-                excludingPastovykleId == null || row[Pastovykles.id] != excludingPastovykleId
-            }
-
-        return if (existingPastovykle != null) {
-            Exception("User already has an event staff role")
-        } else {
-            null
-        }
-    }
+    ): Exception? = null
 
     fun canViewEvents(userId: UUID, tuntasId: UUID): Boolean = transaction {
         isActiveTuntasMember(userId, tuntasId)
@@ -163,6 +143,20 @@ class EventService {
                 (EventRoles.eventId eq eventId) and
                         (EventRoles.userId eq userId) and
                         (EventRoles.role inList eventFinanceRoles)
+            }
+            .firstOrNull() != null
+    }
+
+    fun canManageEventPurchases(eventId: UUID, tuntasId: UUID, userId: UUID): Boolean = transaction {
+        Events.selectAll()
+            .where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }
+            .firstOrNull() ?: return@transaction false
+
+        EventRoles.selectAll()
+            .where {
+                (EventRoles.eventId eq eventId) and
+                    (EventRoles.userId eq userId) and
+                    (EventRoles.role inList eventPurchaseRoles)
             }
             .firstOrNull() != null
     }
@@ -446,6 +440,12 @@ class EventService {
                 if (it !in validStatuses) {
                     return@transaction Result.failure(Exception("Invalid status"))
                 }
+                val currentStatus = existing[Events.status]
+                if (it != currentStatus && it !in allowedStatusTransitions[currentStatus].orEmpty()) {
+                    return@transaction Result.failure(
+                        Exception("Invalid event status transition from $currentStatus to $it")
+                    )
+                }
                 if (it == "COMPLETED") {
                     val blocking = reconciliationBlockingCounts(eventId)
                     if (blocking.first > 0 || blocking.second > 0) {
@@ -621,29 +621,23 @@ class EventService {
             val existingUserRole = EventRoles.selectAll()
                 .where {
                     (EventRoles.eventId eq eventId) and
-                        (EventRoles.userId eq targetUserUUID)
+                        (EventRoles.userId eq targetUserUUID) and
+                        (EventRoles.role eq request.role) and
+                        (if (request.targetGroup == null) {
+                            EventRoles.targetGroup eq null
+                        } else {
+                            EventRoles.targetGroup eq request.targetGroup
+                        }) and
+                        (if (targetPastovykleUUID == null) {
+                            EventRoles.pastovykleId eq null
+                        } else {
+                            EventRoles.pastovykleId eq targetPastovykleUUID
+                        })
                 }
                 .firstOrNull()
 
             if (existingUserRole != null) {
-                val isSameSlot = existingUserRole[EventRoles.role] == request.role &&
-                    existingUserRole[EventRoles.targetGroup] == request.targetGroup &&
-                    existingUserRole[EventRoles.pastovykleId] == targetPastovykleUUID
-                if (isSameSlot) {
-                    return@transaction Result.success(toEventRoleResponse(existingUserRole))
-                }
-                return@transaction Result.failure(Exception("User already has an event staff role"))
-            }
-
-            val existingPastovykleResponsibility = Pastovykles.selectAll()
-                .where {
-                    (Pastovykles.eventId eq eventId) and
-                        (Pastovykles.responsibleUserId eq targetUserUUID)
-                }
-                .firstOrNull()
-
-            if (existingPastovykleResponsibility != null) {
-                return@transaction Result.failure(Exception("User already has an event staff role"))
+                return@transaction Result.success(toEventRoleResponse(existingUserRole))
             }
 
             val existingSlotRole = EventRoles.selectAll()

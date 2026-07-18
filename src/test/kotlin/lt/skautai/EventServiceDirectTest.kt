@@ -365,6 +365,13 @@ class EventServiceDirectTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasIdText)
+            setBody("""{ "status": "ACTIVE" }""")
+        }
+
+        client.put("/api/events/$eventIdText") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasIdText)
             setBody("""{ "status": "WRAP_UP" }""")
         }
 
@@ -523,6 +530,13 @@ class EventServiceDirectTest {
         client.post("/api/events/$eventIdText/purchases/$purchaseId/complete") {
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasIdText)
+        }
+
+        client.put("/api/events/$eventIdText") {
+            contentType(ContentType.Application.Json)
+            header("Authorization", "Bearer $token")
+            header("X-Tuntas-Id", tuntasIdText)
+            setBody("""{ "status": "ACTIVE" }""")
         }
 
         client.put("/api/events/$eventIdText") {

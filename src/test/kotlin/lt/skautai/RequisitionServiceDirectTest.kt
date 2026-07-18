@@ -80,6 +80,7 @@ class RequisitionServiceDirectTest {
     private fun createPurchasedRequest(
         tuntasId: UUID,
         ownerId: UUID,
+        reviewerId: UUID,
         items: List<CreateRequisitionItemRequest>
     ): UUID {
         val created = requisitionService.createRequest(
@@ -94,7 +95,7 @@ class RequisitionServiceDirectTest {
         requisitionService.topLevelReview(
             requestId = requestId,
             tuntasId = tuntasId,
-            reviewerUserId = ownerId,
+            reviewerUserId = reviewerId,
             request = RequisitionTopLevelReviewRequest(action = "APPROVED")
         ).getOrThrow()
         requisitionService.markPurchased(
@@ -111,11 +112,15 @@ class RequisitionServiceDirectTest {
         configureFullApp()
         val ownerEmail = randomEmail("req-owner")
         val (token, tuntasIdText) = client.registerAndActivateTuntininkas(email = ownerEmail)
+        val reviewerEmail = randomEmail("req-reviewer")
+        client.registerInvitedUser(token, tuntasIdText, "Inventorininkas", reviewerEmail)
         val tuntasId = UUID.fromString(tuntasIdText)
         val ownerId = userIdByEmail(ownerEmail)
+        val reviewerId = userIdByEmail(reviewerEmail)
         val requestId = createPurchasedRequest(
             tuntasId = tuntasId,
             ownerId = ownerId,
+            reviewerId = reviewerId,
             items = listOf(CreateRequisitionItemRequest(itemName = "Puodas", quantity = 2))
         )
         val lineId = transaction {
@@ -245,8 +250,11 @@ class RequisitionServiceDirectTest {
         configureFullApp()
         val ownerEmail = randomEmail("restock-owner")
         val (token, tuntasIdText) = client.registerAndActivateTuntininkas(email = ownerEmail)
+        val reviewerEmail = randomEmail("restock-reviewer")
+        client.registerInvitedUser(token, tuntasIdText, "Inventorininkas", reviewerEmail)
         val tuntasId = UUID.fromString(tuntasIdText)
         val ownerId = userIdByEmail(ownerEmail)
+        val reviewerId = userIdByEmail(reviewerEmail)
 
         val existingItem = itemService.createItem(
             tuntasId = tuntasId,
@@ -261,6 +269,7 @@ class RequisitionServiceDirectTest {
         val requestId = createPurchasedRequest(
             tuntasId = tuntasId,
             ownerId = ownerId,
+            reviewerId = reviewerId,
             items = listOf(
                 CreateRequisitionItemRequest(
                     itemName = "Kirvio papildymas",

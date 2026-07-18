@@ -19,6 +19,7 @@ import lt.skautai.models.requests.CreatePastovykleRequest
 import lt.skautai.services.EventService
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -63,6 +64,7 @@ class EventAccessDirectTest {
             val roleId = Roles.selectAll()
                 .where { (Roles.tuntasId eq tuntasId) and (Roles.name eq roleName) }
                 .first()[Roles.id]
+            UserRanks.deleteWhere { (UserRanks.userId eq userId) and (UserRanks.tuntasId eq tuntasId) }
             UserRanks.insert {
                 it[this.userId] = userId
                 it[this.roleId] = roleId

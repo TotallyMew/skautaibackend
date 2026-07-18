@@ -224,7 +224,7 @@ class ReservationServiceDirectTest {
         )
         assertEquals("Unit review is not pending", noUnitReview.exceptionOrNull()?.message)
 
-        val noTopPermission = service.reviewReservation(
+        val selfReview = service.reviewReservation(
             groupId = groupId,
             tuntasId = tuntasId,
             reviewerUserId = memberId,
@@ -233,7 +233,7 @@ class ReservationServiceDirectTest {
             canApproveTopLevel = false,
             approvableUnitIds = emptySet()
         )
-        assertEquals("Insufficient permissions for top-level review", noTopPermission.exceptionOrNull()?.message)
+        assertEquals("You cannot review your own reservation", selfReview.exceptionOrNull()?.message)
 
         val approved = service.reviewReservation(
             groupId = groupId,
@@ -295,7 +295,17 @@ class ReservationServiceDirectTest {
             canApproveTopLevel = true
         ).getOrThrow()
         val groupId = UUID.fromString(created.id)
-        assertEquals("APPROVED", created.status)
+        assertEquals("PENDING", created.status)
+        val approved = service.reviewReservation(
+            groupId = groupId,
+            tuntasId = tuntasId,
+            reviewerUserId = managerId,
+            level = "top-level",
+            request = ReviewReservationRequest(status = "APPROVED"),
+            canApproveTopLevel = true,
+            approvableUnitIds = emptySet()
+        ).getOrThrow()
+        assertEquals("APPROVED", approved.status)
 
         val noPendingPickup = service.updatePickupTime(
             groupId = groupId,

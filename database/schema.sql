@@ -153,7 +153,8 @@ CREATE TABLE user_ranks (
                             role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
                             tuntas_id UUID NOT NULL REFERENCES tuntai(id) ON DELETE CASCADE,
                             assigned_by_user_id UUID REFERENCES users(id),
-                            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(user_id, tuntas_id)
 );
 
 -- Locations
@@ -356,8 +357,7 @@ CREATE TABLE event_roles (
                              target_group VARCHAR(20) CHECK (target_group IN ('VILKAI', 'SKAUTAI', 'PATYRE_SKAUTAI', 'VYR_SKAUTAI', 'VYR_SKAUTES', 'SKAUTAI_VILKAI', 'TEVAI', 'PROGRAMA')),
                              pastovykle_id UUID REFERENCES pastovykles(id) ON DELETE CASCADE,
                              assigned_by_user_id UUID REFERENCES users(id),
-                             assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                             UNIQUE(event_id, user_id, role)
+                             assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Only one VIRSININKAS per event

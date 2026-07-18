@@ -176,9 +176,9 @@ class BendrasInventoryRequestService {
                 .where {
                     (UserLeadershipRoles.userId eq requestedByUserId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.organizationalUnitId eq requestingUnitUUID) and
                         (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                        (UserLeadershipRoles.leftAt.isNull()) and
-                        (UserLeadershipRoles.organizationalUnitId eq requestingUnitUUID)
+                        UserLeadershipRoles.leftAt.isNull()
                 }
                 .any()
 
@@ -230,6 +230,7 @@ class BendrasInventoryRequestService {
                 .where {
                     (UserLeadershipRoles.userId eq requestedByUserId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId) and
+                        (UserLeadershipRoles.organizationalUnitId eq requestingUnitUUID) and
                         (UserLeadershipRoles.termStatus eq "ACTIVE") and
                         (UserLeadershipRoles.leftAt.isNull()) and
                         (Roles.name inList unitLeaderRoles)
@@ -424,6 +425,10 @@ class BendrasInventoryRequestService {
                 }
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Request not found"))
+
+            if (existing[BendrasInventoryRequests.requestedByUserId] == reviewerUserId) {
+                return@transaction Result.failure(Exception("You cannot review your own shared inventory request"))
+            }
 
             if (existing[BendrasInventoryRequests.topLevelStatus] != "PENDING") {
                 return@transaction Result.failure(Exception("Request is not pending top level review"))

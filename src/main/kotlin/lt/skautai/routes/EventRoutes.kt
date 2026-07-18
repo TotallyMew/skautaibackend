@@ -653,7 +653,7 @@ fun Route.eventRoutes(
                 get {
                     val tuntasUUID = parseTuntasId() ?: return@get
                     val eventUUID = parseEventId() ?: return@get
-                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@get
+                    if (!canViewEventFinance(eventService, tuntasUUID, eventUUID)) return@get
                     val limit = call.request.queryParameters["limit"]?.let { raw ->
                         raw.toIntOrNull()?.takeIf { it in 1..200 }
                             ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("limit must be between 1 and 200"))
@@ -672,7 +672,7 @@ fun Route.eventRoutes(
                     val userId = UUID.fromString(principal.getClaim("userId", String::class))
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
-                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
+                    if (!canManageEventPurchases(eventService, tuntasUUID, eventUUID)) return@post
                     val request = call.receiveValidated<CreateEventPurchaseRequest>()
                     eventService.createPurchase(eventUUID, tuntasUUID, userId, request)
                         .onSuccess { call.respond(HttpStatusCode.Created, it) }
@@ -682,7 +682,7 @@ fun Route.eventRoutes(
                 put("{purchaseId}") {
                     val tuntasUUID = parseTuntasId() ?: return@put
                     val eventUUID = parseEventId() ?: return@put
-                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@put
+                    if (!canManageEventPurchases(eventService, tuntasUUID, eventUUID)) return@put
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@put
                     val request = call.receiveValidated<UpdateEventPurchaseRequest>()
                     eventService.updatePurchase(eventUUID, purchaseUUID, tuntasUUID, request)
@@ -693,7 +693,7 @@ fun Route.eventRoutes(
                 post("{purchaseId}/invoice") {
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
-                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
+                    if (!canManageEventPurchases(eventService, tuntasUUID, eventUUID)) return@post
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@post
                     val request = call.receiveValidated<AttachEventPurchaseInvoiceRequest>()
                     eventService.attachPurchaseInvoice(eventUUID, purchaseUUID, tuntasUUID, request)
@@ -755,7 +755,7 @@ fun Route.eventRoutes(
                 post("{purchaseId}/complete") {
                     val tuntasUUID = parseTuntasId() ?: return@post
                     val eventUUID = parseEventId() ?: return@post
-                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@post
+                    if (!canManageEventPurchases(eventService, tuntasUUID, eventUUID)) return@post
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@post
                     eventService.completePurchase(eventUUID, purchaseUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
@@ -774,7 +774,7 @@ fun Route.eventRoutes(
                 get {
                     val tuntasUUID = parseTuntasId() ?: return@get
                     val eventUUID = parseEventId() ?: return@get
-                    if (!canManageEventFinance(eventService, tuntasUUID, eventUUID)) return@get
+                    if (!canViewEventFinance(eventService, tuntasUUID, eventUUID)) return@get
                     eventService.getEventFinance(eventUUID, tuntasUUID)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to fetch event finance")) }
@@ -1483,6 +1483,31 @@ private suspend fun RoutingContext.canManageEventFinance(
     return false
 }
 
+private suspend fun RoutingContext.canManageEventPurchases(
+    eventService: EventService,
+    tuntasId: UUID,
+    eventId: UUID
+): Boolean {
+    val userId = currentUserId() ?: return false
+    if (eventService.canManageEventPurchases(eventId, tuntasId, userId)) return true
+    call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+    return false
+}
+
+private suspend fun RoutingContext.canViewEventFinance(
+    eventService: EventService,
+    tuntasId: UUID,
+    eventId: UUID
+): Boolean {
+    val userId = currentUserId() ?: return false
+    val canViewAsEventStaff = eventService.canManageEventPurchases(eventId, tuntasId, userId)
+    val canViewAsTuntasFinansininkas = resolveUserPermissions(userId, tuntasId)
+        .any { it.permissionName == "event_purchases.invoice.download" }
+    if (canViewAsEventStaff || canViewAsTuntasFinansininkas) return true
+    call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+    return false
+}
+
 private suspend fun RoutingContext.canViewEventInventory(
     eventService: EventService,
     tuntasId: UUID,
@@ -1533,7 +1558,8 @@ private suspend fun RoutingContext.canDownloadPurchaseInvoice(
     } catch (e: Exception) {
         return call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token")).let { false }
     }
-    if (eventService.canManageEventFinance(eventId, tuntasId, userId)) return true
+    if (eventService.canManageEventPurchases(eventId, tuntasId, userId)) return true
+    if (resolveUserPermissions(userId, tuntasId).any { it.permissionName == "event_purchases.invoice.download" }) return true
     call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
     return false
 }

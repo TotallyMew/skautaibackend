@@ -1,14 +1,6 @@
 package lt.skautai.services
 
-import lt.skautai.database.tables.OrganizationalUnits
-import lt.skautai.database.tables.Roles
-import lt.skautai.database.tables.UnitAssignments
-import lt.skautai.database.tables.UserTuntasMemberships
-import lt.skautai.database.tables.UserRanks
-import lt.skautai.database.tables.UserLeadershipRoles
-import lt.skautai.database.tables.Users
-import lt.skautai.database.tables.Items
-import lt.skautai.database.tables.SeniorUnitAccessAudit
+import lt.skautai.database.tables.*
 import lt.skautai.models.requests.AssignUnitMemberRequest
 import lt.skautai.models.requests.CreateOrganizationalUnitRequest
 import lt.skautai.models.requests.UpdateOrganizationalUnitRequest
@@ -191,16 +183,28 @@ class OrganizationalUnitService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Organizational unit not found"))
 
-            // Check if any items are in this unit's custody
-            val itemCount = Items.selectAll()
-                .where {
-                    (Items.custodianId eq unitId) and
-                            (Items.status neq "INACTIVE")
-                }
-                .count()
+            val hasHistoricalReferences =
+                UnitAssignments.selectAll().where { UnitAssignments.organizationalUnitId eq unitId }.firstOrNull() != null ||
+                    UserLeadershipRoles.selectAll().where { UserLeadershipRoles.organizationalUnitId eq unitId }.firstOrNull() != null ||
+                    Items.selectAll().where { Items.custodianId eq unitId }.firstOrNull() != null ||
+                    InventoryKits.selectAll().where { InventoryKits.custodianId eq unitId }.firstOrNull() != null ||
+                    ItemCheckSessions.selectAll().where { ItemCheckSessions.scopeCustodianId eq unitId }.firstOrNull() != null ||
+                    ItemTransfers.selectAll().where {
+                        (ItemTransfers.fromCustodianId eq unitId) or (ItemTransfers.toCustodianId eq unitId)
+                    }.firstOrNull() != null ||
+                    Locations.selectAll().where { Locations.ownerUnitId eq unitId }.firstOrNull() != null ||
+                    Events.selectAll().where { Events.organizationalUnitId eq unitId }.firstOrNull() != null ||
+                    Reservations.selectAll().where { Reservations.requestingUnitId eq unitId }.firstOrNull() != null ||
+                    BendrasInventoryRequests.selectAll().where { BendrasInventoryRequests.requestingUnitId eq unitId }.firstOrNull() != null ||
+                    DraugoveRequisitions.selectAll().where { DraugoveRequisitions.organizationalUnitId eq unitId }.firstOrNull() != null ||
+                    Invitations.selectAll().where { Invitations.organizationalUnitId eq unitId }.firstOrNull() != null ||
+                    LeadershipChangeRequests.selectAll().where { LeadershipChangeRequests.organizationalUnitId eq unitId }.firstOrNull() != null ||
+                    SeniorUnitAccessAudit.selectAll().where { SeniorUnitAccessAudit.unitId eq unitId }.firstOrNull() != null
 
-            if (itemCount > 0) {
-                return@transaction Result.failure(Exception("Cannot delete unit that has active items in its custody"))
+            if (hasHistoricalReferences) {
+                return@transaction Result.failure(
+                    Exception("Cannot delete a unit that has members, leadership, inventory, locations, audits, transfers, events, requests, reservations, invitations, or history")
+                )
             }
 
             OrganizationalUnits.deleteWhere {
