@@ -94,6 +94,7 @@ fun Route.eventRoutes(
             }
 
             get("{id}") {
+                val userId = currentUserId() ?: return@get
                 val tuntasId = call.request.headers["X-Tuntas-Id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
                 val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
@@ -107,7 +108,9 @@ fun Route.eventRoutes(
                 }
                 if (!canViewEvent(eventService, tuntasUUID, eventUUID)) return@get
 
-                eventService.getEvent(eventUUID, tuntasUUID)
+                val canViewFinanceByPermission = resolveUserPermissions(userId, tuntasUUID)
+                    .any { it.permissionName == "event_purchases.invoice.download" }
+                eventService.getEvent(eventUUID, tuntasUUID, userId, canViewFinanceByPermission)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Event not found")) }
             }

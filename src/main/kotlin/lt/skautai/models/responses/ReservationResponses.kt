@@ -26,7 +26,25 @@ data class ReservationItemResponse(
     @EncodeDefault
     val remainingToMarkReturned: Int = 0,
     @EncodeDefault
-    val remainingToReceive: Int = 0
+    val remainingToReceive: Int = 0,
+    @EncodeDefault
+    val canIssue: Boolean = false,
+    @EncodeDefault
+    val canConfirmReturn: Boolean = false,
+    @EncodeDefault
+    val canMarkReturned: Boolean = false
+)
+
+@Serializable
+data class ReservationCapabilitiesResponse(
+    val canReviewUnit: Boolean = false,
+    val canReviewTopLevel: Boolean = false,
+    val canCancel: Boolean = false,
+    val canIssue: Boolean = false,
+    val canConfirmReturn: Boolean = false,
+    val canMarkReturned: Boolean = false,
+    val canManagePickup: Boolean = false,
+    val canManageReturn: Boolean = false
 )
 
 @Serializable
@@ -70,7 +88,14 @@ data class ReservationResponse(
     val notes: String? = null,
     val createdAt: String,
     val updatedAt: String,
-    val items: List<ReservationItemResponse>
+    val items: List<ReservationItemResponse>,
+    val capabilities: ReservationCapabilitiesResponse? = null
+)
+
+@Serializable
+data class ReservationListCapabilitiesResponse(
+    val canCreate: Boolean = false,
+    val canUseReviewModes: Boolean = false
 )
 
 @Serializable
@@ -79,7 +104,8 @@ data class ReservationListResponse(
     val total: Int,
     val limit: Int? = null,
     val offset: Int = 0,
-    val hasMore: Boolean = false
+    val hasMore: Boolean = false,
+    val capabilities: ReservationListCapabilitiesResponse = ReservationListCapabilitiesResponse()
 )
 
 @Serializable
@@ -95,6 +121,32 @@ data class ReservationAvailabilityResponse(
     val startDate: String,
     val endDate: String,
     val items: List<ReservationAvailabilityItemResponse>
+)
+
+@Serializable
+data class ReservationCreateItemOptionResponse(
+    val itemId: String,
+    val custodianId: String? = null
+)
+
+@Serializable
+data class ReservationCreateUnitOptionResponse(
+    val id: String,
+    val name: String
+)
+
+@Serializable
+data class ReservationCreateLocationOptionResponse(
+    val id: String,
+    val canUseWithAnyInventory: Boolean,
+    val requiredCustodianId: String? = null
+)
+
+@Serializable
+data class ReservationCreateOptionsResponse(
+    val items: List<ReservationCreateItemOptionResponse>,
+    val requestingUnits: List<ReservationCreateUnitOptionResponse>,
+    val locations: List<ReservationCreateLocationOptionResponse>
 )
 
 @Serializable

@@ -15,6 +15,7 @@ import lt.skautai.models.requests.RequisitionTopLevelReviewRequest
 import lt.skautai.models.requests.RequisitionUnitReviewRequest
 import lt.skautai.models.requests.RequisitionMarkPurchasedRequest
 import lt.skautai.models.responses.RequisitionItemResponse
+import lt.skautai.models.responses.RequisitionCapabilitiesResponse
 import lt.skautai.models.responses.RequisitionListResponse
 import lt.skautai.models.responses.RequisitionResponse
 import org.jetbrains.exposed.sql.ResultRow
@@ -77,7 +78,15 @@ class RequisitionService {
             }
             val rows = query.toList()
             val hydration = buildListHydration(rows)
-            val requests = rows.map { toResponse(it, hydration) }
+            val requests = rows.map {
+                withCapabilities(
+                    response = toResponse(it, hydration),
+                    userId = userId,
+                    isTopLevelReviewer = isTopLevelReviewer,
+                    reviewableUnitIds = reviewableUnitIds,
+                    canCreateItems = false
+                )
+            }
             Result.success(RequisitionListResponse(requests = requests, total = requests.size))
         }
     }
@@ -87,7 +96,8 @@ class RequisitionService {
         tuntasId: UUID,
         userId: UUID,
         isTopLevelReviewer: Boolean,
-        reviewableUnitIds: List<UUID>
+        reviewableUnitIds: List<UUID>,
+        canCreateItems: Boolean = false
     ): Result<RequisitionResponse> {
         return transaction {
             val requisition = DraugoveRequisitions.selectAll()
@@ -106,8 +116,35 @@ class RequisitionService {
                 return@transaction Result.failure(Exception("Request is not accessible"))
             }
 
-            Result.success(toResponse(requisition))
+            val response = toResponse(requisition)
+            Result.success(withCapabilities(
+                response = response,
+                userId = userId,
+                isTopLevelReviewer = isTopLevelReviewer,
+                reviewableUnitIds = reviewableUnitIds,
+                canCreateItems = canCreateItems
+            ))
         }
+    }
+
+    private fun withCapabilities(
+        response: RequisitionResponse,
+        userId: UUID,
+        isTopLevelReviewer: Boolean,
+        reviewableUnitIds: List<UUID>,
+        canCreateItems: Boolean
+    ): RequisitionResponse {
+            val isOwner = response.createdByUserId == userId.toString()
+            val canReviewUnit = response.requestingUnitId?.let { unitId ->
+                isTopLevelReviewer || runCatching { UUID.fromString(unitId) }.getOrNull() in reviewableUnitIds
+            } == true
+            return response.copy(capabilities = RequisitionCapabilitiesResponse(
+                canReviewUnit = !isOwner && response.unitReviewStatus == "PENDING" && canReviewUnit,
+                canReviewTopLevel = !isOwner && response.topLevelReviewStatus == "PENDING" && isTopLevelReviewer,
+                canCancel = isOwner && response.status !in listOf("APPROVED", "REJECTED", "CANCELLED"),
+                canMarkPurchased = response.status == "APPROVED" && isTopLevelReviewer,
+                canAddToInventory = response.status == "PURCHASED" && canCreateItems
+            ))
     }
 
     fun createRequest(

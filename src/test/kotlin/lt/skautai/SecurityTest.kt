@@ -82,6 +82,16 @@ class SecurityTest {
         assertTrue(resolved.any { it.permissionName == "invitations.create" && it.scope == "OWN_UNIT" })
         assertTrue(resolved.any { UUID.fromString(unitId) in it.userOrgUnitIds })
 
+        val invitationOptions = client.get("/api/invitations/options") {
+            header("Authorization", "Bearer $memberToken")
+            header("X-Tuntas-Id", tuntasId)
+        }
+        assertEquals(HttpStatusCode.OK, invitationOptions.status)
+        val optionsBody = invitationOptions.bodyAsText()
+        assertTrue(optionsBody.contains(TestHelper.getRoleId(tuntasId, "Skautas")))
+        assertTrue(optionsBody.contains(unitId))
+        assertTrue(!optionsBody.contains(TestHelper.getRoleId(tuntasId, "Tuntininkas")))
+
         val ownUnitInvite = client.post("/api/invitations") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $memberToken")

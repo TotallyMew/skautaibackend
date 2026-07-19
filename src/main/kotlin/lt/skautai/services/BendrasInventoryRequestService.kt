@@ -16,6 +16,7 @@ import lt.skautai.models.requests.CreateBendrasInventoryRequestRequest
 import lt.skautai.models.requests.DraugininkasReviewRequest
 import lt.skautai.models.requests.TopLevelReviewRequest
 import lt.skautai.models.responses.BendrasInventoryRequestItemResponse
+import lt.skautai.models.responses.BendrasInventoryRequestCapabilitiesResponse
 import lt.skautai.models.responses.BendrasInventoryRequestListResponse
 import lt.skautai.models.responses.BendrasInventoryRequestResponse
 import org.jetbrains.exposed.sql.ResultRow
@@ -127,7 +128,17 @@ class BendrasInventoryRequestService {
                 return@transaction Result.failure(Exception("Request is not accessible"))
             }
 
-            Result.success(toResponse(request))
+            val response = toResponse(request)
+            val isOwner = response.requestedByUserId == userId.toString()
+            val requestingUnitId = response.requestingUnitId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+            Result.success(response.copy(capabilities = BendrasInventoryRequestCapabilitiesResponse(
+                canReviewUnit = !isOwner && response.needsDraugininkasApproval &&
+                    response.draugininkasStatus == "PENDING" && requestingUnitId in unitIds,
+                canReviewTopLevel = !isOwner && isAdmin && response.topLevelStatus == "PENDING" &&
+                    (!response.needsDraugininkasApproval || response.draugininkasStatus == "FORWARDED"),
+                canCancel = isOwner && response.topLevelStatus == "PENDING" &&
+                    response.draugininkasStatus in listOf(null, "PENDING")
+            )))
         }
     }
 
@@ -360,6 +371,10 @@ class BendrasInventoryRequestService {
 
             if (!existing[BendrasInventoryRequests.needsDraugininkasApproval]) {
                 return@transaction Result.failure(Exception("This request does not require unit leader approval"))
+            }
+
+            if (existing[BendrasInventoryRequests.requestedByUserId] == reviewerUserId) {
+                return@transaction Result.failure(Exception("You cannot review your own shared inventory request"))
             }
 
             if (existing[BendrasInventoryRequests.draugininkasStatus] != "PENDING") {

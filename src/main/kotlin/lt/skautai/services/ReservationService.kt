@@ -20,7 +20,13 @@ import lt.skautai.models.requests.UpdateReservationReturnTimeRequest
 import lt.skautai.models.requests.UpdateReservationStatusRequest
 import lt.skautai.models.responses.ReservationAvailabilityItemResponse
 import lt.skautai.models.responses.ReservationAvailabilityResponse
+import lt.skautai.models.responses.ReservationCapabilitiesResponse
+import lt.skautai.models.responses.ReservationCreateItemOptionResponse
+import lt.skautai.models.responses.ReservationCreateLocationOptionResponse
+import lt.skautai.models.responses.ReservationCreateOptionsResponse
+import lt.skautai.models.responses.ReservationCreateUnitOptionResponse
 import lt.skautai.models.responses.ReservationItemResponse
+import lt.skautai.models.responses.ReservationListCapabilitiesResponse
 import lt.skautai.models.responses.ReservationListResponse
 import lt.skautai.models.responses.ReservationMovementListResponse
 import lt.skautai.models.responses.ReservationMovementResponse
@@ -40,6 +46,7 @@ class ReservationService {
         userId: UUID,
         canViewAll: Boolean,
         approvableUnitIds: List<UUID>,
+        canCreate: Boolean = false,
         itemId: UUID? = null,
         status: String? = null,
         updatedAfter: Instant? = null,
@@ -106,7 +113,16 @@ class ReservationService {
                 .sortedBy { (groupId, _) -> pageGroupOrder[groupId] ?: Int.MAX_VALUE }
             val hydration = buildReservationListHydration(reservations.map { it.second })
             val reservationResponses = reservations
-                .map { (_, rows) -> toReservationResponse(rows, hydration) }
+                .map { (_, rows) ->
+                    withReservationCapabilities(
+                        response = toReservationResponse(rows, hydration),
+                        rows = rows,
+                        tuntasId = tuntasId,
+                        userId = userId,
+                        canViewAll = canViewAll,
+                        approvableUnitIds = approvableUnitIds.toSet()
+                    )
+                }
 
             Result.success(
                 ReservationListResponse(
@@ -114,7 +130,11 @@ class ReservationService {
                     total = total,
                     limit = limit,
                     offset = offset,
-                    hasMore = limit != null && offset + reservationResponses.size < total
+                    hasMore = limit != null && offset + reservationResponses.size < total,
+                    capabilities = ReservationListCapabilitiesResponse(
+                        canCreate = canCreate,
+                        canUseReviewModes = canViewAll || approvableUnitIds.isNotEmpty()
+                    )
                 )
             )
         }
@@ -140,8 +160,63 @@ class ReservationService {
                 return@transaction Result.failure(Exception("Insufficient permissions"))
             }
 
-            Result.success(toReservationResponse(rows))
+            Result.success(
+                withReservationCapabilities(
+                    response = toReservationResponse(rows),
+                    rows = rows,
+                    tuntasId = tuntasId,
+                    userId = userId,
+                    canViewAll = canViewAll,
+                    approvableUnitIds = approvableUnitIds
+                )
+            )
         }
+    }
+
+    private fun withReservationCapabilities(
+        response: ReservationResponse,
+        rows: List<ResultRow>,
+        tuntasId: UUID,
+        userId: UUID,
+        canViewAll: Boolean,
+        approvableUnitIds: Set<UUID>
+    ): ReservationResponse {
+        val isOwner = response.reservedByUserId == userId.toString()
+        val requesterRequiresInventorininkas = isTopLevelLeader(rows.first()[Reservations.reservedByUserId], tuntasId)
+        val canReviewRequester = !requesterRequiresInventorininkas ||
+            hasLeadershipRole(userId, tuntasId, "Inventorininkas")
+        val unitIds = response.items.mapNotNull { item ->
+            item.custodianId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        }.distinct()
+        val canManageItem: (ReservationItemResponse) -> Boolean = { item ->
+            item.custodianId == null && canViewAll ||
+                item.custodianId?.let { runCatching { UUID.fromString(it) }.getOrNull() in approvableUnitIds } == true
+        }
+        val statusAllowsReview = response.status in listOf("PENDING", "APPROVED")
+        val canAccessWorkflow = canAccessReservation(rows, userId, canViewAll, approvableUnitIds)
+        val actionItems = response.items.map { item ->
+            item.copy(
+                canIssue = response.status in listOf("APPROVED", "ACTIVE") && canManageItem(item) && item.remainingToIssue > 0,
+                canConfirmReturn = response.status == "ACTIVE" && canManageItem(item) && item.remainingToReceive > 0,
+                canMarkReturned = isOwner && response.status == "ACTIVE" && item.remainingToMarkReturned > 0
+            )
+        }
+        return response.copy(
+            items = actionItems,
+            capabilities = ReservationCapabilitiesResponse(
+                canReviewUnit = !isOwner && canReviewRequester && statusAllowsReview &&
+                    response.unitReviewStatus == "PENDING" &&
+                    (canViewAll || unitIds.all { it in approvableUnitIds }),
+                canReviewTopLevel = !isOwner && canReviewRequester && statusAllowsReview &&
+                    response.topLevelReviewStatus == "PENDING" && canViewAll,
+                canCancel = isOwner && response.status in listOf("PENDING", "APPROVED"),
+                canIssue = actionItems.any { it.canIssue },
+                canConfirmReturn = actionItems.any { it.canConfirmReturn },
+                canMarkReturned = actionItems.any { it.canMarkReturned },
+                canManagePickup = response.status in listOf("APPROVED", "ACTIVE") && canAccessWorkflow,
+                canManageReturn = response.status == "ACTIVE" && canAccessWorkflow
+            )
+        )
     }
 
     fun createReservation(
@@ -372,25 +447,7 @@ class ReservationService {
                 return@transaction Result.failure(Exception("End date cannot be before start date"))
             }
 
-            var activeItems = Items.selectAll()
-                .where {
-                    (Items.tuntasId eq tuntasId) and
-                        (Items.status eq "ACTIVE")
-                }
-            if (!canApproveTopLevel) {
-                activeItems = if (userUnitIds.isEmpty()) {
-                    activeItems.andWhere { Items.custodianId.isNull() }
-                } else {
-                    activeItems.andWhere {
-                        Items.custodianId.isNull() or (Items.custodianId inList userUnitIds.toList())
-                    }
-                }
-                activeItems = activeItems.andWhere {
-                    (Items.type neq "INDIVIDUAL") or (Items.createdByUserId eq userId)
-                }
-            }
-
-            val activeItemRows = activeItems.toList()
+            val activeItemRows = reservableItemRows(tuntasId, userId, canApproveTopLevel, userUnitIds)
             val activeItemIds = activeItemRows.map { it[Items.id] }
             val reservedByItemId = if (activeItemIds.isEmpty()) {
                 emptyMap()
@@ -423,6 +480,83 @@ class ReservationService {
                     startDate = startDate,
                     endDate = endDate,
                     items = items
+                )
+            )
+        }
+    }
+
+    fun getCreateOptions(
+        tuntasId: UUID,
+        userId: UUID,
+        canApproveTopLevel: Boolean,
+        userUnitIds: Set<UUID>
+    ): Result<ReservationCreateOptionsResponse> {
+        return transaction {
+            val itemRows = reservableItemRows(tuntasId, userId, canApproveTopLevel, userUnitIds)
+            val itemCustodianIds = itemRows.mapNotNullTo(linkedSetOf()) { it[Items.custodianId] }
+            val unitRows = if (canApproveTopLevel) {
+                OrganizationalUnits.selectAll()
+                    .where { OrganizationalUnits.tuntasId eq tuntasId }
+                    .toList()
+            } else if (userUnitIds.isEmpty()) {
+                emptyList()
+            } else {
+                OrganizationalUnits.selectAll()
+                    .where {
+                        (OrganizationalUnits.tuntasId eq tuntasId) and
+                            (OrganizationalUnits.id inList userUnitIds.toList())
+                    }
+                    .toList()
+            }
+
+            val locationRows = Locations.selectAll()
+                .where { Locations.tuntasId eq tuntasId }
+                .toList()
+            val parentLocationIds = locationRows.mapNotNullTo(hashSetOf()) { it[Locations.parentLocationId] }
+            val locationOptions = locationRows.mapNotNull { location ->
+                val id = location[Locations.id]
+                if (id in parentLocationIds) return@mapNotNull null
+                when (location[Locations.visibility]) {
+                    "PUBLIC" -> ReservationCreateLocationOptionResponse(
+                        id = id.toString(),
+                        canUseWithAnyInventory = true
+                    )
+                    "PRIVATE" -> if (location[Locations.ownerUserId] == userId) {
+                        ReservationCreateLocationOptionResponse(
+                            id = id.toString(),
+                            canUseWithAnyInventory = true
+                        )
+                    } else null
+                    "UNIT" -> location[Locations.ownerUnitId]
+                        ?.takeIf { it in itemCustodianIds }
+                        ?.let { ownerUnitId ->
+                            ReservationCreateLocationOptionResponse(
+                                id = id.toString(),
+                                canUseWithAnyInventory = false,
+                                requiredCustodianId = ownerUnitId.toString()
+                            )
+                        }
+                    else -> null
+                }
+            }
+
+            Result.success(
+                ReservationCreateOptionsResponse(
+                    items = itemRows.map { item ->
+                        ReservationCreateItemOptionResponse(
+                            itemId = item[Items.id].toString(),
+                            custodianId = item[Items.custodianId]?.toString()
+                        )
+                    },
+                    requestingUnits = unitRows
+                        .sortedBy { it[OrganizationalUnits.name].lowercase() }
+                        .map { unit ->
+                            ReservationCreateUnitOptionResponse(
+                                id = unit[OrganizationalUnits.id].toString(),
+                                name = unit[OrganizationalUnits.name]
+                            )
+                        },
+                    locations = locationOptions
                 )
             )
         }
@@ -1398,6 +1532,32 @@ class ReservationService {
         )
     }
 
+    private fun reservableItemRows(
+        tuntasId: UUID,
+        userId: UUID,
+        canApproveTopLevel: Boolean,
+        userUnitIds: Set<UUID>
+    ): List<ResultRow> {
+        var query = Items.selectAll()
+            .where {
+                (Items.tuntasId eq tuntasId) and
+                    (Items.status eq "ACTIVE")
+            }
+        if (!canApproveTopLevel) {
+            query = if (userUnitIds.isEmpty()) {
+                query.andWhere { Items.custodianId.isNull() }
+            } else {
+                query.andWhere {
+                    Items.custodianId.isNull() or (Items.custodianId inList userUnitIds.toList())
+                }
+            }
+            query = query.andWhere {
+                (Items.type neq "INDIVIDUAL") or (Items.createdByUserId eq userId)
+            }
+        }
+        return query.toList()
+    }
+
     private fun validateReservationLocation(
         tuntasId: UUID,
         locationId: UUID?,
@@ -1410,6 +1570,9 @@ class ReservationService {
             .toList()
         val location = locationRows.firstOrNull { it[Locations.id] == locationId }
             ?: return Exception("Location not found")
+        if (locationRows.any { it[Locations.parentLocationId] == locationId }) {
+            return Exception("Reservation location must be a selectable leaf location")
+        }
         val custodianIds = itemRows.values.mapNotNull { it[Items.custodianId] }.toSet()
         return when (location[Locations.visibility]) {
             "PUBLIC" -> null

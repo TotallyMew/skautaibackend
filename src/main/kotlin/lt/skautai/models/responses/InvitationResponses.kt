@@ -12,3 +12,22 @@ data class InvitationResponse(
     val organizationalUnitId: String? = null,
     val organizationalUnitName: String? = null
 )
+
+@Serializable
+data class InvitationUnitOptionResponse(
+    val id: String,
+    val name: String,
+    val type: String
+)
+
+@Serializable
+data class InvitationRoleOptionResponse(
+    val role: RoleResponse,
+    val organizationalUnits: List<InvitationUnitOptionResponse>,
+    val canInviteWithoutOrganizationalUnit: Boolean
+)
+
+@Serializable
+data class InvitationOptionsResponse(
+    val roles: List<InvitationRoleOptionResponse>
+)

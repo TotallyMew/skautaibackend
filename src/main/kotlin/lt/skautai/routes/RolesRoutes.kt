@@ -10,6 +10,7 @@ import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.RoleListResponse
 import lt.skautai.models.responses.RoleResponse
+import lt.skautai.services.LeadershipRoleRules
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -61,7 +62,10 @@ fun Route.rolesRoutes(apiPrefix: String = "/api") {
                                 id = it[Roles.id].toString(),
                                 name = it[Roles.name],
                                 roleType = it[Roles.roleType],
-                                isSystemRole = it[Roles.isSystemRole]
+                                isSystemRole = it[Roles.isSystemRole],
+                                canBeInvited = !LeadershipRoleRules.isTuntininkas(it[Roles.name]),
+                                requiresOrganizationalUnit = LeadershipRoleRules.requiresOrganizationalUnit(it[Roles.name]),
+                                allowedOrganizationalUnitTypes = LeadershipRoleRules.allowedOrganizationalUnitTypes(it[Roles.name]).sorted()
                             )
                         }
                 }

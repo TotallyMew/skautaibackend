@@ -17,6 +17,7 @@ import lt.skautai.models.responses.MessageResponse
 import lt.skautai.models.responses.RoleListResponse
 import lt.skautai.models.responses.RoleResponse
 import lt.skautai.services.MemberService
+import lt.skautai.services.LeadershipRoleRules
 import lt.skautai.services.FirebaseNotificationService
 import lt.skautai.services.NotificationRecipientService
 import lt.skautai.services.OrganizationalUnitService
@@ -214,8 +215,11 @@ fun Route.superAdminRoutes(
                                 RoleResponse(
                                     id = it[Roles.id].toString(),
                                     name = it[Roles.name],
-                                    roleType = it[Roles.roleType],
-                                    isSystemRole = it[Roles.isSystemRole]
+                                        roleType = it[Roles.roleType],
+                                        isSystemRole = it[Roles.isSystemRole],
+                                        canBeInvited = !LeadershipRoleRules.isTuntininkas(it[Roles.name]),
+                                        requiresOrganizationalUnit = LeadershipRoleRules.requiresOrganizationalUnit(it[Roles.name]),
+                                    allowedOrganizationalUnitTypes = LeadershipRoleRules.allowedOrganizationalUnitTypes(it[Roles.name]).sorted()
                                 )
                             }
                     }

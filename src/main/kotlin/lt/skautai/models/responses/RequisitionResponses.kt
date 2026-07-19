@@ -17,6 +17,15 @@ data class RequisitionItemResponse(
 )
 
 @Serializable
+data class RequisitionCapabilitiesResponse(
+    val canReviewUnit: Boolean = false,
+    val canReviewTopLevel: Boolean = false,
+    val canCancel: Boolean = false,
+    val canMarkPurchased: Boolean = false,
+    val canAddToInventory: Boolean = false
+)
+
+@Serializable
 data class RequisitionResponse(
     val id: String,
     val tuntasId: String,
@@ -38,7 +47,8 @@ data class RequisitionResponse(
     val notes: String? = null,
     val items: List<RequisitionItemResponse>,
     val createdAt: String,
-    val updatedAt: String
+    val updatedAt: String,
+    val capabilities: RequisitionCapabilitiesResponse? = null
 )
 
 @Serializable

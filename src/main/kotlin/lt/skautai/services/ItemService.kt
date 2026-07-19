@@ -30,6 +30,7 @@ import lt.skautai.models.requests.TransferItemToUnitRequest
 import lt.skautai.models.requests.UpdateItemRequest
 import lt.skautai.models.requests.WriteOffItemRequest
 import lt.skautai.models.responses.ItemCustomFieldResponse
+import lt.skautai.models.responses.ItemCapabilitiesResponse
 import lt.skautai.models.responses.ItemAssignmentListResponse
 import lt.skautai.models.responses.ItemAssignmentResponse
 import lt.skautai.models.responses.DirectItemLoanListResponse
@@ -38,6 +39,7 @@ import lt.skautai.models.responses.ItemConditionLogListResponse
 import lt.skautai.models.responses.ItemConditionLogResponse
 import lt.skautai.models.responses.ItemHistoryListResponse
 import lt.skautai.models.responses.ItemHistoryResponse
+import lt.skautai.models.responses.ItemListCapabilitiesResponse
 import lt.skautai.models.responses.ItemListResponse
 import lt.skautai.models.responses.ItemResponse
 import lt.skautai.models.responses.ItemTransferListResponse
@@ -77,6 +79,22 @@ class ItemService {
         return transaction {
             val canSeeAll = userCanSeeAllStatuses(requestingUserId, tuntasId)
             val canSeeAllInventory = userCanManageAllInventory(requestingUserId, tuntasId)
+            val permissions = PermissionContextService.resolve(requestingUserId, tuntasId)
+            val canManageSharedInventory = permissions.has("items.transfer")
+            val canManageAllItems = permissions.hasAll("items.update") ||
+                permissions.hasAll("items.delete") || canManageSharedInventory
+            val listCapabilities = ItemListCapabilitiesResponse(
+                canCreate = permissions.has("items.create") || permissions.has("items.create.submit"),
+                canCreateSharedDirectly = permissions.hasAll("items.create"),
+                canViewInactive = canSeeAll,
+                canViewPending = permissions.has("items.review") || permissions.has("items.create.submit"),
+                canReviewPending = permissions.has("items.review"),
+                canExport = canManageAllItems || permissions.scopedUnitIds("items.create").isNotEmpty() ||
+                    permissions.scopedUnitIds("items.update").isNotEmpty(),
+                canImport = canManageSharedInventory,
+                canGenerateQrPdf = canManageAllItems || permissions.scopedUnitIds("items.create").isNotEmpty() ||
+                    permissions.scopedUnitIds("items.update").isNotEmpty()
+            )
             val visibleUnitIds = if (canSeeAllInventory) emptySet() else userVisibleUnitIds(requestingUserId, tuntasId)
             val protectedSeniorUnitIds = SeniorUnitPrivacyService.protectedUnitIdsFor(requestingUserId, tuntasId)
 
@@ -122,7 +140,10 @@ class ItemService {
                     val uuid = try { UUID.fromString(custodianId) } catch (e: Exception) { null }
                     if (!canSeeAllInventory && uuid != null && uuid !in visibleUnitIds) {
                         return@transaction Result.success(
-                            ItemListResponse(items = emptyList(), total = 0, limit = limit, offset = offset)
+                            ItemListResponse(
+                                items = emptyList(), total = 0, limit = limit, offset = offset,
+                                capabilities = listCapabilities
+                            )
                         )
                     }
                     if (uuid != null) query = query.andWhere { Items.custodianId eq uuid }
@@ -138,11 +159,14 @@ class ItemService {
                     if (uuid != null) query = query.andWhere { Items.createdByUserId eq uuid }
                 }
                 status?.let {
-                    if (canSeeAll) {
+                    if (it == "ACTIVE" || it == "PENDING_APPROVAL" && listCapabilities.canViewPending || canSeeAll) {
                         query = query.andWhere { Items.status eq it }
-                    } else if (it != "ACTIVE") {
+                    } else {
                         return@transaction Result.success(
-                            ItemListResponse(items = emptyList(), total = 0, limit = limit, offset = offset)
+                            ItemListResponse(
+                                items = emptyList(), total = 0, limit = limit, offset = offset,
+                                capabilities = listCapabilities
+                            )
                         )
                     }
                 }
@@ -171,14 +195,25 @@ class ItemService {
 
             val itemRows = pageQuery.toList()
             val hydration = buildItemListHydration(itemRows, tuntasId)
-            val items = itemRows.map { toItemResponse(it, hydration) }
+            val items = itemRows.map { item ->
+                val response = toItemResponse(item, hydration)
+                val itemCustodianId = item[Items.custodianId]
+                val transferredFromShared = item[Items.origin] in listOf("TRANSFERRED_FROM_TUNTAS", "from_shared")
+                val canEdit = permissions.targetAllowed("items.update", itemCustodianId) &&
+                    (!transferredFromShared || permissions.hasAll("items.update"))
+                response.copy(capabilities = ItemCapabilitiesResponse(
+                    canEdit = canEdit,
+                    canChangeStatus = canEdit
+                ))
+            }
             Result.success(
                 ItemListResponse(
                     items = items,
                     total = total,
                     limit = limit,
                     offset = offset,
-                    hasMore = limit != null && offset + items.size < total
+                    hasMore = limit != null && offset + items.size < total,
+                    capabilities = listCapabilities
                 )
             )
         }
@@ -219,7 +254,43 @@ class ItemService {
                 return@transaction Result.failure(Exception("Item not found"))
             }
 
-            Result.success(toItemResponse(item))
+            val response = toItemResponse(item)
+            val permissions = PermissionContextService.resolve(requestingUserId, tuntasId)
+            val transferredFromShared = item[Items.origin] in listOf("TRANSFERRED_FROM_TUNTAS", "from_shared")
+            val canEdit = permissions.targetAllowed("items.update", custodianId) &&
+                (!transferredFromShared || permissions.hasAll("items.update"))
+            val deleteTarget = if (transferredFromShared) null else custodianId
+            val hasActiveReservations = Reservations.selectAll()
+                .where {
+                    (Reservations.itemId eq itemId) and
+                        (Reservations.tuntasId eq tuntasId) and
+                        (Reservations.status inList listOf("PENDING", "APPROVED", "ACTIVE"))
+                }
+                .firstOrNull() != null
+            val activeLoanQuantity = activeDirectLoanQuantity(itemId)
+            val canDelete = permissions.targetAllowed("items.delete", deleteTarget) &&
+                response.status != "INACTIVE" && !hasActiveReservations
+            val canReview = response.status == "PENDING_APPROVAL" && if (response.targetScope == "SHARED") {
+                permissions.hasAll("items.review")
+            } else {
+                permissions.hasAll("items.review") ||
+                    (custodianId != null && custodianId in permissions.scopedUnitIds("items.review"))
+            }
+            Result.success(response.copy(capabilities = ItemCapabilitiesResponse(
+                canEdit = canEdit,
+                canChangeStatus = canEdit,
+                canDelete = canDelete,
+                canRestock = canEdit && response.status == "ACTIVE",
+                canConsume = canEdit && response.isConsumable && response.status == "ACTIVE" && response.quantity > 0,
+                canLoan = canEdit && response.status == "ACTIVE" && response.type != "INDIVIDUAL" && response.quantity > activeLoanQuantity,
+                canReturnLoan = canEdit && activeLoanQuantity > 0,
+                canTransferToUnit = permissions.hasAll("items.transfer") && custodianId == null &&
+                    response.status == "ACTIVE" && response.quantity > 0 && response.type != "INDIVIDUAL",
+                canReturnToShared = transferredFromShared && permissions.hasAll("items.transfer") &&
+                    response.status == "ACTIVE" && response.quantity > 0,
+                canReview = canReview,
+                canWriteOff = canDelete
+            )))
         }
     }
 

@@ -3,7 +3,7 @@ package lt.skautai.services
 import lt.skautai.database.tables.*
 import lt.skautai.models.requests.AcceptInvitationRequest
 import lt.skautai.models.requests.CreateInvitationRequest
-import lt.skautai.models.responses.InvitationResponse
+import lt.skautai.models.responses.*
 import lt.skautai.plugins.resolveUserPermissions
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -13,6 +13,56 @@ import java.util.*
 import kotlin.time.Duration.Companion.hours
 
 class InvitationService {
+
+    fun getInvitationOptions(userId: UUID, tuntasId: UUID): Result<InvitationOptionsResponse> {
+        return transaction {
+            val tuntas = Tuntai.selectAll()
+                .where { Tuntai.id eq tuntasId }
+                .firstOrNull()
+                ?: return@transaction Result.failure(Exception("Tuntas not found"))
+
+            if (tuntas[Tuntai.status] != "ACTIVE") {
+                return@transaction Result.failure(Exception("Tuntas is not active"))
+            }
+
+            val permissionScope = resolveInvitationPermissionScope(userId, tuntasId)
+                ?: return@transaction Result.failure(Exception("Insufficient permissions"))
+            val roleRows = Roles.selectAll()
+                .where { Roles.tuntasId eq tuntasId }
+                .filter(::isSupportedInvitationRole)
+            val unitRows = OrganizationalUnits.selectAll()
+                .where { OrganizationalUnits.tuntasId eq tuntasId }
+                .toList()
+            val unitsById = unitRows.associateBy { it[OrganizationalUnits.id] }
+
+            val options = roleRows.mapNotNull { role ->
+                val roleId = role[Roles.id]
+                val validUnits = if (permissionScope.hasAllScope) {
+                    unitRows.filter { unit -> isValidInvitationTarget(role, unit, tuntasId) }
+                } else {
+                    permissionScope.allowedUnitIdsByRoleId[roleId]
+                        .orEmpty()
+                        .mapNotNull(unitsById::get)
+                        .filter { unit -> isValidInvitationTarget(role, unit, tuntasId) }
+                }
+                val canInviteWithoutUnit = permissionScope.hasAllScope && canInviteWithoutUnit(role)
+
+                if (!canInviteWithoutUnit && validUnits.isEmpty()) {
+                    null
+                } else {
+                    InvitationRoleOptionResponse(
+                        role = role.toInvitationRoleResponse(),
+                        organizationalUnits = validUnits
+                            .sortedBy { it[OrganizationalUnits.name].lowercase() }
+                            .map { it.toInvitationUnitOptionResponse() },
+                        canInviteWithoutOrganizationalUnit = canInviteWithoutUnit
+                    )
+                }
+            }.sortedBy { it.role.name.lowercase() }
+
+            Result.success(InvitationOptionsResponse(roles = options))
+        }
+    }
 
     fun createInvitation(
         userId: UUID,
@@ -59,15 +109,18 @@ class InvitationService {
                 }
             }
 
-            if (orgUnitUUID != null) {
+            val orgUnitType = orgUnitUUID?.let {
                 OrganizationalUnits.selectAll()
                     .where { (OrganizationalUnits.id eq orgUnitUUID) and (OrganizationalUnits.tuntasId eq tuntasId) }
                     .firstOrNull()
                     ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
-            }
+            }?.get(OrganizationalUnits.type)
 
-            if (LeadershipRoleRules.requiresOrganizationalUnit(role[Roles.name]) && orgUnitUUID == null) {
-                return@transaction Result.failure(Exception("Organizational unit is required for this role"))
+            if (role[Roles.roleType] == "LEADERSHIP") {
+                LeadershipRoleRules.validateOrganizationalUnitScope(role[Roles.name], orgUnitUUID)
+                    ?.let { return@transaction Result.failure(Exception(it)) }
+                LeadershipRoleRules.validateOrganizationalUnitType(role[Roles.name], orgUnitType)
+                    ?.let { return@transaction Result.failure(Exception(it)) }
             }
 
             validateOwnUnitInvitation(userId, tuntasId, roleUUID, orgUnitUUID)
@@ -295,23 +348,41 @@ class InvitationService {
         requestedRoleId: UUID,
         requestedOrgUnitId: UUID?
     ): String? {
-        val hasAllInvitationScope = resolveUserPermissions(userId, tuntasId)
-            .any { it.permissionName == "invitations.create" && it.scope == "ALL" }
+        val permissionScope = resolveInvitationPermissionScope(userId, tuntasId)
+            ?: return "You do not have permission to create invitations"
 
-        if (hasAllInvitationScope) return null
+        if (permissionScope.hasAllScope) return null
 
         val targetOrgUnitId = requestedOrgUnitId
             ?: return "Organizational unit is required for this invitation"
 
-        val leadershipInviterRole = UserLeadershipRoles
+        if (targetOrgUnitId !in permissionScope.allowedUnitIdsByRoleId[requestedRoleId].orEmpty()) {
+            return "This role cannot be invited from your unit"
+        }
+
+        return null
+    }
+
+    private fun resolveInvitationPermissionScope(
+        userId: UUID,
+        tuntasId: UUID
+    ): InvitationPermissionScope? {
+        val invitationPermissions = resolveUserPermissions(userId, tuntasId)
+            .filter { it.permissionName == "invitations.create" }
+        if (invitationPermissions.isEmpty()) return null
+        if (invitationPermissions.any { it.scope == "ALL" }) {
+            return InvitationPermissionScope(hasAllScope = true)
+        }
+
+        val allowedUnitIdsByRoleId = linkedMapOf<UUID, MutableSet<UUID>>()
+        val leadershipContexts = UserLeadershipRoles
             .innerJoin(Roles, { UserLeadershipRoles.roleId }, { Roles.id })
             .selectAll()
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
                     (UserLeadershipRoles.termStatus eq "ACTIVE") and
-                    (UserLeadershipRoles.leftAt.isNull()) and
-                    (UserLeadershipRoles.organizationalUnitId eq targetOrgUnitId)
+                    UserLeadershipRoles.leftAt.isNull()
             }
             .mapNotNull { row ->
                 val roleName = row[Roles.name]
@@ -321,55 +392,102 @@ class InvitationService {
                     }
                 }
             }
-            .firstOrNull()
 
-        val advisorInviterUnitId = if (leadershipInviterRole == null) {
-            val hasAdvisorRank = UserRanks
-                .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
+        leadershipContexts.forEach { context ->
+            val unit = OrganizationalUnits.selectAll()
+                .where {
+                    (OrganizationalUnits.id eq context.organizationalUnitId) and
+                        (OrganizationalUnits.tuntasId eq tuntasId)
+                }
+                .firstOrNull()
+                ?: return@forEach
+            resolveAllowedRoleIds(
+                unit,
+                context.inviterRoleName,
+                context.allowedLeadershipRoleName,
+                tuntasId
+            ).forEach { roleId ->
+                allowedUnitIdsByRoleId.getOrPut(roleId, ::linkedSetOf)
+                    .add(context.organizationalUnitId)
+            }
+        }
+
+        val hasAdvisorRank = UserRanks
+            .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
+            .selectAll()
+            .where {
+                (UserRanks.userId eq userId) and
+                    (UserRanks.tuntasId eq tuntasId) and
+                    (Roles.name eq advisorRankRoleName)
+            }
+            .firstOrNull() != null
+
+        if (hasAdvisorRank) {
+            val leadershipUnitIds = leadershipContexts.mapTo(mutableSetOf()) { it.organizationalUnitId }
+            UnitAssignments
+                .innerJoin(OrganizationalUnits, { UnitAssignments.organizationalUnitId }, { OrganizationalUnits.id })
                 .selectAll()
                 .where {
-                    (UserRanks.userId eq userId) and
-                        (UserRanks.tuntasId eq tuntasId) and
-                        (Roles.name eq advisorRankRoleName)
+                    (UnitAssignments.userId eq userId) and
+                        (UnitAssignments.tuntasId eq tuntasId) and
+                        UnitAssignments.leftAt.isNull()
                 }
-                .firstOrNull() != null
-
-            if (!hasAdvisorRank) null else {
-                UnitAssignments.selectAll()
-                    .where {
-                        (UnitAssignments.userId eq userId) and
-                            (UnitAssignments.tuntasId eq tuntasId) and
-                            (UnitAssignments.organizationalUnitId eq targetOrgUnitId) and
-                            (UnitAssignments.leftAt.isNull())
+                .filter { it[OrganizationalUnits.id] !in leadershipUnitIds }
+                .forEach { unit ->
+                    val unitId = unit[OrganizationalUnits.id]
+                    resolveAdvisorAllowedRoleIds(unit, tuntasId).forEach { roleId ->
+                        allowedUnitIdsByRoleId.getOrPut(roleId, ::linkedSetOf).add(unitId)
                     }
-                    .firstOrNull()
-                    ?.get(UnitAssignments.organizationalUnitId)
-            }
-        } else null
-
-        val inviterUnitId = leadershipInviterRole?.organizationalUnitId ?: advisorInviterUnitId
-            ?: return "You can only invite members to the unit where you have invitation rights"
-
-        val unit = OrganizationalUnits.selectAll()
-            .where {
-                (OrganizationalUnits.id eq inviterUnitId) and
-                    (OrganizationalUnits.tuntasId eq tuntasId)
-            }
-            .firstOrNull()
-            ?: return "Organizational unit not found in this tuntas"
-
-        val allowedRoleIds = if (leadershipInviterRole != null) {
-            resolveAllowedRoleIds(unit, leadershipInviterRole.inviterRoleName, leadershipInviterRole.allowedLeadershipRoleName, tuntasId)
-        } else {
-            resolveAdvisorAllowedRoleIds(unit, tuntasId)
+                }
         }
 
-        if (requestedRoleId !in allowedRoleIds) {
-            return "This role cannot be invited from your unit"
-        }
-
-        return null
+        return InvitationPermissionScope(
+            hasAllScope = false,
+            allowedUnitIdsByRoleId = allowedUnitIdsByRoleId
+        )
     }
+
+    private fun isSupportedInvitationRole(role: ResultRow): Boolean {
+        return !LeadershipRoleRules.isTuntininkas(role[Roles.name]) &&
+            (role[Roles.roleType] != "RANK" || role[Roles.name] in supportedRankRoleNames)
+    }
+
+    private fun isValidInvitationTarget(role: ResultRow, unit: ResultRow, tuntasId: UUID): Boolean {
+        if (role[Roles.roleType] == "LEADERSHIP") {
+            if (LeadershipRoleRules.validateOrganizationalUnitScope(role[Roles.name], unit[OrganizationalUnits.id]) != null) {
+                return false
+            }
+            if (LeadershipRoleRules.validateOrganizationalUnitType(role[Roles.name], unit[OrganizationalUnits.type]) != null) {
+                return false
+            }
+        }
+        return LeadershipRoleRules.validatePrincipalUnitLeaderSlot(
+            role[Roles.id],
+            tuntasId,
+            unit[OrganizationalUnits.id]
+        ) == null
+    }
+
+    private fun canInviteWithoutUnit(role: ResultRow): Boolean {
+        return role[Roles.roleType] != "LEADERSHIP" ||
+            LeadershipRoleRules.validateOrganizationalUnitScope(role[Roles.name], null) == null
+    }
+
+    private fun ResultRow.toInvitationRoleResponse() = RoleResponse(
+        id = this[Roles.id].toString(),
+        name = this[Roles.name],
+        roleType = this[Roles.roleType],
+        isSystemRole = this[Roles.isSystemRole],
+        canBeInvited = true,
+        requiresOrganizationalUnit = LeadershipRoleRules.requiresOrganizationalUnit(this[Roles.name]),
+        allowedOrganizationalUnitTypes = LeadershipRoleRules.allowedOrganizationalUnitTypes(this[Roles.name]).sorted()
+    )
+
+    private fun ResultRow.toInvitationUnitOptionResponse() = InvitationUnitOptionResponse(
+        id = this[OrganizationalUnits.id].toString(),
+        name = this[OrganizationalUnits.name],
+        type = this[OrganizationalUnits.type]
+    )
 
     private fun resolveAllowedRoleIds(
         unit: ResultRow,
@@ -480,6 +598,11 @@ class InvitationService {
         val organizationalUnitId: UUID,
         val inviterRoleName: String,
         val allowedLeadershipRoleName: String
+    )
+
+    private data class InvitationPermissionScope(
+        val hasAllScope: Boolean,
+        val allowedUnitIdsByRoleId: Map<UUID, Set<UUID>> = emptyMap()
     )
 
     private companion object {

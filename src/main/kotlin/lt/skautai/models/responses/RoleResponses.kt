@@ -7,7 +7,10 @@ data class RoleResponse(
     val id: String,
     val name: String,
     val roleType: String,
-    val isSystemRole: Boolean
+    val isSystemRole: Boolean,
+    val canBeInvited: Boolean = true,
+    val requiresOrganizationalUnit: Boolean = false,
+    val allowedOrganizationalUnitTypes: List<String> = emptyList()
 )
 
 @Serializable

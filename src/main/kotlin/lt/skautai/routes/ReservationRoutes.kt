@@ -73,6 +73,7 @@ fun Route.reservationRoutes(
                     userId = userId,
                     canViewAll = canViewAll,
                     approvableUnitIds = approvableUnitIds,
+                    canCreate = userPerms.any { it.permissionName == "reservations.create" },
                     itemId = itemId,
                     status = status,
                     updatedAfter = updatedAfter,
@@ -81,6 +82,26 @@ fun Route.reservationRoutes(
                 )
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure { call.respond(HttpStatusCode.InternalServerError, ErrorResponse(it.message ?: "Failed to fetch reservations")) }
+            }
+
+            get("create-options") {
+                val principal = call.principal<JWTPrincipal>()!!
+                val userId = UUID.fromString(principal.getClaim("userId", String::class))
+                val tuntasId = call.request.headers["X-Tuntas-Id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
+                val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
+                }
+                if (!checkPermission("reservations.create", tuntasUUID)) return@get
+
+                val resolvedPerms = resolveUserPermissions(userId, tuntasUUID)
+                val canApproveTopLevel = resolvedPerms.any {
+                    it.permissionName == "reservations.approve" && it.scope == "ALL"
+                }
+                val userUnitIds = resolvedPerms.flatMap { it.userOrgUnitIds }.toSet()
+                reservationService.getCreateOptions(tuntasUUID, userId, canApproveTopLevel, userUnitIds)
+                    .onSuccess { call.respond(HttpStatusCode.OK, it) }
+                    .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to fetch reservation creation options")) }
             }
 
             get("availability") {

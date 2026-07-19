@@ -13,6 +13,7 @@ data class UnitMembershipResponse(
     val tuntasId: String,
     val assignmentType: String,
     val isPubliclyVisible: Boolean = false,
+    val canManageVisibility: Boolean = false,
     val assignedByUserId: String?,
     val joinedAt: String,
     val leftAt: String?,

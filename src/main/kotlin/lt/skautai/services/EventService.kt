@@ -302,7 +302,12 @@ class EventService {
         )
     }
 
-    fun getEvent(eventId: UUID, tuntasId: UUID): Result<EventResponse> {
+    fun getEvent(
+        eventId: UUID,
+        tuntasId: UUID,
+        userId: UUID? = null,
+        canViewFinanceByPermission: Boolean = false
+    ): Result<EventResponse> {
         return transaction {
             val event = Events.selectAll()
                 .where {
@@ -312,8 +317,52 @@ class EventService {
                 .firstOrNull()
                 ?: return@transaction Result.failure(Exception("Event not found"))
 
-            Result.success(toEventResponse(event))
+            val response = toEventResponse(event)
+            Result.success(
+                if (userId == null) response
+                else response.copy(capabilities = resolveEventCapabilities(event, userId, canViewFinanceByPermission))
+            )
         }
+    }
+
+    private fun resolveEventCapabilities(
+        event: ResultRow,
+        userId: UUID,
+        canViewFinanceByPermission: Boolean
+    ): EventCapabilitiesResponse {
+        val eventId = event[Events.id]
+        val roles = EventRoles.select(EventRoles.role)
+            .where { (EventRoles.eventId eq eventId) and (EventRoles.userId eq userId) }
+            .mapTo(linkedSetOf()) { it[EventRoles.role] }
+        val isResponsiblePastovykle = "PASTOVYKLES_GURU" in roles || Pastovykles.select(Pastovykles.id)
+            .where { (Pastovykles.eventId eq eventId) and (Pastovykles.responsibleUserId eq userId) }
+            .firstOrNull() != null
+        val status = event[Events.status]
+        val isReadOnly = status in readOnlyEventStatuses
+        val hasManagerRole = roles.any { it in eventManagerRoles }
+        val hasInventoryRole = roles.any { it in eventInventoryRoles }
+        val hasFinanceRole = roles.any { it in eventFinanceRoles }
+        val hasPurchaseRole = roles.any { it in eventPurchaseRoles }
+        val hasViewerRole = roles.any { it in eventViewerRoles }
+        val hasRequesterRole = roles.any { it in eventInventoryRequesterRoles }
+
+        return EventCapabilitiesResponse(
+            isReadOnly = isReadOnly,
+            canManage = hasManagerRole && !isReadOnly,
+            canStart = !isReadOnly && status == "PLANNING" && roles.any { it in setOf("VIRSININKAS", "KOMENDANTAS") },
+            canAdvanceToWrapUp = !isReadOnly && status == "ACTIVE" && hasManagerRole,
+            canCancel = status == "PLANNING" && hasManagerRole,
+            canViewStaff = hasManagerRole || hasInventoryRole || isResponsiblePastovykle,
+            canViewPlan = hasViewerRole || isResponsiblePastovykle,
+            canViewInventory = hasViewerRole || isResponsiblePastovykle,
+            canRequestInventory = hasRequesterRole && !isReadOnly,
+            canViewPastovykles = hasManagerRole || hasInventoryRole || isResponsiblePastovykle,
+            canManageInventory = hasInventoryRole && !isReadOnly,
+            canManagePurchases = hasPurchaseRole && !isReadOnly,
+            canManageFinance = hasFinanceRole && !isReadOnly,
+            canViewFinance = hasPurchaseRole || canViewFinanceByPermission,
+            canOpenMovement = status == "ACTIVE" && (hasManagerRole || hasInventoryRole || isResponsiblePastovykle)
+        )
     }
 
     fun canViewEvent(userId: UUID, tuntasId: UUID, eventId: UUID): Boolean = transaction {

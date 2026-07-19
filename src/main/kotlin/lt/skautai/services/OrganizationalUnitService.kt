@@ -233,6 +233,8 @@ class OrganizationalUnitService {
             val hasInternalAccess =
                 unit[OrganizationalUnits.type] !in SeniorUnitPrivacyService.seniorUnitTypes ||
                     SeniorUnitPrivacyService.userHasInternalAccess(callerUserId, tuntasId, unitId)
+            val canManageCandidateVisibility =
+                SeniorUnitPrivacyService.canManageCandidateVisibility(callerUserId, tuntasId, unitId)
             if (unit[OrganizationalUnits.type] in SeniorUnitPrivacyService.seniorUnitTypes) {
                 SeniorUnitAccessAudit.insert {
                     it[this.tuntasId] = tuntasId
@@ -254,6 +256,17 @@ class OrganizationalUnitService {
                             Users.deletedAt.isNull()
                 }
                 .toList()
+            val candidateUserIds = if (canManageCandidateVisibility && memberRows.isNotEmpty()) {
+                UserRanks
+                    .innerJoin(Roles, { UserRanks.roleId }, { Roles.id })
+                    .select(UserRanks.userId)
+                    .where {
+                        (UserRanks.userId inList memberRows.map { it[UnitAssignments.userId] }.distinct()) and
+                            (UserRanks.tuntasId eq tuntasId) and
+                            (Roles.name eq "Vyr. skautas kandidatas")
+                    }
+                    .mapTo(hashSetOf()) { it[UserRanks.userId] }
+            } else emptySet()
             val rankNamesByUserId = if (hasInternalAccess || memberRows.isEmpty()) {
                 emptyMap()
             } else {
@@ -271,12 +284,13 @@ class OrganizationalUnitService {
             }
 
             val members = memberRows.mapNotNull { row ->
+                val canManageVisibility = row[UnitAssignments.userId] in candidateUserIds
                 val rankNames = rankNamesByUserId[row[UnitAssignments.userId]].orEmpty()
                 val hideIdentity = !hasInternalAccess &&
                     "Vyr. skautas kandidatas" in rankNames &&
                     !row[UnitAssignments.isPubliclyVisible]
                 when {
-                    hasInternalAccess -> toUnitMembershipResponse(row)
+                    hasInternalAccess -> toUnitMembershipResponse(row, canManageVisibility = canManageVisibility)
                     hideIdentity -> toUnitMembershipResponse(row, hideIdentity = true)
                     "Vyr. skautas" in rankNames || row[UnitAssignments.isPubliclyVisible] ->
                         toUnitMembershipResponse(row)
@@ -364,7 +378,7 @@ class OrganizationalUnitService {
                 .selectAll()
                 .where { (UnitAssignments.id eq assignment[UnitAssignments.id]) and Users.deletedAt.isNull() }
                 .first()
-        Result.success(toUnitMembershipResponse(updated))
+        Result.success(toUnitMembershipResponse(updated, canManageVisibility = true))
     }
 
     fun assignUnitMember(
@@ -733,7 +747,8 @@ class OrganizationalUnitService {
 
     private fun toUnitMembershipResponse(
         row: ResultRow,
-        hideIdentity: Boolean = false
+        hideIdentity: Boolean = false,
+        canManageVisibility: Boolean = false
     ): UnitMembershipResponse {
         val unitId = row[UnitAssignments.organizationalUnitId]
         val unitName = OrganizationalUnits.selectAll()
@@ -750,6 +765,7 @@ class OrganizationalUnitService {
             tuntasId = row[UnitAssignments.tuntasId].toString(),
             assignmentType = row[UnitAssignments.assignmentType],
             isPubliclyVisible = row[UnitAssignments.isPubliclyVisible],
+            canManageVisibility = canManageVisibility,
             assignedByUserId = row[UnitAssignments.assignedByUserId]?.toString(),
             joinedAt = row[UnitAssignments.joinedAt].toString(),
             leftAt = row[UnitAssignments.leftAt]?.toString(),

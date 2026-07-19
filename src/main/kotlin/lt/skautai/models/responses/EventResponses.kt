@@ -15,6 +15,25 @@ data class EventRoleResponse(
 )
 
 @Serializable
+data class EventCapabilitiesResponse(
+    val isReadOnly: Boolean = true,
+    val canManage: Boolean = false,
+    val canStart: Boolean = false,
+    val canAdvanceToWrapUp: Boolean = false,
+    val canCancel: Boolean = false,
+    val canViewStaff: Boolean = false,
+    val canViewPlan: Boolean = false,
+    val canViewInventory: Boolean = false,
+    val canRequestInventory: Boolean = false,
+    val canViewPastovykles: Boolean = false,
+    val canManageInventory: Boolean = false,
+    val canManagePurchases: Boolean = false,
+    val canManageFinance: Boolean = false,
+    val canViewFinance: Boolean = false,
+    val canOpenMovement: Boolean = false
+)
+
+@Serializable
 data class EventResponse(
     val id: String,
     val tuntasId: String,
@@ -32,7 +51,8 @@ data class EventResponse(
     val createdAt: String,
     val eventRoles: List<EventRoleResponse>,
     val inventorySummary: EventInventorySummaryResponse? = null,
-    val financeSummary: EventFinanceSummaryResponse? = null
+    val financeSummary: EventFinanceSummaryResponse? = null,
+    val capabilities: EventCapabilitiesResponse? = null
 )
 
 @Serializable

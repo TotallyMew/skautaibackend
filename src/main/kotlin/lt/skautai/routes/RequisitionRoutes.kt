@@ -110,7 +110,8 @@ fun Route.requisitionRoutes(
                 }
                 val reviewableUnitIds = if (isTopLevelReviewer) emptyList() else resolveRequisitionReviewableUnitIds(userId, tuntasUUID)
 
-                service.getRequest(requestUUID, tuntasUUID, userId, isTopLevelReviewer, reviewableUnitIds)
+                val canCreateItems = permissions.any { it.permissionName == "items.create" }
+                service.getRequest(requestUUID, tuntasUUID, userId, isTopLevelReviewer, reviewableUnitIds, canCreateItems)
                     .onSuccess { call.respond(HttpStatusCode.OK, it) }
                     .onFailure {
                         val message = it.message ?: "Request not found"

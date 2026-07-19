@@ -11,6 +11,13 @@ data class BendrasInventoryRequestItemResponse(
 )
 
 @Serializable
+data class BendrasInventoryRequestCapabilitiesResponse(
+    val canReviewUnit: Boolean = false,
+    val canReviewTopLevel: Boolean = false,
+    val canCancel: Boolean = false
+)
+
+@Serializable
 data class BendrasInventoryRequestResponse(
     val id: String,
     val tuntasId: String,
@@ -34,7 +41,8 @@ data class BendrasInventoryRequestResponse(
     val notes: String? = null,
     val items: List<BendrasInventoryRequestItemResponse> = emptyList(),
     val createdAt: String,
-    val updatedAt: String
+    val updatedAt: String,
+    val capabilities: BendrasInventoryRequestCapabilitiesResponse? = null
 )
 
 @Serializable

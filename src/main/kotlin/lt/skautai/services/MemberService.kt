@@ -177,7 +177,7 @@ class MemberService {
                 }
             }
 
-            if (orgUnitUUID != null) {
+            val orgUnitType = orgUnitUUID?.let {
                 OrganizationalUnits.selectAll()
                     .where {
                         (OrganizationalUnits.id eq orgUnitUUID) and
@@ -185,9 +185,11 @@ class MemberService {
                     }
                     .firstOrNull()
                     ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
-            }
+            }?.get(OrganizationalUnits.type)
 
             LeadershipRoleRules.validateOrganizationalUnitScope(role[Roles.name], orgUnitUUID)
+                ?.let { return@transaction Result.failure(Exception(it)) }
+            LeadershipRoleRules.validateOrganizationalUnitType(role[Roles.name], orgUnitType)
                 ?.let { return@transaction Result.failure(Exception(it)) }
 
             LeadershipRoleRules.validatePrincipalUnitLeaderSlot(roleUUID, tuntasId, orgUnitUUID)
@@ -311,6 +313,15 @@ class MemberService {
                     .where { Roles.id eq assignment[UserLeadershipRoles.roleId] }
                     .first()[Roles.name]
                 LeadershipRoleRules.validateOrganizationalUnitScope(roleName, finalOrgUnit)
+                    ?.let { return@transaction Result.failure(Exception(it)) }
+                val finalOrgUnitType = finalOrgUnit?.let { unitId ->
+                    OrganizationalUnits.selectAll()
+                        .where { (OrganizationalUnits.id eq unitId) and (OrganizationalUnits.tuntasId eq tuntasId) }
+                        .firstOrNull()
+                        ?.get(OrganizationalUnits.type)
+                        ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
+                }
+                LeadershipRoleRules.validateOrganizationalUnitType(roleName, finalOrgUnitType)
                     ?.let { return@transaction Result.failure(Exception(it)) }
                 LeadershipRoleRules.validatePrincipalUnitLeaderSlot(
                     roleId = assignment[UserLeadershipRoles.roleId],
