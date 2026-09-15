@@ -586,7 +586,7 @@ class OrganizationalUnitService {
                 (UserLeadershipRoles.userId eq targetUserId) and
                         (UserLeadershipRoles.organizationalUnitId eq unitId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        UserLeadershipRoles.effectiveNow() and
                         (UserLeadershipRoles.leftAt.isNull())
             }) {
                 it[termStatus] = "RESIGNED"
@@ -626,7 +626,7 @@ class OrganizationalUnitService {
                     (UserLeadershipRoles.userId eq callerUserId) and
                             (UserLeadershipRoles.organizationalUnitId eq unitId) and
                             (UserLeadershipRoles.tuntasId eq tuntasId) and
-                            (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                            UserLeadershipRoles.effectiveNow() and
                             (UserLeadershipRoles.leftAt.isNull())
                 }
                 .firstOrNull()

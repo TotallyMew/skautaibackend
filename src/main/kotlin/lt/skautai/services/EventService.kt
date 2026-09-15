@@ -5,6 +5,9 @@ import lt.skautai.models.requests.*
 import lt.skautai.models.responses.*
 import lt.skautai.util.UploadStorage
 import kotlinx.datetime.toLocalDateTime
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.security.MessageDigest
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -585,10 +588,7 @@ class EventService {
                 return@transaction Result.failure(Exception("Only PLANNING events can be deleted"))
             }
 
-            EventPurchases.selectAll()
-                .where { EventPurchases.eventId eq eventId }
-                .mapNotNull { it[EventPurchases.invoiceFileUrl] }
-                .forEach { deleteManagedDocument(it) }
+            // Referenced invoices are retained; physical deletion cannot roll back with SQL.
 
             EventInventoryItems.select(EventInventoryItems.reservationGroupId)
                 .where { EventInventoryItems.eventId eq eventId }
@@ -3057,23 +3057,23 @@ class EventService {
         userId: UUID,
         request: ReconcileEventReturnsRequest
     ): Result<EventReconciliationResponse> {
-        return transaction {
-            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+        return atomicResultTransaction {
+            val event = Events.selectAll().where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }.forUpdate().firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Event not found"))
             if (event[Events.status] != "WRAP_UP") {
-                return@transaction Result.failure(Exception("Returns can be reconciled only during wrap-up"))
+                return@atomicResultTransaction Result.failure(Exception("Returns can be reconciled only during wrap-up"))
             }
             val sessionId = getOrCreateEventReturnSession(eventId, tuntasId, userId)
 
             request.returns.forEach { line ->
                 val decision = line.decision.uppercase()
                 if (decision !in listOf("RETURNED", "DAMAGED", "MISSING", "CONSUMED")) {
-                    return@transaction Result.failure(Exception("Invalid return decision"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid return decision"))
                 }
                 if (line.quantity < 1) {
-                    return@transaction Result.failure(Exception("Quantity must be at least 1"))
+                    return@atomicResultTransaction Result.failure(Exception("Quantity must be at least 1"))
                 }
                 val custodyId = try { UUID.fromString(line.custodyId) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid custody ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid custody ID"))
                 }
                 val custody = EventInventoryCustody
                     .innerJoin(EventInventoryItems, { eventInventoryItemId }, { id })
@@ -3083,28 +3083,28 @@ class EventService {
                             (EventInventoryItems.eventId eq eventId)
                     }
                     .forUpdate()
-                    .firstOrNull() ?: return@transaction Result.failure(Exception("Custody record not found"))
+                    .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Custody record not found"))
 
                 val remaining = openQuantity(custody)
                 if (line.quantity > remaining) {
-                    return@transaction Result.failure(Exception("Return decision quantity exceeds remaining quantity"))
+                    return@atomicResultTransaction Result.failure(Exception("Return decision quantity exceeds remaining quantity"))
                 }
                 val returnToMode = line.returnToMode?.uppercase()
                 if (returnToMode != null && returnToMode !in listOf("ORIGINAL_SOURCE", "EVENT_STORAGE", "OTHER_LOCATION")) {
-                    return@transaction Result.failure(Exception("Invalid return destination"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid return destination"))
                 }
                 if (decision in listOf("MISSING", "CONSUMED") && (line.returnLocationId != null || line.returnLocationNote != null || returnToMode != null)) {
-                    return@transaction Result.failure(Exception("Missing or consumed items cannot have a return destination"))
+                    return@atomicResultTransaction Result.failure(Exception("Missing or consumed items cannot have a return destination"))
                 }
                 val returnLocationId = line.returnLocationId?.let {
                     try { UUID.fromString(it) } catch (e: Exception) {
-                        return@transaction Result.failure(Exception("Invalid return location ID"))
+                        return@atomicResultTransaction Result.failure(Exception("Invalid return location ID"))
                     }
                 }
                 returnLocationId?.let {
                     Locations.selectAll()
                         .where { (Locations.id eq it) and (Locations.tuntasId eq tuntasId) }
-                        .firstOrNull() ?: return@transaction Result.failure(Exception("Return location not found"))
+                        .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Return location not found"))
                 }
 
                 val now = kotlinx.datetime.Clock.System.now()
@@ -3229,23 +3229,23 @@ class EventService {
         userId: UUID,
         request: ReconcileEventPurchasesRequest
     ): Result<EventReconciliationResponse> {
-        return transaction {
-            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+        return atomicResultTransaction {
+            val event = Events.selectAll().where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }.forUpdate().firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Event not found"))
             if (event[Events.status] != "WRAP_UP") {
-                return@transaction Result.failure(Exception("Purchases can be reconciled only during wrap-up"))
+                return@atomicResultTransaction Result.failure(Exception("Purchases can be reconciled only during wrap-up"))
             }
 
             val touchedPurchaseIds = mutableSetOf<UUID>()
             request.purchases.forEach { line ->
                 val decision = line.decision.uppercase()
                 if (decision !in listOf("ADD_NEW_ITEM", "INCREASE_EXISTING_ITEM", "CONSUMED", "IGNORE")) {
-                    return@transaction Result.failure(Exception("Invalid purchase decision"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid purchase decision"))
                 }
                 if (line.quantity < 1) {
-                    return@transaction Result.failure(Exception("Quantity must be at least 1"))
+                    return@atomicResultTransaction Result.failure(Exception("Quantity must be at least 1"))
                 }
                 val purchaseItemId = try { UUID.fromString(line.purchaseItemId) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid purchase item ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid purchase item ID"))
                 }
                 val row = EventPurchaseItems
                     .innerJoin(EventPurchases, { purchaseId }, { id })
@@ -3256,16 +3256,16 @@ class EventService {
                             (EventPurchases.eventId eq eventId)
                     }
                     .forUpdate()
-                    .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase item not found"))
+                    .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Purchase item not found"))
                 val purchaseId = row[EventPurchaseItems.purchaseId]
                 touchedPurchaseIds += purchaseId
                 if (row[EventPurchaseItems.addedToInventory]) {
-                    return@transaction Result.failure(Exception("Purchase item already reconciled"))
+                    return@atomicResultTransaction Result.failure(Exception("Purchase item already reconciled"))
                 }
                 val alreadyReconciled = reconciledPurchaseQuantity(purchaseItemId)
                 val remainingQuantity = row[EventPurchaseItems.purchasedQuantity] - alreadyReconciled
                 if (line.quantity > remainingQuantity) {
-                    return@transaction Result.failure(Exception("Purchase decision quantity exceeds remaining purchased quantity"))
+                    return@atomicResultTransaction Result.failure(Exception("Purchase decision quantity exceeds remaining purchased quantity"))
                 }
 
                 val now = kotlinx.datetime.Clock.System.now()
@@ -3304,13 +3304,13 @@ class EventService {
                     }
                     "INCREASE_EXISTING_ITEM" -> {
                         val existingItemId = try {
-                            UUID.fromString(line.existingItemId ?: return@transaction Result.failure(Exception("existingItemId is required")))
+                            UUID.fromString(line.existingItemId ?: return@atomicResultTransaction Result.failure(Exception("existingItemId is required")))
                         } catch (e: Exception) {
-                            return@transaction Result.failure(Exception("Invalid existing item ID"))
+                            return@atomicResultTransaction Result.failure(Exception("Invalid existing item ID"))
                         }
                         val expectedItemId = row[EventInventoryItems.itemId]
                         if (expectedItemId != null && existingItemId != expectedItemId) {
-                            return@transaction Result.failure(
+                            return@atomicResultTransaction Result.failure(
                                 Exception("Pasirinktas daiktas neatitinka pirkime nurodyto: '${row[EventInventoryItems.name]}'")
                             )
                         }
@@ -3320,7 +3320,7 @@ class EventService {
                         val existing = Items.selectAll()
                             .where { (Items.id eq existingItemId) and (Items.tuntasId eq tuntasId) and (Items.status eq "ACTIVE") }
                             .forUpdate()
-                            .firstOrNull() ?: return@transaction Result.failure(Exception("Existing item not found"))
+                            .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Existing item not found"))
                         Items.update({ Items.id eq existingItemId }) {
                             it[quantity] = existing[Items.quantity] + line.quantity
                             it[updatedAt] = now
@@ -3449,14 +3449,14 @@ class EventService {
     }
 
     fun completeEvent(eventId: UUID, tuntasId: UUID): Result<EventResponse> {
-        return transaction {
-            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
+        return atomicResultTransaction {
+            val event = Events.selectAll().where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }.forUpdate().firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Event not found"))
             if (event[Events.status] != "WRAP_UP") {
-                return@transaction Result.failure(Exception("Event can be completed only during wrap-up"))
+                return@atomicResultTransaction Result.failure(Exception("Event can be completed only during wrap-up"))
             }
             val blocking = reconciliationBlockingCounts(eventId)
             if (blocking.first > 0 || blocking.second > 0) {
-                return@transaction Result.failure(Exception("Event cannot be completed while reconciliation has unresolved returns or purchases"))
+                return@atomicResultTransaction Result.failure(Exception("Event cannot be completed while reconciliation has unresolved returns or purchases"))
             }
             val now = kotlinx.datetime.Clock.System.now()
             Events.update({ (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }) {
@@ -3481,42 +3481,101 @@ class EventService {
         request: CreateEventInventoryMovementRequest,
         canManageInventory: Boolean
     ): Result<EventInventoryMovementResponse> {
-        return transaction {
-            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
-            ensureMovementAllowedForEvent(event) ?: return@transaction Result.failure(Exception("Inventoriaus judėjimas leidžiamas tik aktyvaus renginio metu"))
+        return atomicResultTransaction {
+            // Serialize movement totals, source materialization and request-id checks for this event.
+            val event = Events.selectAll()
+                .where { (Events.id eq eventId) and (Events.tuntasId eq tuntasId) }
+                .forUpdate()
+                .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Event not found"))
+            ensureMovementAllowedForEvent(event) ?: return@atomicResultTransaction Result.failure(Exception("Inventoriaus judėjimas leidžiamas tik aktyvaus renginio metu"))
             if (request.movementType !in validInventoryMovementTypes) {
-                return@transaction Result.failure(Exception("Invalid movement type"))
+                return@atomicResultTransaction Result.failure(Exception("Invalid movement type"))
             }
             if (request.quantity < 1) {
-                return@transaction Result.failure(Exception("Quantity must be at least 1"))
+                return@atomicResultTransaction Result.failure(Exception("Quantity must be at least 1"))
             }
 
             val requestedInventoryItemId = try {
                 UUID.fromString(request.eventInventoryItemId)
             } catch (e: Exception) {
-                return@transaction Result.failure(Exception("Invalid event inventory item ID"))
+                return@atomicResultTransaction Result.failure(Exception("Invalid event inventory item ID"))
+            }
+            val movementType = request.movementType
+            if (!canManageInventory && movementType !in listOf("PASTOVYKLE_REQUEST", "CHECKOUT_TO_PERSON", "RETURN_TO_PASTOVYKLE", "RETURN_TO_EVENT_STORAGE", "TRANSFER")) {
+                return@atomicResultTransaction Result.failure(Exception("Insufficient permissions"))
+            }
+            // Resolve retries before a source QR can materialize any event inventory.
+            val clientRequestId = request.requestId?.trim()?.takeIf { it.isNotBlank() }
+            if (clientRequestId != null && clientRequestId.length > 100) {
+                return@atomicResultTransaction Result.failure(Exception("Request ID is too long"))
+            }
+            val requestHash = MessageDigest.getInstance("SHA-256")
+                .digest(Json.encodeToString(request.copy(requestId = null)).toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            clientRequestId?.let { requestId ->
+                EventInventoryMovements.selectAll()
+                    .where {
+                        (EventInventoryMovements.eventId eq eventId) and
+                            (EventInventoryMovements.clientRequestId eq requestId)
+                    }
+                    .firstOrNull()
+                    ?.let { existing ->
+                        val originalItemId = existing[EventInventoryMovements.eventInventoryItemId]
+                        val originalSourceItemId = EventInventoryItems.selectAll()
+                            .where { EventInventoryItems.id eq originalItemId }
+                            .firstOrNull()?.get(EventInventoryItems.itemId)
+                        if (existing[EventInventoryMovements.requestHash] != requestHash ||
+                            existing[EventInventoryMovements.performedByUserId] != performedByUserId ||
+                            existing[EventInventoryMovements.movementType] != movementType ||
+                            existing[EventInventoryMovements.quantity] != request.quantity ||
+                            (requestedInventoryItemId != originalItemId && requestedInventoryItemId != originalSourceItemId)
+                        ) {
+                            return@atomicResultTransaction Result.failure(Exception("Request ID is already used by a different movement"))
+                        }
+                        return@atomicResultTransaction Result.success(toMovementResponse(existing))
+                    }
             }
             val item = EventInventoryItems.selectAll()
                 .where { (EventInventoryItems.id eq requestedInventoryItemId) and (EventInventoryItems.eventId eq eventId) }
                 .firstOrNull()
-                ?: createEventInventoryItemForSourceItem(eventId, tuntasId, requestedInventoryItemId, performedByUserId)
-                ?: return@transaction Result.failure(Exception("Inventory item not found"))
+                ?: run {
+                    // A source-inventory QR may add an event item only for an inventory manager.
+                    // Other callers must reference an already planned event item.
+                    if (!canManageInventory ||
+                        !PermissionContextService.resolve(performedByUserId, tuntasId).has("items.view") ||
+                        ItemService().getItem(requestedInventoryItemId, tuntasId, performedByUserId).isFailure
+                    ) {
+                        return@atomicResultTransaction Result.failure(Exception("Inventory item not found"))
+                    }
+                    val existingSourceItems = EventInventoryItems.selectAll()
+                        .where {
+                            (EventInventoryItems.eventId eq eventId) and
+                                (EventInventoryItems.itemId eq requestedInventoryItemId)
+                        }
+                        .toList()
+                    if (existingSourceItems.size > 1) {
+                        return@atomicResultTransaction Result.failure(Exception("Select a specific event inventory item for this source"))
+                    }
+                    existingSourceItems.singleOrNull()
+                        ?: createEventInventoryItemForSourceItem(eventId, tuntasId, requestedInventoryItemId, performedByUserId)
+                        ?: return@atomicResultTransaction Result.failure(Exception("Inventory item not found"))
+                }
             val eventInventoryItemId = item[EventInventoryItems.id]
 
             val pastovykleId = request.pastovykleId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid pastovykle ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid pastovykle ID"))
                 }
             }
             pastovykleId?.let {
                 Pastovykles.selectAll()
                     .where { (Pastovykles.id eq it) and (Pastovykles.eventId eq eventId) }
-                    .firstOrNull() ?: return@transaction Result.failure(Exception("Pastovykle not found"))
+                    .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Pastovykle not found"))
             }
 
             val toUserId = request.toUserId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid user ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid user ID"))
                 }
             }
             toUserId?.let {
@@ -3526,26 +3585,13 @@ class EventService {
                             (UserTuntasMemberships.tuntasId eq tuntasId) and
                             (UserTuntasMemberships.leftAt.isNull())
                     }
-                    .firstOrNull() ?: return@transaction Result.failure(Exception("User is not a member of this tuntas"))
+                    .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("User is not a member of this tuntas"))
             }
 
             val now = kotlinx.datetime.Clock.System.now()
-            val movementType = request.movementType
-            val clientRequestId = request.requestId?.trim()?.takeIf { it.isNotBlank() }
-            clientRequestId?.let { requestId ->
-                EventInventoryMovements.selectAll()
-                    .where {
-                        (EventInventoryMovements.eventId eq eventId) and
-                            (EventInventoryMovements.clientRequestId eq requestId)
-                    }
-                    .firstOrNull()
-                    ?.let { existing ->
-                        return@transaction Result.success(toMovementResponse(existing))
-                    }
-            }
             val sourceCustody = request.fromCustodyId?.let {
                 val custodyId = try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid custody ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid custody ID"))
                 }
                 EventInventoryCustody
                     .innerJoin(EventInventoryItems, { EventInventoryCustody.eventInventoryItemId }, { id })
@@ -3556,9 +3602,12 @@ class EventService {
                             (EventInventoryCustody.status eq "OPEN")
                     }
                     .forUpdate()
-                    .firstOrNull() ?: return@transaction Result.failure(Exception("Custody record not found"))
+                    .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Custody record not found"))
             }
 
+            if (sourceCustody != null && sourceCustody[EventInventoryCustody.eventInventoryItemId] != eventInventoryItemId) {
+                return@atomicResultTransaction Result.failure(Exception("Custody record does not belong to the selected inventory item"))
+            }
             val responsiblePastovykleIds = Pastovykles.selectAll()
                 .where {
                     (Pastovykles.eventId eq eventId) and
@@ -3569,15 +3618,12 @@ class EventService {
             fun isResponsiblePastovykle(pastovykleId: UUID?): Boolean =
                 pastovykleId != null && pastovykleId in responsiblePastovykleIds
 
-            if (!canManageInventory && movementType !in listOf("PASTOVYKLE_REQUEST", "CHECKOUT_TO_PERSON", "RETURN_TO_PASTOVYKLE", "RETURN_TO_EVENT_STORAGE", "TRANSFER")) {
-                return@transaction Result.failure(Exception("Insufficient permissions"))
-            }
 
             val createdCustodyId: UUID?
             val movementId: UUID
             when (movementType) {
                 "PASTOVYKLE_REQUEST" -> {
-                    if (pastovykleId == null) return@transaction Result.failure(Exception("Pastovykle is required"))
+                    if (pastovykleId == null) return@atomicResultTransaction Result.failure(Exception("Pastovykle is required"))
                     val inventoryRequestId = EventInventoryRequests.insert {
                         it[this.eventId] = eventId
                         it[this.eventInventoryItemId] = eventInventoryItemId
@@ -3611,11 +3657,11 @@ class EventService {
                     )
                 }
                 "ASSIGN_TO_PASTOVYKLE" -> {
-                    if (!canManageInventory) return@transaction Result.failure(Exception("Insufficient permissions"))
-                    if (pastovykleId == null) return@transaction Result.failure(Exception("Pastovykle is required"))
+                    if (!canManageInventory) return@atomicResultTransaction Result.failure(Exception("Insufficient permissions"))
+                    if (pastovykleId == null) return@atomicResultTransaction Result.failure(Exception("Pastovykle is required"))
                     val available = eventStorageAvailable(eventInventoryItemId, item[EventInventoryItems.availableQuantity])
                     if (request.quantity > available) {
-                        return@transaction Result.failure(Exception("Not enough event storage quantity. Available: $available"))
+                        return@atomicResultTransaction Result.failure(Exception("Not enough event storage quantity. Available: $available"))
                     }
                     createdCustodyId = insertCustody(eventInventoryItemId, null, pastovykleId, null, request.quantity, performedByUserId, request.notes, now)
                     movementId = insertInventoryMovement(
@@ -3646,11 +3692,11 @@ class EventService {
                         eventStorageAvailable(eventInventoryItemId, item[EventInventoryItems.availableQuantity])
                     }
                     if (request.quantity > available) {
-                        return@transaction Result.failure(Exception("Not enough quantity to checkout. Available: $available"))
+                        return@atomicResultTransaction Result.failure(Exception("Not enough quantity to checkout. Available: $available"))
                     }
                     val parentCustodyId = pastovykleId?.let {
                         findAvailablePastovykleCustody(eventInventoryItemId, it, request.quantity)
-                            ?: return@transaction Result.failure(Exception("Not enough quantity assigned to this pastovykle"))
+                            ?: return@atomicResultTransaction Result.failure(Exception("Not enough quantity assigned to this pastovykle"))
                     }
                     createdCustodyId = insertCustody(
                         eventInventoryItemId = eventInventoryItemId,
@@ -3668,18 +3714,18 @@ class EventService {
                     )
                 }
                 "RETURN_TO_PASTOVYKLE", "RETURN_TO_EVENT_STORAGE" -> {
-                    val source = sourceCustody ?: return@transaction Result.failure(Exception("fromCustodyId is required"))
+                    val source = sourceCustody ?: return@atomicResultTransaction Result.failure(Exception("fromCustodyId is required"))
                     val holderId = source[EventInventoryCustody.holderUserId]
                     val isResponsibleReturn = isResponsiblePastovykle(source[EventInventoryCustody.pastovykleId])
                     if (!canManageInventory && !isResponsibleReturn && holderId != performedByUserId) {
-                        return@transaction Result.failure(Exception("You can return only your own checkout"))
+                        return@atomicResultTransaction Result.failure(Exception("You can return only your own checkout"))
                     }
                     val remaining = source[EventInventoryCustody.quantity] - source[EventInventoryCustody.returnedQuantity]
                     if (request.quantity > remaining) {
-                        return@transaction Result.failure(Exception("Return quantity exceeds remaining quantity"))
+                        return@atomicResultTransaction Result.failure(Exception("Return quantity exceeds remaining quantity"))
                     }
                     if (movementType == "RETURN_TO_PASTOVYKLE" && source[EventInventoryCustody.parentCustodyId] == null) {
-                        return@transaction Result.failure(Exception("This checkout is not linked to a pastovykle"))
+                        return@atomicResultTransaction Result.failure(Exception("This checkout is not linked to a pastovykle"))
                     }
                     val nextReturned = source[EventInventoryCustody.returnedQuantity] + request.quantity
                     EventInventoryCustody.update({ EventInventoryCustody.id eq source[EventInventoryCustody.id] }) {
@@ -3694,10 +3740,10 @@ class EventService {
                             .where { EventInventoryCustody.id eq source[EventInventoryCustody.parentCustodyId]!! }
                             .forUpdate()
                             .firstOrNull()
-                            ?: return@transaction Result.failure(Exception("Parent custody not found"))
+                            ?: return@atomicResultTransaction Result.failure(Exception("Parent custody not found"))
                         val parentRemaining = parentCustody[EventInventoryCustody.quantity] - parentCustody[EventInventoryCustody.returnedQuantity]
                         if (request.quantity > parentRemaining) {
-                            return@transaction Result.failure(Exception("Return quantity exceeds remaining pastovykle quantity"))
+                            return@atomicResultTransaction Result.failure(Exception("Return quantity exceeds remaining pastovykle quantity"))
                         }
                         val parentReturned = parentCustody[EventInventoryCustody.returnedQuantity] + request.quantity
                         EventInventoryCustody.update({ EventInventoryCustody.id eq parentCustody[EventInventoryCustody.id] }) {
@@ -3717,19 +3763,19 @@ class EventService {
                     )
                 }
                 else -> {
-                    val source = sourceCustody ?: return@transaction Result.failure(Exception("fromCustodyId is required"))
+                    val source = sourceCustody ?: return@atomicResultTransaction Result.failure(Exception("fromCustodyId is required"))
                     val sourcePastovykleId = source[EventInventoryCustody.pastovykleId]
                     val isResponsibleTransfer = isResponsiblePastovykle(sourcePastovykleId)
                     if (!canManageInventory && !isResponsibleTransfer) {
-                        return@transaction Result.failure(Exception("Insufficient permissions"))
+                        return@atomicResultTransaction Result.failure(Exception("Insufficient permissions"))
                     }
                     val remaining = source[EventInventoryCustody.quantity] - source[EventInventoryCustody.returnedQuantity]
                     if (request.quantity > remaining) {
-                        return@transaction Result.failure(Exception("Transfer quantity exceeds remaining quantity"))
+                        return@atomicResultTransaction Result.failure(Exception("Transfer quantity exceeds remaining quantity"))
                     }
                     val targetPastovykleId = pastovykleId ?: source[EventInventoryCustody.pastovykleId]
                     if (!canManageInventory && targetPastovykleId != sourcePastovykleId) {
-                        return@transaction Result.failure(Exception("Pastovykle responsible member can transfer only within their pastovykle"))
+                        return@atomicResultTransaction Result.failure(Exception("Pastovykle responsible member can transfer only within their pastovykle"))
                     }
                     val targetUserId = toUserId
                     val nextReturned = source[EventInventoryCustody.returnedQuantity] + request.quantity
@@ -3782,6 +3828,9 @@ class EventService {
                 }
             }
 
+            EventInventoryMovements.update({ EventInventoryMovements.id eq movementId }) {
+                it[EventInventoryMovements.requestHash] = requestHash
+            }
             Result.success(toMovementResponse(EventInventoryMovements.selectAll().where { EventInventoryMovements.id eq movementId }.first()))
         }
     }
@@ -3799,6 +3848,7 @@ class EventService {
                     (Items.status eq "ACTIVE")
             }
             .firstOrNull() ?: return null
+        if (sourceItem[Items.quantity] <= 0) return null
 
         val bucket = EventInventoryBuckets.selectAll()
             .where {
@@ -3819,7 +3869,7 @@ class EventService {
                 EventInventoryBuckets.selectAll().where { EventInventoryBuckets.id eq bucketId }.first()
             }
 
-        val quantity = sourceItem[Items.quantity].coerceAtLeast(1)
+        val quantity = sourceItem[Items.quantity]
         val sourceSnapshot = buildEventItemSourceSnapshot(sourceItem)
         val eventInventoryItemId = EventInventoryItems.insert {
             it[this.eventId] = eventId
@@ -3959,34 +4009,40 @@ class EventService {
         eventId: UUID,
         purchaseId: UUID,
         tuntasId: UUID,
-        request: UpdateEventPurchaseRequest
+        request: UpdateEventPurchaseRequest,
+        actorUserId: UUID? = null
     ): Result<EventPurchaseResponse> {
-        return transaction {
-            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
-            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+        return atomicResultTransaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@atomicResultTransaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@atomicResultTransaction Result.failure(it) }
             val existing = EventPurchases.selectAll()
                 .where { (EventPurchases.id eq purchaseId) and (EventPurchases.eventId eq eventId) }
                 .forUpdate()
-                .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase not found"))
+                .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Purchase not found"))
 
             request.status?.let {
-                if (it !in validPurchaseStatuses) return@transaction Result.failure(Exception("Invalid purchase status"))
+                if (it !in validPurchaseStatuses) return@atomicResultTransaction Result.failure(Exception("Invalid purchase status"))
                 if (it == "PURCHASED") {
-                    return@transaction Result.failure(Exception("Use purchase completion endpoint to mark purchase as purchased"))
+                    return@atomicResultTransaction Result.failure(Exception("Use purchase completion endpoint to mark purchase as purchased"))
                 }
                 if (existing[EventPurchases.status] == "PURCHASED" && it == "CANCELLED") {
-                    return@transaction Result.failure(Exception("Completed purchase cannot be cancelled"))
+                    return@atomicResultTransaction Result.failure(Exception("Completed purchase cannot be cancelled"))
                 }
                 if (existing[EventPurchases.status] == "CANCELLED" && it != "CANCELLED") {
-                    return@transaction Result.failure(Exception("Cancelled purchase cannot be reopened"))
+                    return@atomicResultTransaction Result.failure(Exception("Cancelled purchase cannot be reopened"))
                 }
             }
             val purchaseDate = request.purchaseDate?.let {
                 try { kotlinx.datetime.LocalDate.parse(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
                 }
             }
 
+            if (request.invoiceFileUrl != null && request.invoiceFileUrl != existing[EventPurchases.invoiceFileUrl]) {
+                UploadService.authorizeBinding(request.invoiceFileUrl, tuntasId, actorUserId, "DOCUMENT")?.let {
+                    return@atomicResultTransaction Result.failure(it)
+                }
+            }
             EventPurchases.update({ (EventPurchases.id eq purchaseId) and (EventPurchases.eventId eq eventId) }) {
                 request.status?.let { v -> it[status] = v }
                 purchaseDate?.let { v -> it[EventPurchases.purchaseDate] = v }
@@ -4002,16 +4058,17 @@ class EventService {
         eventId: UUID,
         purchaseId: UUID,
         tuntasId: UUID,
-        request: AttachEventPurchaseInvoiceRequest
+        request: AttachEventPurchaseInvoiceRequest,
+        actorUserId: UUID? = null
     ): Result<EventPurchaseResponse> {
-        return transaction {
-            val event = ensureEvent(eventId, tuntasId) ?: return@transaction Result.failure(Exception("Event not found"))
-            ensureEventIsNotReadOnly(event)?.let { return@transaction Result.failure(it) }
+        return atomicResultTransaction {
+            val event = ensureEvent(eventId, tuntasId) ?: return@atomicResultTransaction Result.failure(Exception("Event not found"))
+            ensureEventIsNotReadOnly(event)?.let { return@atomicResultTransaction Result.failure(it) }
             val existing = EventPurchases.selectAll()
                 .where { (EventPurchases.id eq purchaseId) and (EventPurchases.eventId eq eventId) }
-                .firstOrNull() ?: return@transaction Result.failure(Exception("Purchase not found"))
+                .firstOrNull() ?: return@atomicResultTransaction Result.failure(Exception("Purchase not found"))
             if (request.invoiceFileUrl.isBlank()) {
-                return@transaction Result.failure(Exception("Invoice file URL cannot be blank"))
+                return@atomicResultTransaction Result.failure(Exception("Invoice file URL cannot be blank"))
             }
             val alreadyAttached = EventPurchaseInvoices.selectAll()
                 .where {
@@ -4020,6 +4077,9 @@ class EventService {
                 }
                 .firstOrNull() != null
             if (!alreadyAttached) {
+                UploadService.authorizeBinding(request.invoiceFileUrl, tuntasId, actorUserId, "DOCUMENT")?.let {
+                    return@atomicResultTransaction Result.failure(it)
+                }
                 EventPurchaseInvoices.insert {
                     it[id] = UUID.randomUUID()
                     it[EventPurchaseInvoices.purchaseId] = purchaseId
@@ -4060,6 +4120,9 @@ class EventService {
                     ?.get(EventPurchaseInvoices.fileUrl)
                     ?: purchase[EventPurchases.invoiceFileUrl]
                     ?: return@transaction Result.failure(Exception("Invoice not attached"))
+            }
+            if (!UploadService.documentBelongsTo(invoiceUrl, tuntasId)) {
+                return@transaction Result.failure(Exception("Invoice file not found"))
             }
             val prefix = "/uploads/documents/"
             if (!invoiceUrl.startsWith(prefix)) {
@@ -4367,7 +4430,7 @@ class EventService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     (UserLeadershipRoles.leftAt.isNull())
             }
             .toList()
@@ -4380,7 +4443,7 @@ class EventService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     (UserLeadershipRoles.leftAt.isNull()) and
                     (Roles.name inList roleNames.toList())
             }
@@ -5932,7 +5995,5 @@ class EventService {
         return null
     }
 
-    private fun deleteManagedDocument(url: String?) {
-        UploadStorage.deleteManagedUpload(url, UploadStorage.documentUrlPrefix)
-    }
+
 }

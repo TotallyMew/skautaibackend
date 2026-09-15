@@ -17,6 +17,7 @@ object EventInventoryMovements : Table("event_inventory_movements") {
     val toUserId = uuid("to_user_id").references(Users.id).nullable()
     val performedByUserId = uuid("performed_by_user_id").references(Users.id)
     val clientRequestId = varchar("client_request_id", 100).nullable()
+    val requestHash = varchar("request_hash", 64).nullable()
     val notes = text("notes").nullable()
     val createdAt = timestamp("created_at")
 

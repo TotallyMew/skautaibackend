@@ -22,6 +22,15 @@ import java.time.LocalDate
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class EventRoutesTest {
+    private suspend fun HttpClient.uploadTestInvoice(token: String, tenant: String): String {
+        val response = post("/api/uploads/documents") {
+            bearerAuth(token)
+            header("X-Tuntas-Id", tenant)
+            setBody(TestHelper.multiPartForFile(fileName = "invoice.pdf", contentType = ContentType.Application.Pdf, bytes = "%PDF-1.4\n".toByteArray()))
+        }
+        assertEquals(HttpStatusCode.Created, response.status)
+        return Json.parseToJsonElement(response.bodyAsText()).jsonObject["url"]!!.jsonPrimitive.content
+    }
 
     @BeforeAll
     fun setup() {
@@ -1864,15 +1873,17 @@ class EventRoutesTest {
         assertEquals("DRAFT", purchaseBody["status"]?.jsonPrimitive?.content)
         assertEquals(37.5, purchaseBody["totalAmount"]?.jsonPrimitive?.double)
 
+        val uploadedInvoice = client.uploadTestInvoice(token, tuntasId)
+        assertTrue(lt.skautai.services.UploadService.downloadName(uploadedInvoice).endsWith(".pdf"))
         val invoiceResponse = client.post("/api/events/$eventId/purchases/$purchaseId/invoice") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "invoiceFileUrl": "/uploads/documents/test-invoice.pdf" }""")
+            setBody("""{ "invoiceFileUrl": "$uploadedInvoice" }""")
         }
         assertEquals(HttpStatusCode.OK, invoiceResponse.status)
         assertEquals(
-            "/uploads/documents/test-invoice.pdf",
+            uploadedInvoice,
             Json.parseToJsonElement(invoiceResponse.bodyAsText()).jsonObject["invoiceFileUrl"]?.jsonPrimitive?.content
         )
 
@@ -2931,12 +2942,14 @@ class EventRoutesTest {
         val eventInventoryItemId = client.createEventInventoryItem(token, tuntasId, eventId, plannedQuantity = 2)
         val purchase = client.createEventPurchase(token, tuntasId, eventId, eventInventoryItemId, purchasedQuantity = 1)
         val purchaseId = purchase["id"]!!.jsonPrimitive.content
+        val uploadedInvoice = client.uploadTestInvoice(token, tuntasId)
+        lt.skautai.util.UploadStorage.resolveDocument(uploadedInvoice.substringAfterLast('/'))!!.delete()
 
         val invoiceResponse = client.post("/api/events/$eventId/purchases/$purchaseId/invoice") {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "invoiceFileUrl": "/uploads/documents/missing-invoice.pdf" }""")
+            setBody("""{ "invoiceFileUrl": "$uploadedInvoice" }""")
         }
         assertEquals(HttpStatusCode.OK, invoiceResponse.status)
 

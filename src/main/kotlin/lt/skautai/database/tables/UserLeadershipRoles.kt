@@ -1,6 +1,6 @@
 package lt.skautai.database.tables
 
-import org.jetbrains.exposed.sql.Table
+import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.kotlin.datetime.timestamp
 
 object UserLeadershipRoles : Table("user_leadership_roles") {
@@ -18,6 +18,12 @@ object UserLeadershipRoles : Table("user_leadership_roles") {
     val leftAt = timestamp("left_at").nullable()
     val termNumber = integer("term_number").default(1)
     val termStatus = varchar("term_status", 20).default("ACTIVE")
+
+    fun effectiveNow(now: kotlinx.datetime.Instant = kotlinx.datetime.Clock.System.now()): Op<Boolean> {
+        return SqlExpressionBuilder.run { (termStatus eq "ACTIVE") and leftAt.isNull() and
+            (startsAt.isNull() or (startsAt lessEq now)) and
+            (expiresAt.isNull() or (expiresAt greater now)) }
+    }
 
     override val primaryKey = PrimaryKey(id)
 }

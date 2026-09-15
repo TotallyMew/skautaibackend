@@ -165,7 +165,7 @@ class UserRoutesTest {
                 {
                     "name": "  Updated  ",
                     "surname": "  User  ",
-                    "email": "  MixedCase@Example.com  ",
+                    "email": "  Profile@TEST.com  ",
                     "phone": "  +370 6123456  "
                 }
                 """.trimIndent()
@@ -177,7 +177,7 @@ class UserRoutesTest {
         assertEquals(userId, body["userId"]!!.jsonPrimitive.content)
         assertEquals("Updated", body["name"]!!.jsonPrimitive.content)
         assertEquals("User", body["surname"]!!.jsonPrimitive.content)
-        assertEquals("mixedcase@example.com", body["email"]!!.jsonPrimitive.content)
+        assertEquals("profile@test.com", body["email"]!!.jsonPrimitive.content)
         assertEquals("+370 6123456", body["phone"]!!.jsonPrimitive.content)
     }
 
@@ -204,7 +204,7 @@ class UserRoutesTest {
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
         val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        assertEquals("Šis el. paštas jau užregistruotas.", body["error"]!!.jsonPrimitive.content)
+        assertEquals("El. pašto keitimui būtinas atskiras patvirtinimas. Kreipkitės į administratorių.", body["error"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -507,7 +507,7 @@ class UserRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, notMember.status)
         assertEquals(
-            "Nesate šio tunto narys.",
+            "Nesate aktyvus šio tunto narys.",
             Json.parseToJsonElement(notMember.bodyAsText()).jsonObject["error"]!!.jsonPrimitive.content
         )
 

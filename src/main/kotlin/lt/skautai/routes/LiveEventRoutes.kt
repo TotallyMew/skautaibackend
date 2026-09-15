@@ -11,15 +11,15 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.services.LiveEventBus
+import lt.skautai.services.LiveEvent
 import lt.skautai.services.PermissionContextService
+import lt.skautai.plugins.isAccessSessionActive
+import lt.skautai.plugins.ResolvedPermission
 import java.util.UUID
 
 fun Route.liveEventRoutes(apiPrefix: String = "/api") {
@@ -42,28 +42,21 @@ fun Route.liveEventRoutes(apiPrefix: String = "/api") {
                         write("retry: 5000\n\n")
                         flush()
 
-                        coroutineScope {
-                            val heartbeat = launch {
-                                while (true) {
-                                    delay(25_000)
-                                    write(": heartbeat\n\n")
-                                    flush()
-                                }
-                            }
-
-                            try {
-                                LiveEventBus.eventsFor(tuntasId)
-                                    .onEach { event ->
-                                        write("id: ${event.id}\n")
-                                        write("event: ${event.resource}\n")
-                                        write("data: ${Json.encodeToString(event)}\n\n")
-                                        flush()
-                                    }
-                                    .collect()
-                            } finally {
-                                heartbeat.cancel()
-                            }
+                        val heartbeat = flow<LiveEvent?> {
+                            while (true) { delay(5_000); emit(null) }
                         }
+                        // One collector writes the stream; recheck before every event and while idle.
+                        merge(heartbeat, LiveEventBus.eventsFor(tuntasId).map { it as LiveEvent? })
+                            .takeWhile { liveAccessStillValid(principal.payload, userId, tuntasId, permissions.permissions) }
+                            .collect { event ->
+                                if (event == null) write(": heartbeat\n\n")
+                                else {
+                                    write("id: ${event.id}\n")
+                                    write("event: ${event.resource}\n")
+                                    write("data: ${Json.encodeToString(event)}\n\n")
+                                }
+                                flush()
+                            }
                     }
                 }.onFailure { error ->
                     if (!error.isSseClientDisconnect()) throw error
@@ -72,6 +65,16 @@ fun Route.liveEventRoutes(apiPrefix: String = "/api") {
         }
     }
 }
+
+internal fun liveAccessStillValid(
+    payload: com.auth0.jwt.interfaces.Payload,
+    userId: UUID,
+    tuntasId: UUID,
+    initialPermissions: List<ResolvedPermission>
+): Boolean = isAccessSessionActive(payload) &&
+    PermissionContextService.resolve(userId, tuntasId).permissions.let {
+        it.isNotEmpty() && it.toSet() == initialPermissions.toSet()
+    }
 
 private fun Throwable.isSseClientDisconnect(): Boolean {
     var current: Throwable? = this

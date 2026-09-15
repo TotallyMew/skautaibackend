@@ -688,7 +688,7 @@ fun Route.eventRoutes(
                     if (!canManageEventPurchases(eventService, tuntasUUID, eventUUID)) return@put
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@put
                     val request = call.receiveValidated<UpdateEventPurchaseRequest>()
-                    eventService.updatePurchase(eventUUID, purchaseUUID, tuntasUUID, request)
+                    eventService.updatePurchase(eventUUID, purchaseUUID, tuntasUUID, request, UUID.fromString(call.principal<JWTPrincipal>()!!.getClaim("userId", String::class)))
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to update purchase")) }
                 }
@@ -699,7 +699,7 @@ fun Route.eventRoutes(
                     if (!canManageEventPurchases(eventService, tuntasUUID, eventUUID)) return@post
                     val purchaseUUID = parseUuidParameter("purchaseId", "Invalid purchase ID") ?: return@post
                     val request = call.receiveValidated<AttachEventPurchaseInvoiceRequest>()
-                    eventService.attachPurchaseInvoice(eventUUID, purchaseUUID, tuntasUUID, request)
+                    eventService.attachPurchaseInvoice(eventUUID, purchaseUUID, tuntasUUID, request, UUID.fromString(call.principal<JWTPrincipal>()!!.getClaim("userId", String::class)))
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Failed to attach invoice")) }
                 }
@@ -719,9 +719,13 @@ fun Route.eventRoutes(
                             }
                             call.response.header(
                                 HttpHeaders.ContentDisposition,
-                                ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, fileName).toString()
+                                ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName,
+                                    lt.skautai.services.UploadService.downloadName("${UploadStorage.documentUrlPrefix}/$fileName")).toString()
                             )
-                            call.respondFile(file)
+                            call.response.header(HttpHeaders.CacheControl, "private, no-store")
+                            val uploadType = lt.skautai.services.UploadService.contentType("${UploadStorage.documentUrlPrefix}/$fileName")?.let { ContentType.parse(it) }
+                            if (uploadType == null) call.respondFile(file)
+                            else call.respond(io.ktor.server.http.content.LocalFileContent(file, uploadType))
                         }
                         .onFailure { e ->
                             val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
@@ -745,9 +749,13 @@ fun Route.eventRoutes(
                             }
                             call.response.header(
                                 HttpHeaders.ContentDisposition,
-                                ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, fileName).toString()
+                                ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName,
+                                    lt.skautai.services.UploadService.downloadName("${UploadStorage.documentUrlPrefix}/$fileName")).toString()
                             )
-                            call.respondFile(file)
+                            call.response.header(HttpHeaders.CacheControl, "private, no-store")
+                            val uploadType = lt.skautai.services.UploadService.contentType("${UploadStorage.documentUrlPrefix}/$fileName")?.let { ContentType.parse(it) }
+                            if (uploadType == null) call.respondFile(file)
+                            else call.respond(io.ktor.server.http.content.LocalFileContent(file, uploadType))
                         }
                         .onFailure { e ->
                             val status = if ("not found" in (e.message ?: "").lowercase()) HttpStatusCode.NotFound else HttpStatusCode.BadRequest

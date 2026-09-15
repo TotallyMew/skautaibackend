@@ -835,7 +835,7 @@ class MemberService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     (UserLeadershipRoles.leftAt.isNull()) and
                     (UserLeadershipRoles.organizationalUnitId.isNotNull())
             }
@@ -950,7 +950,7 @@ class MemberService {
             .where {
                 (UserLeadershipRoles.userId eq targetUserId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     (UserLeadershipRoles.leftAt.isNull()) and
                     (UserLeadershipRoles.organizationalUnitId inList callerVisibleUnitIds.toList())
             }
@@ -1229,7 +1229,7 @@ class MemberService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull()
             }
             .any { LeadershipRoleRules.isPrincipalUnitLeader(it[Roles.name]) }
@@ -1329,7 +1329,7 @@ class MemberService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     (UserLeadershipRoles.leftAt.isNull())
             }
             .map { leadershipRoleRank(it[Roles.name]) }
@@ -1358,7 +1358,7 @@ class MemberService {
             .selectAll()
             .where {
                 (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     (UserLeadershipRoles.leftAt.isNull()) and
                     (Roles.name eq "Tuntininkas")
             }

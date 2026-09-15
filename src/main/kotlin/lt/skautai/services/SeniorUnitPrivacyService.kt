@@ -61,7 +61,7 @@ object SeniorUnitPrivacyService {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
                     (UserLeadershipRoles.organizationalUnitId eq unitId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull()
             }
             .firstOrNull() != null
@@ -85,7 +85,7 @@ object SeniorUnitPrivacyService {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
                     (UserLeadershipRoles.organizationalUnitId inList seniorIds.toList()) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull()
             }
             .mapNotNull { it[UserLeadershipRoles.organizationalUnitId] }
@@ -103,7 +103,7 @@ object SeniorUnitPrivacyService {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
                     (UserLeadershipRoles.organizationalUnitId eq unitId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull() and
                     (Roles.name inList seniorUnitLeaderRoleNames.toList())
             }

@@ -87,6 +87,10 @@ fun Route.userRoutes(apiPrefix: String = "/api") {
                         .firstOrNull()
                         ?: return@transaction Result.failure(Exception("User not found"))
 
+                    if (normalizedEmail != existingUser[Users.email]) {
+                        return@transaction Result.failure(Exception("El. pašto keitimui būtinas atskiras patvirtinimas. Kreipkitės į administratorių."))
+                    }
+
                     val emailTaken = Users.selectAll()
                         .where { (Users.email eq normalizedEmail) and (Users.id neq userId) }
                         .firstOrNull() != null
@@ -142,6 +146,7 @@ fun Route.userRoutes(apiPrefix: String = "/api") {
                 val result = transaction {
                     val user = Users.selectAll()
                         .where { Users.id eq userId }
+                        .forUpdate()
                         .firstOrNull()
                         ?: return@transaction Result.failure(Exception("User not found"))
 
@@ -245,41 +250,7 @@ fun Route.userRoutes(apiPrefix: String = "/api") {
                     }
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Missing tuntas ID"))
 
-                val result = transaction {
-                    val membership = UserTuntasMemberships.selectAll()
-                        .where {
-                            (UserTuntasMemberships.userId eq userId) and
-                                (UserTuntasMemberships.tuntasId eq tuntasId) and
-                                UserTuntasMemberships.leftAt.isNull()
-                        }
-                        .firstOrNull()
-                        ?: return@transaction Result.failure(Exception("Not a member of this tuntas"))
-
-                    val now = Clock.System.now()
-                    UserTuntasMemberships.update({ UserTuntasMemberships.id eq membership[UserTuntasMemberships.id] }) {
-                        it[leftAt] = now
-                    }
-                    UserLeadershipRoles.update({
-                        (UserLeadershipRoles.userId eq userId) and
-                            (UserLeadershipRoles.tuntasId eq tuntasId) and
-                            UserLeadershipRoles.leftAt.isNull()
-                    }) {
-                        it[leftAt] = now
-                        it[termStatus] = "RESIGNED"
-                    }
-                    UnitAssignments.update({
-                        (UnitAssignments.userId eq userId) and
-                            (UnitAssignments.tuntasId eq tuntasId) and
-                            UnitAssignments.leftAt.isNull()
-                    }) {
-                        it[leftAt] = now
-                    }
-                    UserRanks.deleteWhere {
-                        (UserRanks.userId eq userId) and
-                            (UserRanks.tuntasId eq tuntasId)
-                    }
-                    Result.success(Unit)
-                }
+                val result = lt.skautai.services.MemberService().resignMember(userId, tuntasId)
 
                 result
                     .onSuccess { call.respond(HttpStatusCode.OK, MessageResponse("Left tuntas")) }

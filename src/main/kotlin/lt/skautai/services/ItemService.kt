@@ -326,47 +326,47 @@ class ItemService {
         request: CreateItemRequest,
         isPendingApproval: Boolean = false
     ): Result<ItemResponse> {
-        return transaction {
+        return atomicResultTransaction {
             val normalizedName = request.name.trim()
             if (normalizedName.isBlank()) {
-                return@transaction Result.failure(Exception("Item name is required"))
+                return@atomicResultTransaction Result.failure(Exception("Item name is required"))
             }
 
             if (request.type !in listOf("COLLECTIVE", "ASSIGNED", "INDIVIDUAL")) {
-                return@transaction Result.failure(Exception("Invalid inventory type"))
+                return@atomicResultTransaction Result.failure(Exception("Invalid inventory type"))
             }
 
             validateInventoryCategory(request.category)?.let {
-                return@transaction Result.failure(it)
+                return@atomicResultTransaction Result.failure(it)
             }
 
             validateItemCondition(request.condition)?.let {
-                return@transaction Result.failure(it)
+                return@atomicResultTransaction Result.failure(it)
             }
 
             if (request.quantity < 1) {
-                return@transaction Result.failure(Exception("Quantity must be at least 1"))
+                return@atomicResultTransaction Result.failure(Exception("Quantity must be at least 1"))
             }
             validateConsumableFields(request.isConsumable, request.unitOfMeasure, request.minimumQuantity)?.let {
-                return@transaction Result.failure(it)
+                return@atomicResultTransaction Result.failure(it)
             }
 
             if (request.duplicateHandling !in listOf("ASK", "ADD_TO_EXISTING", "CREATE_NEW")) {
-                return@transaction Result.failure(Exception("Invalid duplicate handling option"))
+                return@atomicResultTransaction Result.failure(Exception("Invalid duplicate handling option"))
             }
 
             validateCustomFields(request.customFields)?.let {
-                return@transaction Result.failure(it)
+                return@atomicResultTransaction Result.failure(it)
             }
 
             val custodianUUID = request.custodianId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid custodian ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid custodian ID"))
                 }
             }
 
             if (request.type == "INDIVIDUAL" && custodianUUID != null) {
-                return@transaction Result.failure(Exception("Personal inventory items cannot be assigned to a unit"))
+                return@atomicResultTransaction Result.failure(Exception("Personal inventory items cannot be assigned to a unit"))
             }
 
             // Validate custodian belongs to this tuntas if provided
@@ -377,12 +377,12 @@ class ItemService {
                                 (OrganizationalUnits.tuntasId eq tuntasId)
                     }
                     .firstOrNull()
-                    ?: return@transaction Result.failure(Exception("Custodian unit not found in this tuntas"))
+                    ?: return@atomicResultTransaction Result.failure(Exception("Custodian unit not found in this tuntas"))
             }
 
             val locationUUID = request.locationId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid location ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid location ID"))
                 }
             }
             validateItemLocation(
@@ -391,26 +391,26 @@ class ItemService {
                 itemType = request.type,
                 custodianId = custodianUUID,
                 ownerUserId = createdByUserId
-            )?.let { return@transaction Result.failure(it) }
+            )?.let { return@atomicResultTransaction Result.failure(it) }
 
             val responsibleUUID = request.responsibleUserId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid responsible user ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid responsible user ID"))
                 }
             }
             validateResponsibleUser(responsibleUUID, tuntasId)?.let {
-                return@transaction Result.failure(it)
+                return@atomicResultTransaction Result.failure(it)
             }
 
             val purchaseDate = request.purchaseDate?.let {
                 try { kotlinx.datetime.LocalDate.parse(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
                 }
             }
 
             val duplicateTargetItemId = request.duplicateTargetItemId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid duplicate target item ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid duplicate target item ID"))
                 }
             }
 
@@ -435,18 +435,34 @@ class ItemService {
                 duplicateTargetItemId != null &&
                 duplicateItem == null
             ) {
-                return@transaction Result.failure(Exception("Duplicate target item not found"))
+                return@atomicResultTransaction Result.failure(Exception("Duplicate target item not found"))
             }
 
             if (duplicateItem != null) {
                 when (request.duplicateHandling) {
-                    "ASK" -> return@transaction Result.failure(
+                    "ASK" -> return@atomicResultTransaction Result.failure(
                         DuplicateItemConflictException(toSingleItemResponse(duplicateItem, tuntasId))
                     )
                     "ADD_TO_EXISTING" -> {
+                        // Merging is an update of the resolved target, never a way to skip review.
+                        if (isPendingApproval) {
+                            return@atomicResultTransaction Result.failure(Exception("Inventory requiring approval cannot be added directly to existing stock. Submit a new item or a restock request."))
+                        }
+                        val permissions = PermissionContextService.resolve(createdByUserId, tuntasId)
+                        val transferredFromShared = duplicateItem[Items.origin] in listOf("TRANSFERRED_FROM_TUNTAS", "from_shared")
+                        if (isProtectedSeniorOwnedItem(duplicateItem, createdByUserId, tuntasId) ||
+                            !permissions.targetAllowed("items.update", duplicateItem[Items.custodianId]) ||
+                            (transferredFromShared && !permissions.hasAll("items.update"))
+                        ) {
+                            return@atomicResultTransaction Result.failure(Exception("Insufficient permissions to update the existing item"))
+                        }
+                        val nextQuantity = duplicateItem[Items.quantity].toLong() + request.quantity
+                        if (nextQuantity > Int.MAX_VALUE) {
+                            return@atomicResultTransaction Result.failure(Exception("Resulting quantity is too large"))
+                        }
                         val now = Clock.System.now()
                         Items.update({ Items.id eq duplicateItem[Items.id] }) {
-                            it[quantity] = duplicateItem[Items.quantity] + request.quantity
+                            it[quantity] = nextQuantity.toInt()
                             it[isConsumable] = duplicateItem[Items.isConsumable] || request.isConsumable
                             it[unitOfMeasure] = request.unitOfMeasure.trim().ifBlank { duplicateItem[Items.unitOfMeasure] }
                             request.minimumQuantity?.let { value -> it[minimumQuantity] = value }
@@ -464,13 +480,16 @@ class ItemService {
                         val updatedItem = Items.selectAll()
                             .where { Items.id eq duplicateItem[Items.id] }
                             .first()
-                        return@transaction Result.success(toSingleItemResponse(updatedItem, tuntasId))
+                        return@atomicResultTransaction Result.success(toSingleItemResponse(updatedItem, tuntasId))
                     }
                 }
             }
 
             val now = Clock.System.now()
 
+            UploadService.authorizeBinding(request.photoUrl, tuntasId, createdByUserId, "IMAGE")?.let {
+                return@atomicResultTransaction Result.failure(it)
+            }
             val itemId = Items.insert {
                 it[this.tuntasId] = tuntasId
                 it[Items.custodianId] = custodianUUID
@@ -687,48 +706,48 @@ class ItemService {
         request: UpdateItemRequest,
         updatedByUserId: UUID? = null
     ): Result<ItemResponse> {
-        return transaction {
+        return atomicResultTransaction {
             val existing = Items.selectAll()
                 .where { (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }
                 .firstOrNull()
-                ?: return@transaction Result.failure(Exception("Item not found"))
+                ?: return@atomicResultTransaction Result.failure(Exception("Item not found"))
 
             if (existing[Items.status] == "INACTIVE" && request.status == null) {
-                return@transaction Result.failure(Exception("Cannot update an inactive item"))
+                return@atomicResultTransaction Result.failure(Exception("Cannot update an inactive item"))
             }
 
             request.quantity?.let {
-                if (it < 1) return@transaction Result.failure(Exception("Quantity must be at least 1"))
+                if (it < 1) return@atomicResultTransaction Result.failure(Exception("Quantity must be at least 1"))
             }
 
             request.type?.let {
                 if (it !in listOf("COLLECTIVE", "ASSIGNED", "INDIVIDUAL")) {
-                    return@transaction Result.failure(Exception("Invalid inventory type"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid inventory type"))
                 }
             }
 
             request.category?.let {
-                validateInventoryCategory(it)?.let { error -> return@transaction Result.failure(error) }
+                validateInventoryCategory(it)?.let { error -> return@atomicResultTransaction Result.failure(error) }
             }
 
             request.condition?.let {
-                validateItemCondition(it)?.let { error -> return@transaction Result.failure(error) }
+                validateItemCondition(it)?.let { error -> return@atomicResultTransaction Result.failure(error) }
             }
             validateConsumableFields(
                 isConsumable = request.isConsumable ?: existing[Items.isConsumable],
                 unitOfMeasure = request.unitOfMeasure ?: existing[Items.unitOfMeasure],
                 minimumQuantity = if (request.clearMinimumQuantity) null else request.minimumQuantity ?: existing[Items.minimumQuantity]
-            )?.let { return@transaction Result.failure(it) }
+            )?.let { return@atomicResultTransaction Result.failure(it) }
 
             request.status?.let {
                 if (it !in listOf("ACTIVE", "PENDING_APPROVAL", "INACTIVE")) {
-                    return@transaction Result.failure(Exception("Invalid status"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid status"))
                 }
             }
 
             val custodianUUID = request.custodianId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid custodian ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid custodian ID"))
                 }
             }
 
@@ -739,12 +758,12 @@ class ItemService {
                                 (OrganizationalUnits.tuntasId eq tuntasId)
                     }
                     .firstOrNull()
-                    ?: return@transaction Result.failure(Exception("Custodian unit not found in this tuntas"))
+                    ?: return@atomicResultTransaction Result.failure(Exception("Custodian unit not found in this tuntas"))
             }
 
             val locationUUID = request.locationId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid location ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid location ID"))
                 }
             }
             val effectiveType = request.type ?: existing[Items.type]
@@ -754,7 +773,7 @@ class ItemService {
                 else -> existing[Items.custodianId]
             }
             if (effectiveType == "INDIVIDUAL" && effectiveCustodianId != null) {
-                return@transaction Result.failure(Exception("Personal inventory items cannot be assigned to a unit"))
+                return@atomicResultTransaction Result.failure(Exception("Personal inventory items cannot be assigned to a unit"))
             }
             val effectiveLocationId = when {
                 request.clearLocationId -> null
@@ -768,7 +787,7 @@ class ItemService {
                     request.temporaryStorageLabel != null
                 val changesKitScope = request.clearCustodianId || request.custodianId != null
                 if (changesKitManagedLocation || changesKitScope) {
-                    return@transaction Result.failure(
+                    return@atomicResultTransaction Result.failure(
                         Exception("Item is inside an inventory kit. Update the kit location or remove the item from the kit first.")
                     )
                 }
@@ -779,17 +798,17 @@ class ItemService {
                 itemType = effectiveType,
                 custodianId = effectiveCustodianId,
                 ownerUserId = existing[Items.createdByUserId]
-            )?.let { return@transaction Result.failure(it) }
+            )?.let { return@atomicResultTransaction Result.failure(it) }
 
             val sourceSharedItemUUID = request.sourceSharedItemId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid source shared item ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid source shared item ID"))
                 }
             }
 
             val responsibleUUID = request.responsibleUserId?.let {
                 try { UUID.fromString(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid responsible user ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid responsible user ID"))
                 }
             }
             val nextResponsibleUserId = when {
@@ -798,21 +817,26 @@ class ItemService {
                 else -> existing[Items.responsibleUserId]
             }
             validateResponsibleUser(nextResponsibleUserId, tuntasId)?.let {
-                return@transaction Result.failure(it)
+                return@atomicResultTransaction Result.failure(it)
             }
 
             val purchaseDate = request.purchaseDate?.let {
                 try { kotlinx.datetime.LocalDate.parse(it) } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid purchase date format, use YYYY-MM-DD"))
                 }
             }
 
             request.customFields?.let { fields ->
                 validateCustomFields(fields)?.let {
-                    return@transaction Result.failure(it)
+                    return@atomicResultTransaction Result.failure(it)
                 }
             }
 
+            if (request.photoUrl != null && request.photoUrl != existing[Items.photoUrl]) {
+                UploadService.authorizeBinding(request.photoUrl, tuntasId, updatedByUserId, "IMAGE")?.let {
+                    return@atomicResultTransaction Result.failure(it)
+                }
+            }
             val previousCondition = existing[Items.condition]
             val previousQuantity = existing[Items.quantity]
             val previousResponsibleUserId = existing[Items.responsibleUserId]
@@ -1491,7 +1515,7 @@ class ItemService {
                 return@transaction Result.failure(Exception("Item cannot be deactivated while it has active reservations"))
             }
 
-            UploadStorage.deleteManagedUpload(existing[Items.photoUrl], UploadStorage.imageUrlPrefix)
+            // Files may be shared by other items; entity transactions never unlink them.
 
             Items.update({ (Items.id eq itemId) and (Items.tuntasId eq tuntasId) }) {
                 it[status] = "INACTIVE"
@@ -1647,7 +1671,7 @@ class ItemService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     (UserLeadershipRoles.leftAt.isNull()) and
                     (UserLeadershipRoles.organizationalUnitId.isNotNull())
             }
@@ -1667,7 +1691,7 @@ class ItemService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        UserLeadershipRoles.effectiveNow() and
                         (UserLeadershipRoles.leftAt.isNull()) and
                         (Roles.name inList listOf(
                             "Tuntininkas",
@@ -1684,7 +1708,7 @@ class ItemService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        UserLeadershipRoles.effectiveNow() and
                         (UserLeadershipRoles.leftAt.isNull()) and
                         (UserLeadershipRoles.organizationalUnitId.isNotNull())
             }

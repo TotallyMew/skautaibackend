@@ -61,7 +61,7 @@ class NotificationRecipientService {
             .selectAll()
             .where {
                 (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull() and
                     (Permissions.name eq permissionName) and
                     scopedCondition

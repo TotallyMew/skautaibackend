@@ -20,6 +20,8 @@ import lt.skautai.database.tables.UserTuntasMemberships
 import lt.skautai.models.responses.ErrorResponse
 import lt.skautai.models.responses.UploadResponse
 import lt.skautai.services.PermissionContextService
+import lt.skautai.services.UploadService
+import lt.skautai.services.UploadRejected
 import lt.skautai.util.UploadStorage
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.innerJoin
@@ -54,13 +56,11 @@ fun Route.uploadRoutes(apiPrefix: String = "/api") {
                 val file = UploadStorage.resolveImage(fileName)
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid file name"))
 
-                if (!file.exists()) {
-                    return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("File not found"))
-                }
                 val tuntasUUID = call.resolveTuntasForUpload(userId)
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("X-Tuntas-Id header required"))
-                if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
+                val url = "${UploadStorage.imageUrlPrefix}/$fileName"
+                if (!UploadService.canReadImage(url, tuntasUUID, userId) || !file.exists()) {
+                    return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("File not found"))
                 }
 
                 call.response.header(HttpHeaders.CacheControl, "private, no-store")
@@ -68,7 +68,9 @@ fun Route.uploadRoutes(apiPrefix: String = "/api") {
                     HttpHeaders.ContentDisposition,
                     ContentDisposition.Inline.withParameter(ContentDisposition.Parameters.FileName, file.name).toString()
                 )
-                call.respondFile(file)
+                val contentType = UploadService.contentType(url)?.let { io.ktor.http.ContentType.parse(it) }
+                if (contentType == null) call.respondFile(file)
+                else call.respond(io.ktor.server.http.content.LocalFileContent(file, contentType))
                 }
             }
         }
@@ -108,28 +110,42 @@ private suspend fun io.ktor.server.application.ApplicationCall.handleUpload(
     urlPrefix: String,
     missingFileMessage: String
 ) {
+    val userId = principal<JWTPrincipal>()?.getClaim("userId", String::class)?.let(UUID::fromString)
+        ?: return respond(HttpStatusCode.Unauthorized, ErrorResponse("Not authenticated"))
+    val tenant = resolveTuntasForUpload(userId)
+        ?: return respond(HttpStatusCode.Forbidden, ErrorResponse("Active tuntas membership required"))
+    val ticket = try {
+        UploadService.reserve(userId, tenant, if (allowPdf) "DOCUMENT" else "IMAGE", maxBytes)
+    } catch (rejected: UploadRejected) {
+        return respond(HttpStatusCode.fromValue(rejected.status), ErrorResponse(rejected.message ?: "Upload rejected"))
+    }
+    var completed = false
+    try {
     uploadDir.mkdirs()
-    var uploadedUrl: String? = null
+    var staged: File? = null
+    var uploadedContentType = "application/octet-stream"
     var error: String? = null
 
     receiveMultipart().forEachPart { part ->
-        if (part is PartData.FileItem && uploadedUrl == null && error == null) {
+        try {
+        if (part is PartData.FileItem && staged == null && error == null) {
             val validation = validateUpload(
                 part = part,
                 maxBytes = maxBytes,
                 allowedExtensions = allowedExtensions,
                 allowedContentTypes = allowedContentTypes,
-                allowPdf = allowPdf
+                allowPdf = allowPdf,
+                stagedTarget = UploadService.stagingFile(ticket)
             )
             error = validation.error
             if (validation.error == null) {
                 val stagedFile = validation.stagedFile
                     ?: throw IllegalStateException("Validated upload did not produce a staged file")
-                val fileName = moveUploadExclusive(uploadDir, validation.extension, stagedFile)
-                uploadedUrl = "$urlPrefix/$fileName"
+                staged = stagedFile
+                uploadedContentType = part.contentType!!.withoutParameters().toString()
             }
         }
-        part.dispose()
+        } finally { part.dispose() }
     }
 
     error?.let {
@@ -137,11 +153,18 @@ private suspend fun io.ktor.server.application.ApplicationCall.handleUpload(
         return
     }
 
-    val url = uploadedUrl ?: run {
+    val file = staged ?: run {
         respond(HttpStatusCode.BadRequest, ErrorResponse(missingFileMessage))
         return
     }
-    respond(HttpStatusCode.Created, UploadResponse(url))
+    UploadService.finish(ticket, file, uploadedContentType)
+    completed = true
+    respond(HttpStatusCode.Created, UploadResponse(ticket.url, ticket.id.toString()))
+    } catch (rejected: UploadRejected) {
+        respond(HttpStatusCode.fromValue(rejected.status), ErrorResponse(rejected.message ?: "Upload rejected"))
+    } finally {
+        if (!completed) UploadService.abandon(ticket)
+    }
 }
 
 private fun io.ktor.server.application.ApplicationCall.resolveTuntasForUpload(userId: UUID): UUID? {
@@ -160,7 +183,7 @@ private fun io.ktor.server.application.ApplicationCall.resolveTuntasForUpload(us
             .where {
                 (UserTuntasMemberships.userId eq userId) and
                     UserTuntasMemberships.leftAt.isNull() and
-                    (Tuntai.status eq "ACTIVE")
+                    (Tuntai.status inList listOf("ACTIVE", "APPROVED"))
             }
             .map { it[UserTuntasMemberships.tuntasId] }
             .distinct()
@@ -194,7 +217,8 @@ private fun validateUpload(
     maxBytes: Long,
     allowedExtensions: Set<String>,
     allowedContentTypes: Set<String>,
-    allowPdf: Boolean
+    allowPdf: Boolean,
+    stagedTarget: File
 ): UploadValidationResult {
     val originalName = part.originalFileName?.trim().orEmpty()
     if (originalName.isBlank() || !originalName.contains('.')) {
@@ -214,7 +238,7 @@ private fun validateUpload(
 
     val stagedFile = try {
         part.streamProvider().use { input ->
-            stageUpload(input, maxBytes)
+            stageUpload(input, maxBytes, stagedTarget)
         }
     } catch (_: IllegalArgumentException) {
         return UploadValidationResult(error = "File is too large")
@@ -247,8 +271,7 @@ private fun validateUpload(
     return UploadValidationResult(stagedFile = stagedFile, extension = extension)
 }
 
-private fun stageUpload(input: java.io.InputStream, maxBytes: Long): File {
-    val tempFile = Files.createTempFile(UploadStorage.rootDir().toPath(), "upload-", ".tmp").toFile()
+private fun stageUpload(input: java.io.InputStream, maxBytes: Long, tempFile: File): File {
     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
     var total = 0L
 

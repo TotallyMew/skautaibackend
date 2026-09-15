@@ -73,6 +73,9 @@ object TestHelper {
         val dbUser = config.getString("test.database.user")
         val dbPassword = config.getString("test.database.password")
 
+        TestDatabaseSafety.validateTarget(dbUrl, dbUser, System.getenv("TEST_DB_ALLOW_RESET"))
+        System.setProperty("UPLOADS_DIR", File("build/test-uploads").canonicalPath)
+
         Database.connect(
             url = dbUrl,
             driver = "org.postgresql.Driver",
@@ -81,6 +84,7 @@ object TestHelper {
         )
 
         transaction {
+            TestDatabaseSafety.requireMarkedConnection()
             exec("""
             DROP SCHEMA public CASCADE;
             CREATE SCHEMA public;
@@ -98,6 +102,7 @@ object TestHelper {
 
     fun teardownDatabase() {
         transaction {
+            TestDatabaseSafety.requireMarkedConnection()
             exec("""
                 DROP SCHEMA public CASCADE;
                 CREATE SCHEMA public;
@@ -107,6 +112,7 @@ object TestHelper {
 
     fun cleanTables() {
         transaction {
+            TestDatabaseSafety.requireMarkedConnection()
             exec("""
                 TRUNCATE TABLE
                     password_reset_tokens,
@@ -133,7 +139,9 @@ object TestHelper {
     }
 
     fun cleanUploadDirectories() {
-        listOf(File("uploads/images"), File("uploads/documents")).forEach { dir ->
+        val safeRoot = File("build/test-uploads").canonicalFile
+        check(lt.skautai.util.UploadStorage.rootDir() == safeRoot)
+        listOf(File(safeRoot, "images"), File(safeRoot, "documents")).forEach { dir ->
             if (dir.exists()) {
                 dir.deleteRecursively()
             }

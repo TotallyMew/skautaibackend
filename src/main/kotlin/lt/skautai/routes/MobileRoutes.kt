@@ -48,6 +48,7 @@ fun Route.mobileRoutes(
                 val activeUnitId = call.request.headers["X-Org-Unit-Id"]?.let(::parseUuidOrNull)
 
                 val permissions = PermissionContextService.resolve(userId, tuntasId)
+                if (permissions.permissions.isEmpty()) return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Active tuntas membership required"))
                 val permissionNames = permissions.permissions.map { permission ->
                     if (permission.scope == "ALL") "${permission.permissionName}:ALL" else "${permission.permissionName}:OWN_UNIT"
                 }.toSet()

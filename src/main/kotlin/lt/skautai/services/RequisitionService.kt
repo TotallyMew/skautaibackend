@@ -704,7 +704,7 @@ class RequisitionService {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
                     (UserLeadershipRoles.organizationalUnitId eq unitId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull() and
                     (Roles.name inList unitLeaderRoles)
             }
@@ -718,7 +718,7 @@ class RequisitionService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull() and
                     UserLeadershipRoles.organizationalUnitId.isNull() and
                     (Roles.name inList listOf("Tuntininkas", "Tuntininko pavaduotojas", "Inventorininkas"))
@@ -738,7 +738,7 @@ class RequisitionService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull() and
                     UserLeadershipRoles.organizationalUnitId.isNull() and
                     (Roles.name inList topLevelLeaderRoles)
@@ -752,7 +752,7 @@ class RequisitionService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull() and
                     UserLeadershipRoles.organizationalUnitId.isNotNull()
             }

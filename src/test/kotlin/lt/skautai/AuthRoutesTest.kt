@@ -1,4 +1,4 @@
-﻿package lt.skautai
+package lt.skautai
 
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -760,7 +760,7 @@ class AuthRoutesTest {
     }
 
     @Test
-    fun `create invitation for pending tuntas returns 400`() = testApplication {
+    fun `create invitation for pending tuntas returns 403`() = testApplication {
         configureFullApp()
 
         val registerResponse = client.post("/api/auth/register") {
@@ -796,7 +796,7 @@ class AuthRoutesTest {
             setBody("""{ "roleId": "$roleId", "expiresInHours": 48 }""")
         }
 
-        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assertEquals(HttpStatusCode.Forbidden, response.status)
     }
 
     @Test

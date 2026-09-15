@@ -151,7 +151,15 @@ fun Application.configureRouting() {
             delay(60 * 60 * 1000L)
         }
     }
+    val uploadCleanupJob = launch {
+        while (isActive) {
+            runCatching { lt.skautai.services.UploadService.cleanupUnattached() }
+                .onFailure { log.error("Failed to clean unattached uploads", it) }
+            delay(15 * 60 * 1000L)
+        }
+    }
     monitor.subscribe(ApplicationStopped) {
+        uploadCleanupJob.cancel()
         reminderJob.cancel()
     }
 }

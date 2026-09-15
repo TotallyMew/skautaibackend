@@ -325,7 +325,7 @@ class LocationService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     (UserLeadershipRoles.leftAt.isNull())
             }
             .toList()

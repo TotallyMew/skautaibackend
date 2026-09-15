@@ -27,7 +27,7 @@ class AuthService(
     private val emailService: EmailService = ResendEmailService()
 ) {
     companion object {
-        private const val accessTokenLifetimeMs = 8 * 60 * 60 * 1000L
+        private const val accessTokenLifetimeMs = 15 * 60 * 1000L
         private const val refreshTokenLifetimeMs = 30L * 24 * 60 * 60 * 1000
         private const val maxFailedAttempts = 5
         private const val rateLimitWindowMs = 15 * 60 * 1000L
@@ -173,8 +173,8 @@ class AuthService(
                 assignedByUserId = userId
             )
 
-            val token = generateAccessToken(userId.toString(), email, "user")
             val refreshToken = issueRefreshToken(userId, email, "user")
+            val token = generateAccessToken(userId.toString(), email, "user", refreshToken)
             Result.success(
                 TokenResponse(
                     token = token,
@@ -298,8 +298,8 @@ class AuthService(
                 it[usedAt] = now
             }
 
-            val token = generateAccessToken(userId.toString(), email, "user")
             val refreshToken = issueRefreshToken(userId, email, "user")
+            val token = generateAccessToken(userId.toString(), email, "user", refreshToken)
             val tuntai = getActiveTuntaiForUser(userId)
             Result.success(
                 TokenResponse(
@@ -322,25 +322,26 @@ class AuthService(
         return transaction {
             val user = Users.selectAll()
                 .where { (Users.email eq email) and Users.deletedAt.isNull() }
+                .forUpdate()
                 .firstOrNull()
             val admin = SuperAdmins.selectAll()
                 .where { SuperAdmins.email eq email }
+                .forUpdate()
                 .firstOrNull()
 
             val userPasswordMatches = BCrypt.checkpw(request.password, user?.get(Users.passwordHash) ?: dummyPasswordHash)
             val adminPasswordMatches = BCrypt.checkpw(request.password, admin?.get(SuperAdmins.passwordHash) ?: dummyPasswordHash)
 
             if (user != null && userPasswordMatches) {
-                val token = generateAccessToken(
-                    user[Users.id].toString(),
-                    user[Users.email],
-                    "user"
-                )
                 val refreshToken = issueRefreshToken(
                     user[Users.id],
                     user[Users.email],
                     "user"
                 )
+                val token = generateAccessToken(
+                    user[Users.id].toString(),
+                    user[Users.email],
+                    "user", refreshToken)
                 val tuntai = getActiveTuntaiForUser(user[Users.id])
                 return@transaction Result.success(
                     TokenResponse(
@@ -355,16 +356,15 @@ class AuthService(
             }
 
             if (admin != null && adminPasswordMatches) {
-                val token = generateAccessToken(
-                    admin[SuperAdmins.id].toString(),
-                    admin[SuperAdmins.email],
-                    "super_admin"
-                )
                 val refreshToken = issueRefreshToken(
                     admin[SuperAdmins.id],
                     admin[SuperAdmins.email],
                     "super_admin"
                 )
+                val token = generateAccessToken(
+                    admin[SuperAdmins.id].toString(),
+                    admin[SuperAdmins.email],
+                    "super_admin", refreshToken)
                 return@transaction Result.success(
                     TokenResponse(
                         token = token,
@@ -395,6 +395,7 @@ class AuthService(
         return transaction {
             val admin = SuperAdmins.selectAll()
                 .where { SuperAdmins.email eq email }
+                .forUpdate()
                 .firstOrNull()
             val passwordMatches = BCrypt.checkpw(request.password, admin?.get(SuperAdmins.passwordHash) ?: dummyPasswordHash)
 
@@ -402,16 +403,15 @@ class AuthService(
                 return@transaction Result.failure(Exception("Invalid email or password"))
             }
 
-            val token = generateAccessToken(
-                admin[SuperAdmins.id].toString(),
-                admin[SuperAdmins.email],
-                "super_admin"
-            )
             val refreshToken = issueRefreshToken(
                 admin[SuperAdmins.id],
                 admin[SuperAdmins.email],
                 "super_admin"
             )
+            val token = generateAccessToken(
+                admin[SuperAdmins.id].toString(),
+                admin[SuperAdmins.email],
+                "super_admin", refreshToken)
             Result.success(
                 TokenResponse(
                     token = token,
@@ -460,6 +460,13 @@ class AuthService(
         val tokenHash = hashToken(refreshToken)
 
         return transaction {
+            // Subject first, then session: reset/password change use the same lock order.
+            val subjectExists = when (type) {
+                "user" -> Users.selectAll().where { (Users.id eq userUuid) and Users.deletedAt.isNull() }.forUpdate().firstOrNull() != null
+                "super_admin" -> SuperAdmins.selectAll().where { SuperAdmins.id eq userUuid }.forUpdate().firstOrNull() != null
+                else -> false
+            }
+            if (!subjectExists) return@transaction Result.failure(Exception("Invalid refresh token"))
             val now = kotlinx.datetime.Clock.System.now()
             val session = AuthRefreshSessions.selectAll()
                 .where {
@@ -491,7 +498,7 @@ class AuthService(
                     revokeSession(sessionId, rotatedRefreshToken, now)
                     Result.success(
                         TokenResponse(
-                            token = generateAccessToken(userId, email, type),
+                            token = generateAccessToken(userId, email, type, rotatedRefreshToken),
                             refreshToken = rotatedRefreshToken,
                             userId = userId,
                             email = user[Users.email],
@@ -512,7 +519,7 @@ class AuthService(
                     revokeSession(sessionId, rotatedRefreshToken, now)
                     Result.success(
                         TokenResponse(
-                            token = generateAccessToken(userId, email, type),
+                            token = generateAccessToken(userId, email, type, rotatedRefreshToken),
                             refreshToken = rotatedRefreshToken,
                             userId = userId,
                             email = admin[SuperAdmins.email],
@@ -529,24 +536,41 @@ class AuthService(
 
     fun logout(refreshToken: String): Result<Unit> {
         val decoded = runCatching {
-            JWT.require(Algorithm.HMAC256(secret))
-                .withAudience(audience)
-                .withIssuer(issuer)
-                .build()
-                .verify(refreshToken)
+            JWT.require(Algorithm.HMAC256(secret)).withAudience(audience).withIssuer(issuer).build().verify(refreshToken)
         }.getOrNull() ?: return Result.success(Unit)
-
+        if (decoded.getClaim("tokenUse").asString() != "refresh") return Result.success(Unit)
         val sessionId = decoded.id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
             ?: return Result.success(Unit)
-        val tokenHash = hashToken(refreshToken)
+        val subjectId = runCatching { UUID.fromString(decoded.getClaim("userId").asString()) }.getOrNull()
+            ?: return Result.success(Unit)
+        val type = decoded.getClaim("type").asString()
         transaction {
-            AuthRefreshSessions.update({
+            // Serialize with refresh and follow this login's rotation chain only.
+            when (type) {
+                "user" -> Users.selectAll().where { Users.id eq subjectId }.forUpdate().firstOrNull()
+                "super_admin" -> SuperAdmins.selectAll().where { SuperAdmins.id eq subjectId }.forUpdate().firstOrNull()
+                else -> return@transaction
+            }
+            var row = AuthRefreshSessions.selectAll().where {
                 (AuthRefreshSessions.id eq sessionId) and
-                    (AuthRefreshSessions.tokenHash eq tokenHash) and
-                    (AuthRefreshSessions.revokedAt.isNull())
-            }) {
-                it[revokedAt] = kotlinx.datetime.Clock.System.now()
-                it[lastUsedAt] = kotlinx.datetime.Clock.System.now()
+                    (AuthRefreshSessions.subjectId eq subjectId) and
+                    (AuthRefreshSessions.subjectType eq type) and
+                    (AuthRefreshSessions.tokenHash eq hashToken(refreshToken))
+            }.firstOrNull()
+            val seen = mutableSetOf<UUID>()
+            val now = kotlinx.datetime.Clock.System.now()
+            while (row != null) {
+                val current = row
+                val id = current[AuthRefreshSessions.id]
+                if (!seen.add(id)) break
+                AuthRefreshSessions.update({ AuthRefreshSessions.id eq id }) {
+                    it[revokedAt] = now; it[lastUsedAt] = now
+                }
+                val next = current[AuthRefreshSessions.replacedBySessionId] ?: break
+                row = AuthRefreshSessions.selectAll().where {
+                    (AuthRefreshSessions.id eq next) and (AuthRefreshSessions.subjectId eq subjectId) and
+                        (AuthRefreshSessions.subjectType eq type)
+                }.firstOrNull()
             }
         }
         return Result.success(Unit)
@@ -675,6 +699,10 @@ class AuthService(
 
     fun revokeAllSessions(subjectId: UUID, subjectType: String) {
         transaction {
+            when (subjectType) {
+                "user" -> Users.selectAll().where { Users.id eq subjectId }.forUpdate().firstOrNull()
+                "super_admin" -> SuperAdmins.selectAll().where { SuperAdmins.id eq subjectId }.forUpdate().firstOrNull()
+            }
             val now = kotlinx.datetime.Clock.System.now()
             AuthRefreshSessions.update({
                 (AuthRefreshSessions.subjectId eq subjectId) and
@@ -832,7 +860,7 @@ class AuthService(
         }
     }
 
-    private fun generateAccessToken(userId: String, email: String, type: String): String {
+    private fun generateAccessToken(userId: String, email: String, type: String, refreshToken: String): String {
         return JWT.create()
             .withAudience(audience)
             .withIssuer(issuer)
@@ -840,6 +868,8 @@ class AuthService(
             .withClaim("email", email)
             .withClaim("type", type)
             .withClaim("tokenUse", "access")
+            .withClaim("sessionId", JWT.decode(refreshToken).id)
+            .withIssuedAt(Date())
             .withExpiresAt(Date(System.currentTimeMillis() + accessTokenLifetimeMs))
             .sign(Algorithm.HMAC256(secret))
     }

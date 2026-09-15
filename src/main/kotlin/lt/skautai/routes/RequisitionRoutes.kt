@@ -333,7 +333,7 @@ private fun resolveRequisitionReviewableUnitIds(userId: UUID, tuntasId: UUID): L
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull() and
                     UserLeadershipRoles.organizationalUnitId.isNotNull() and
                     (Roles.name inList unitLeaderRoles)

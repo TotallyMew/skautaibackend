@@ -23,16 +23,6 @@ object UploadStorage {
 
     fun resolveDocument(fileName: String): File? = resolve(documentsDir(), fileName)
 
-    fun deleteManagedUpload(url: String?, urlPrefix: String) {
-        val fileName = url?.takeIf { it.startsWith("$urlPrefix/") }?.removePrefix("$urlPrefix/") ?: return
-        val baseDir = when (urlPrefix) {
-            imageUrlPrefix -> imagesDir()
-            documentUrlPrefix -> documentsDir()
-            else -> return
-        }
-        resolve(baseDir, fileName)?.takeIf { it.exists() }?.delete()
-    }
-
     private fun resolve(baseDir: File, fileName: String): File? {
         if (fileName.isBlank() || fileName.contains("/") || fileName.contains("\\")) return null
         val root = baseDir.canonicalFile

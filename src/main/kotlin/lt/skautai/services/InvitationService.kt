@@ -165,25 +165,27 @@ class InvitationService {
         userId: UUID,
         request: AcceptInvitationRequest
     ): Result<InvitationResponse> {
-        return transaction {
+        return atomicResultTransaction {
+            Users.selectAll().where { (Users.id eq userId) and Users.deletedAt.isNull() }.forUpdate().firstOrNull()
+                ?: return@atomicResultTransaction Result.failure(Exception("User not found"))
             val code = request.code.trim().uppercase()
             if (code.isBlank()) {
-                return@transaction Result.failure(Exception("Invite code is required"))
+                return@atomicResultTransaction Result.failure(Exception("Invite code is required"))
             }
 
             val invite = Invitations.selectAll()
                 .where { Invitations.code eq code }
                 .forUpdate()
                 .firstOrNull()
-                ?: return@transaction Result.failure(Exception("Invalid invite code"))
+                ?: return@atomicResultTransaction Result.failure(Exception("Invalid invite code"))
 
             if (invite[Invitations.usedByUserId] != null) {
-                return@transaction Result.failure(Exception("Invite code already used"))
+                return@atomicResultTransaction Result.failure(Exception("Invite code already used"))
             }
 
             val now = Clock.System.now()
             if (invite[Invitations.expiresAt] < now) {
-                return@transaction Result.failure(Exception("Invite code expired"))
+                return@atomicResultTransaction Result.failure(Exception("Invite code expired"))
             }
 
             val inviteTuntasId = invite[Invitations.tuntasId]
@@ -191,10 +193,10 @@ class InvitationService {
             val tuntas = Tuntai.selectAll()
                 .where { Tuntai.id eq inviteTuntasId }
                 .firstOrNull()
-                ?: return@transaction Result.failure(Exception("Tuntas not found"))
+                ?: return@atomicResultTransaction Result.failure(Exception("Tuntas not found"))
 
             if (tuntas[Tuntai.status] != "ACTIVE") {
-                return@transaction Result.failure(Exception("Tuntas is not active"))
+                return@atomicResultTransaction Result.failure(Exception("Tuntas is not active"))
             }
 
             UserTuntasMemberships.selectAll()
@@ -233,7 +235,7 @@ class InvitationService {
                         (Roles.tuntasId eq inviteTuntasId)
                 }
                 .firstOrNull()
-                ?: return@transaction Result.failure(Exception("Role not found in this tuntas"))
+                ?: return@atomicResultTransaction Result.failure(Exception("Role not found in this tuntas"))
 
             val orgUnitId = invite[Invitations.organizationalUnitId]
             if (orgUnitId != null) {
@@ -243,16 +245,16 @@ class InvitationService {
                             (OrganizationalUnits.tuntasId eq inviteTuntasId)
                     }
                     .firstOrNull()
-                    ?: return@transaction Result.failure(Exception("Organizational unit not found in this tuntas"))
+                    ?: return@atomicResultTransaction Result.failure(Exception("Organizational unit not found in this tuntas"))
 
                 validatePrimaryUnitAssignment(userId, inviteTuntasId, orgUnitId)
-                    ?.let { return@transaction Result.failure(Exception(it)) }
+                    ?.let { return@atomicResultTransaction Result.failure(Exception(it)) }
             }
 
             when (role[Roles.roleType]) {
                 "LEADERSHIP" -> {
                     LeadershipRoleRules.validatePrincipalUnitLeaderSlot(roleId, inviteTuntasId, orgUnitId)
-                        ?.let { return@transaction Result.failure(Exception(it)) }
+                        ?.let { return@atomicResultTransaction Result.failure(Exception(it)) }
 
                     val exists = UserLeadershipRoles.selectAll()
                         .where {
@@ -260,7 +262,7 @@ class InvitationService {
                                     (UserLeadershipRoles.roleId eq roleId) and
                                 (UserLeadershipRoles.tuntasId eq inviteTuntasId) and
                                 (UserLeadershipRoles.organizationalUnitId eq orgUnitId) and
-                                (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                                UserLeadershipRoles.effectiveNow() and
                                 UserLeadershipRoles.leftAt.isNull()
                         }
                         .firstOrNull() != null
@@ -281,15 +283,20 @@ class InvitationService {
                     )
                 }
                 "RANK" -> {
-                    val exists = UserRanks.selectAll()
+                    val existingRank = UserRanks.selectAll()
                         .where {
                                 (UserRanks.userId eq userId) and
-                                    (UserRanks.roleId eq roleId) and
                                 (UserRanks.tuntasId eq inviteTuntasId)
                         }
-                        .firstOrNull() != null
+                        .forUpdate()
+                        .firstOrNull()
 
-                    if (!exists) {
+                    if (existingRank != null) {
+                        UserRanks.update({ UserRanks.id eq existingRank[UserRanks.id] }) {
+                            it[this.roleId] = roleId
+                            it[assignedByUserId] = invite[Invitations.createdByUserId]
+                        }
+                    } else {
                         UserRanks.insert {
                             it[this.userId] = userId
                             it[this.roleId] = roleId
@@ -298,7 +305,7 @@ class InvitationService {
                         }
                     }
                 }
-                else -> return@transaction Result.failure(Exception("Unknown role type"))
+                else -> return@atomicResultTransaction Result.failure(Exception("Unknown role type"))
             }
 
             if (orgUnitId != null) {
@@ -381,7 +388,7 @@ class InvitationService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull()
             }
             .mapNotNull { row ->

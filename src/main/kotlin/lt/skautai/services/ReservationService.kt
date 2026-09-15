@@ -749,7 +749,7 @@ class ReservationService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull()
             }
             .map { it[Roles.name] }
@@ -788,32 +788,39 @@ class ReservationService {
         canApproveTopLevel: Boolean,
         approvableUnitIds: Set<UUID>
     ): Result<ReservationResponse> {
-        return transaction {
+        return atomicResultTransaction {
             val movementType = type.uppercase()
             if (movementType !in listOf("ISSUE", "RETURN_MARKED", "RETURN")) {
-                return@transaction Result.failure(Exception("Movement type must be ISSUE, RETURN_MARKED or RETURN"))
+                return@atomicResultTransaction Result.failure(Exception("Movement type must be ISSUE, RETURN_MARKED or RETURN"))
             }
             if (request.items.isEmpty()) {
-                return@transaction Result.failure(Exception("At least one item is required"))
+                return@atomicResultTransaction Result.failure(Exception("At least one item is required"))
             }
 
+            // Lock all group rows in a stable order before reading status or movement totals.
+            // Every movement for the group shares these locks across both backend applications.
+            Reservations.selectAll()
+                .where { (Reservations.groupId eq groupId) and (Reservations.tuntasId eq tuntasId) }
+                .orderBy(Reservations.id, SortOrder.ASC)
+                .forUpdate()
+                .toList()
             val rows = reservationRows(groupId, tuntasId)
             if (rows.isEmpty()) {
-                return@transaction Result.failure(Exception("Reservation not found"))
+                return@atomicResultTransaction Result.failure(Exception("Reservation not found"))
             }
             if (hasProtectedSeniorOwnedItem(rows, userId, tuntasId)) {
-                return@transaction Result.failure(Exception("Reservation not found"))
+                return@atomicResultTransaction Result.failure(Exception("Reservation not found"))
             }
 
             val currentStatus = rows.first()[Reservations.status]
             if (movementType == "ISSUE" && currentStatus !in listOf("APPROVED", "ACTIVE")) {
-                return@transaction Result.failure(Exception("Only approved reservations can be issued"))
+                return@atomicResultTransaction Result.failure(Exception("Only approved reservations can be issued"))
             }
             if (movementType == "RETURN" && currentStatus != "ACTIVE") {
-                return@transaction Result.failure(Exception("Only active reservations can be returned"))
+                return@atomicResultTransaction Result.failure(Exception("Only active reservations can be returned"))
             }
             if (movementType == "RETURN_MARKED" && currentStatus != "ACTIVE") {
-                return@transaction Result.failure(Exception("Only active reservations can be marked as returned"))
+                return@atomicResultTransaction Result.failure(Exception("Only active reservations can be marked as returned"))
             }
 
             val reservationItems = rows.associateBy { it[Reservations.itemId] }
@@ -823,23 +830,27 @@ class ReservationService {
                 .associateBy { it[Items.id] }
             val currentMovements = movementTotals(groupId)
 
-            request.items.forEach { movementItem ->
+            val normalizedItemIds = mutableSetOf<UUID>()
+            val validatedItems = request.items.map { movementItem ->
                 val itemUUID = try {
                     UUID.fromString(movementItem.itemId)
                 } catch (e: Exception) {
-                    return@transaction Result.failure(Exception("Invalid item ID"))
+                    return@atomicResultTransaction Result.failure(Exception("Invalid item ID"))
+                }
+                if (!normalizedItemIds.add(itemUUID)) {
+                    return@atomicResultTransaction Result.failure(Exception("Duplicate item IDs are not allowed in a movement"))
                 }
                 if (movementItem.quantity < 1) {
-                    return@transaction Result.failure(Exception("Quantity must be at least 1"))
+                    return@atomicResultTransaction Result.failure(Exception("Quantity must be at least 1"))
                 }
 
                 val reservationRow = reservationItems[itemUUID]
-                    ?: return@transaction Result.failure(Exception("Item is not part of this reservation"))
+                    ?: return@atomicResultTransaction Result.failure(Exception("Item is not part of this reservation"))
                 val item = itemRows[itemUUID]
-                    ?: return@transaction Result.failure(Exception("Item not found"))
+                    ?: return@atomicResultTransaction Result.failure(Exception("Item not found"))
                 if (movementType == "RETURN_MARKED") {
                     if (reservationRow[Reservations.reservedByUserId] != userId) {
-                        return@transaction Result.failure(Exception("Only reservation owner can mark items as returned"))
+                        return@atomicResultTransaction Result.failure(Exception("Only reservation owner can mark items as returned"))
                     }
                 } else {
                     val custodianId = item[Items.custodianId]
@@ -849,7 +860,7 @@ class ReservationService {
                         custodianId in approvableUnitIds
                     }
                     if (!canManageItem) {
-                        return@transaction Result.failure(Exception("Insufficient permissions for ${item[Items.name]}"))
+                        return@atomicResultTransaction Result.failure(Exception("Insufficient permissions for ${item[Items.name]}"))
                     }
                 }
 
@@ -860,25 +871,30 @@ class ReservationService {
                     else -> totals.returnedMarked - totals.returned
                 }
                 if (movementItem.quantity > maxQuantity) {
-                    return@transaction Result.failure(
+                    return@atomicResultTransaction Result.failure(
                         Exception("Quantity too high for ${item[Items.name]}. Available for $movementType: $maxQuantity")
                     )
                 }
 
-                val movementLocationId = request.locationId?.let {
-                    try {
-                        UUID.fromString(it)
-                    } catch (e: Exception) {
-                        return@transaction Result.failure(Exception("Invalid movement location ID"))
-                    }
-                }
-                validateReservationLocation(
-                    tuntasId = tuntasId,
-                    locationId = movementLocationId,
-                    itemRows = itemRows,
-                    reservedByUserId = rows.first()[Reservations.reservedByUserId]
-                )?.let { return@transaction Result.failure(it) }
+                itemUUID to movementItem
+            }
 
+            val movementLocationId = request.locationId?.let {
+                try {
+                    UUID.fromString(it)
+                } catch (e: Exception) {
+                    return@atomicResultTransaction Result.failure(Exception("Invalid movement location ID"))
+                }
+            }
+            validateReservationLocation(
+                tuntasId = tuntasId,
+                locationId = movementLocationId,
+                itemRows = itemRows,
+                reservedByUserId = rows.first()[Reservations.reservedByUserId]
+            )?.let { return@atomicResultTransaction Result.failure(it) }
+
+            // No mutation occurs until every entry, permission and shared location has passed validation.
+            validatedItems.forEach { (itemUUID, movementItem) ->
                 val now = Clock.System.now()
                 ReservationMovements.insert {
                     it[reservationGroupId] = groupId

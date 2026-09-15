@@ -720,7 +720,7 @@ class MyTaskService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull() and
                     UserLeadershipRoles.organizationalUnitId.isNotNull() and
                     (Roles.name inList unitLeaderRoles)
@@ -736,7 +736,7 @@ class MyTaskService {
             .where {
                 (UserLeadershipRoles.userId eq userId) and
                     (UserLeadershipRoles.tuntasId eq tuntasId) and
-                    (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                    UserLeadershipRoles.effectiveNow() and
                     UserLeadershipRoles.leftAt.isNull()
             }
             .any { it[Roles.name] in setOf("Tuntininkas", "Tuntininko pavaduotojas") }

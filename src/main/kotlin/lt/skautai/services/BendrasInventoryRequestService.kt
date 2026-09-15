@@ -188,7 +188,7 @@ class BendrasInventoryRequestService {
                     (UserLeadershipRoles.userId eq requestedByUserId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId) and
                         (UserLeadershipRoles.organizationalUnitId eq requestingUnitUUID) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        UserLeadershipRoles.effectiveNow() and
                         UserLeadershipRoles.leftAt.isNull()
                 }
                 .any()
@@ -242,7 +242,7 @@ class BendrasInventoryRequestService {
                     (UserLeadershipRoles.userId eq requestedByUserId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId) and
                         (UserLeadershipRoles.organizationalUnitId eq requestingUnitUUID) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        UserLeadershipRoles.effectiveNow() and
                         (UserLeadershipRoles.leftAt.isNull()) and
                         (Roles.name inList unitLeaderRoles)
                 }
@@ -254,7 +254,7 @@ class BendrasInventoryRequestService {
                 .where {
                     (UserLeadershipRoles.userId eq requestedByUserId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        UserLeadershipRoles.effectiveNow() and
                         (UserLeadershipRoles.leftAt.isNull()) and
                         (Roles.name inList listOf("Tuntininkas", "Tuntininko pavaduotojas", "Inventorininkas"))
                 }
@@ -390,7 +390,7 @@ class BendrasInventoryRequestService {
                 .where {
                     (UserLeadershipRoles.userId eq reviewerUserId) and
                         (UserLeadershipRoles.tuntasId eq tuntasId) and
-                        (UserLeadershipRoles.termStatus eq "ACTIVE") and
+                        UserLeadershipRoles.effectiveNow() and
                         (UserLeadershipRoles.leftAt.isNull()) and
                         (UserLeadershipRoles.organizationalUnitId eq requestingUnitId) and
                         (Roles.name inList unitLeaderRoles)
