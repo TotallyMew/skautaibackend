@@ -5,6 +5,7 @@ import org.jetbrains.exposed.sql.kotlin.datetime.date
 import org.jetbrains.exposed.sql.kotlin.datetime.timestamp
 
 object Items : Table("items") {
+    val auditVersion = long("audit_version").default(0)
     val id = uuid("id").autoGenerate()
     val tuntasId = uuid("tuntas_id").references(Tuntai.id)
     val custodianId = uuid("custodian_id").references(OrganizationalUnits.id).nullable()

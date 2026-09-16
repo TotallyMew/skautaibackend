@@ -364,11 +364,11 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                         return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                     }
-                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.update")) {
                         return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                     }
                     val status = call.request.queryParameters["status"]
-                    itemCheckService.listStorageAuditSessions(tuntasUUID, status)
+                    itemCheckService.listStorageAuditSessions(tuntasUUID, userId, status)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to list audit sessions")) }
                 }
@@ -381,7 +381,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                     }
-                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.update")) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                     }
                     val request = call.receiveValidated<CreateStorageAuditSessionRequest>()
@@ -398,7 +398,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                         return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                     }
-                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.update")) {
                         return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                     }
                     val sessionId = call.parameters["sessionId"]
@@ -406,7 +406,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     val sessionUUID = try { UUID.fromString(sessionId) } catch (e: Exception) {
                         return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid session ID"))
                     }
-                    itemCheckService.getStorageAuditSession(sessionUUID, tuntasUUID)
+                    itemCheckService.getStorageAuditSession(sessionUUID, tuntasUUID, userId)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { call.respond(HttpStatusCode.NotFound, ErrorResponse(it.message ?: "Audit session not found")) }
                 }
@@ -419,7 +419,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                     }
-                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.update")) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                     }
                     val sessionId = call.parameters["sessionId"]
@@ -441,7 +441,7 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     val tuntasUUID = try { UUID.fromString(tuntasId) } catch (e: Exception) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid tuntas ID"))
                     }
-                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.view")) {
+                    if (!PermissionContextService.resolve(userId, tuntasUUID).has("items.update")) {
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Insufficient permissions"))
                     }
                     val sessionId = call.parameters["sessionId"]
@@ -449,10 +449,35 @@ fun Route.itemRoutes(itemService: ItemService, itemCheckService: ItemCheckServic
                     val sessionUUID = try { UUID.fromString(sessionId) } catch (e: Exception) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid session ID"))
                     }
-                    itemCheckService.completeStorageAuditSession(sessionUUID, tuntasUUID, userId)
+                    itemCheckService.completeStorageAuditSession(sessionUUID, tuntasUUID, userId, call.receiveValidated<lt.skautai.models.requests.StorageAuditRevisionRequest>().expectedRevision)
                         .onSuccess { call.respond(HttpStatusCode.OK, it) }
                         .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Failed to complete audit session")) }
                 }
+                post("{sessionId}/cancel") {
+                    val userId = UUID.fromString(call.principal<JWTPrincipal>()!!.getClaim("userId", String::class))
+                    val tuntasId = call.request.headers["X-Tuntas-Id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Tuntas nepasirinktas"))
+                    val sessionId = call.parameters["sessionId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Neteisinga sesija"))
+                    val request = call.receiveValidated<lt.skautai.models.requests.StorageAuditRevisionRequest>()
+                    itemCheckService.cancelStorageAuditSession(sessionId, tuntasId, userId, request.expectedRevision)
+                        .onSuccess { call.respond(it) }
+                        .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Nepavyko atšaukti")) }
+                }
+                post("{sessionId}/items/{itemId}/recount") {
+                    val userId = UUID.fromString(call.principal<JWTPrincipal>()!!.getClaim("userId", String::class))
+                    val tuntasId = call.request.headers["X-Tuntas-Id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Tuntas nepasirinktas"))
+                    val sessionId = call.parameters["sessionId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Neteisinga sesija"))
+                    val itemId = call.parameters["itemId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Neteisingas daiktas"))
+                    val request = call.receiveValidated<lt.skautai.models.requests.StorageAuditRevisionRequest>()
+                    itemCheckService.refreshStorageAuditItem(sessionId, tuntasId, userId, itemId, request.expectedRevision)
+                        .onSuccess { call.respond(it) }
+                        .onFailure { call.respond(HttpStatusCode.BadRequest, ErrorResponse(it.message ?: "Nepavyko atnaujinti")) }
+                }
+
             }
 
             post {

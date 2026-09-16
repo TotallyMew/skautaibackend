@@ -117,6 +117,8 @@ data class ReviewItemAdditionRequest(
 
 @Serializable
 data class CreateStorageAuditSessionRequest(
+    val title: String? = null,
+    val locationId: String? = null,
     val custodianId: String? = null,
     val type: String? = null,
     val category: String? = null,
@@ -138,5 +140,11 @@ data class UpsertStorageAuditCheckRequest(
 
 @Serializable
 data class UpsertStorageAuditChecksRequest(
-    val checks: List<UpsertStorageAuditCheckRequest>
+    val checks: List<UpsertStorageAuditCheckRequest> = emptyList(),
+    val removeItemIds: List<String> = emptyList(),
+    val expectedRevision: Int? = null,
+    val mutationId: String? = null
 )
+
+@Serializable
+data class StorageAuditRevisionRequest(val expectedRevision: Int? = null)

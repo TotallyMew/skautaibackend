@@ -1384,6 +1384,7 @@ class ItemRoutesTest {
             setBody(
                 """
                 {
+                    "expectedRevision": 0,
                     "checks": [
                         { "itemId": "$itemId", "result": "FOUND" }
                     ]
@@ -1406,6 +1407,8 @@ class ItemRoutesTest {
         assertEquals(1, fetchedBody["checks"]!!.jsonArray.size)
 
         val incompleteCompleteResponse = client.post("/api/items/audit-sessions/$sessionId/complete") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"expectedRevision":1}""")
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
         }
@@ -1418,12 +1421,13 @@ class ItemRoutesTest {
             setBody(
                 """
                 {
+                    "expectedRevision": 1,
                     "checks": [
                         {
                             "itemId": "$secondItemId",
                             "result": "FOUND",
                             "actualQuantity": 3,
-                            "conditionAtCheck": "NEEDS_INSPECTION"
+                            "conditionAtCheck": "NEEDS_INSPECTION", "notes": "Rastas papildomas pjūklas"
                         }
                     ]
                 }
@@ -1433,6 +1437,8 @@ class ItemRoutesTest {
         assertEquals(HttpStatusCode.OK, saveSecondCheckResponse.status)
 
         val completeResponse = client.post("/api/items/audit-sessions/$sessionId/complete") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"expectedRevision":2}""")
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
         }
@@ -1494,9 +1500,11 @@ class ItemRoutesTest {
             contentType(ContentType.Application.Json)
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
-            setBody("""{ "checks": [{ "itemId": "$itemId", "result": "DAMAGED" }] }""")
+            setBody("""{ "expectedRevision": 0, "checks": [{ "itemId": "$itemId", "result": "DAMAGED", "notes": "Įskilęs puodas" }] }""")
         }
         val completeResponse = client.post("/api/items/audit-sessions/$firstSessionId/complete") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"expectedRevision":1}""")
             header("Authorization", "Bearer $token")
             header("X-Tuntas-Id", tuntasId)
         }

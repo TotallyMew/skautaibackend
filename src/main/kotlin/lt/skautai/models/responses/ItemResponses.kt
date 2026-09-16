@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
 package lt.skautai.models.responses
 
 import kotlinx.serialization.Serializable
@@ -45,7 +47,7 @@ data class ItemResponse(
     val condition: String,
     val quantity: Int,
     val isConsumable: Boolean = false,
-    val unitOfMeasure: String = "vnt.",
+    @kotlinx.serialization.EncodeDefault val unitOfMeasure: String = "vnt.",
     val minimumQuantity: Int? = null,
     val isLowStock: Boolean = false,
     val locationId: String? = null,
@@ -219,27 +221,30 @@ data class DuplicateItemConflictResponse(
 
 @Serializable
 data class ItemCheckResponse(
-    val id: String,
-    val sessionId: String,
-    val itemId: String? = null,
-    val eventInventoryItemId: String? = null,
-    val custodyId: String? = null,
-    val itemName: String? = null,
-    val qrToken: String? = null,
-    val result: String,
-    val quantity: Int,
-    val expectedQuantity: Int,
-    val actualQuantity: Int,
-    val quantityDifference: Int,
-    val quantityChangeDirection: String,
-    val actualLocationId: String? = null,
-    val actualLocationPath: String? = null,
-    val actualLocationNote: String? = null,
-    val conditionAtCheck: String? = null,
-    val checkedByUserId: String,
-    val checkedByUserName: String? = null,
-    val checkedAt: String,
-    val notes: String? = null
+    @kotlinx.serialization.EncodeDefault val id: String,
+    @kotlinx.serialization.EncodeDefault val sessionId: String,
+    @kotlinx.serialization.EncodeDefault val itemId: String? = null,
+    @kotlinx.serialization.EncodeDefault val eventInventoryItemId: String? = null,
+    @kotlinx.serialization.EncodeDefault val custodyId: String? = null,
+    @kotlinx.serialization.EncodeDefault val itemName: String? = null,
+    @kotlinx.serialization.EncodeDefault val qrToken: String? = null,
+    @kotlinx.serialization.EncodeDefault val result: String,
+    @kotlinx.serialization.EncodeDefault val quantity: Int,
+    @kotlinx.serialization.EncodeDefault val expectedQuantity: Int,
+    @kotlinx.serialization.EncodeDefault val actualQuantity: Int,
+    @kotlinx.serialization.EncodeDefault val quantityDifference: Int,
+    @kotlinx.serialization.EncodeDefault val quantityChangeDirection: String,
+    @kotlinx.serialization.EncodeDefault val actualLocationId: String? = null,
+    @kotlinx.serialization.EncodeDefault val actualLocationPath: String? = null,
+    @kotlinx.serialization.EncodeDefault val actualLocationNote: String? = null,
+    @kotlinx.serialization.EncodeDefault val conditionAtCheck: String? = null,
+    @kotlinx.serialization.EncodeDefault val checkedByUserId: String,
+    @kotlinx.serialization.EncodeDefault val checkedByUserName: String? = null,
+    @kotlinx.serialization.EncodeDefault val checkedAt: String,
+    @kotlinx.serialization.EncodeDefault val notes: String? = null,
+    @kotlinx.serialization.EncodeDefault val unitOfMeasure: String = "vnt.",
+    @kotlinx.serialization.EncodeDefault val outstandingQuantity: Int = 0,
+    @kotlinx.serialization.EncodeDefault val resultingTotalQuantity: Int = actualQuantity
 )
 
 @Serializable
@@ -264,26 +269,43 @@ data class ItemCheckSummaryResponse(
 
 @Serializable
 data class ItemCheckSessionResponse(
-    val id: String,
-    val tuntasId: String,
-    val contextType: String,
-    val status: String,
-    val eventId: String? = null,
-    val scopeCustodianId: String? = null,
-    val scopeCustodianName: String? = null,
-    val scopeType: String? = null,
-    val scopeCategory: String? = null,
-    val scopeSharedOnly: Boolean,
-    val scopePersonalOwnerUserId: String? = null,
-    val startedByUserId: String,
-    val startedByUserName: String? = null,
-    val completedByUserId: String? = null,
-    val completedByUserName: String? = null,
-    val notes: String? = null,
-    val createdAt: String,
-    val completedAt: String? = null,
-    val summary: ItemCheckSummaryResponse,
-    val checks: List<ItemCheckResponse>
+    @kotlinx.serialization.EncodeDefault val title: String? = null,
+    @kotlinx.serialization.EncodeDefault val scopeLocationId: String? = null,
+    @kotlinx.serialization.EncodeDefault val revision: Int = 0,
+    @kotlinx.serialization.EncodeDefault val requiresRestart: Boolean = false,
+    @kotlinx.serialization.EncodeDefault val canEdit: Boolean = false,
+    @kotlinx.serialization.EncodeDefault val canCancel: Boolean = false,
+    @kotlinx.serialization.EncodeDefault val items: List<StorageAuditItemResponse> = emptyList(),
+    @kotlinx.serialization.EncodeDefault val id: String,
+    @kotlinx.serialization.EncodeDefault val tuntasId: String,
+    @kotlinx.serialization.EncodeDefault val contextType: String,
+    @kotlinx.serialization.EncodeDefault val status: String,
+    @kotlinx.serialization.EncodeDefault val eventId: String? = null,
+    @kotlinx.serialization.EncodeDefault val scopeCustodianId: String? = null,
+    @kotlinx.serialization.EncodeDefault val scopeCustodianName: String? = null,
+    @kotlinx.serialization.EncodeDefault val scopeType: String? = null,
+    @kotlinx.serialization.EncodeDefault val scopeCategory: String? = null,
+    @kotlinx.serialization.EncodeDefault val scopeSharedOnly: Boolean,
+    @kotlinx.serialization.EncodeDefault val scopePersonalOwnerUserId: String? = null,
+    @kotlinx.serialization.EncodeDefault val startedByUserId: String,
+    @kotlinx.serialization.EncodeDefault val startedByUserName: String? = null,
+    @kotlinx.serialization.EncodeDefault val completedByUserId: String? = null,
+    @kotlinx.serialization.EncodeDefault val completedByUserName: String? = null,
+    @kotlinx.serialization.EncodeDefault val notes: String? = null,
+    @kotlinx.serialization.EncodeDefault val createdAt: String,
+    @kotlinx.serialization.EncodeDefault val completedAt: String? = null,
+    @kotlinx.serialization.EncodeDefault val summary: ItemCheckSummaryResponse,
+    @kotlinx.serialization.EncodeDefault val checks: List<ItemCheckResponse>
+)
+
+@Serializable
+data class StorageAuditItemResponse(
+    @kotlinx.serialization.EncodeDefault val item: ItemResponse,
+    @kotlinx.serialization.EncodeDefault val expectedStorageQuantity: Int,
+    @kotlinx.serialization.EncodeDefault val outstandingQuantity: Int,
+    @kotlinx.serialization.EncodeDefault val outstandingDetails: List<String> = emptyList(),
+    @kotlinx.serialization.EncodeDefault val stockVersion: Long,
+    @kotlinx.serialization.EncodeDefault val conflict: String? = null
 )
 
 @Serializable

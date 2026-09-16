@@ -4,6 +4,11 @@ import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.kotlin.datetime.timestamp
 
 object ItemCheckSessions : Table("item_check_sessions") {
+    val snapshotJson = text("snapshot_json").nullable()
+    val revision = integer("revision").default(0)
+    val lastMutationId = uuid("last_mutation_id").nullable()
+    val title = varchar("title", 160).nullable()
+    val scopeLocationId = uuid("scope_location_id").references(Locations.id).nullable()
     val id = uuid("id").autoGenerate()
     val tuntasId = uuid("tuntas_id").references(Tuntai.id)
     val contextType = varchar("context_type", 30)
