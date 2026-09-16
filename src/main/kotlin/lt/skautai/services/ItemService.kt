@@ -1838,19 +1838,19 @@ class ItemService {
 
     private fun toItemResponse(row: ResultRow, hydration: ItemListHydration? = null): ItemResponse {
         val custodianId = row[Items.custodianId]
-        val custodianName = custodianId?.let { hydration?.orgUnitNames?.get(it) } ?: custodianId?.let {
+        val custodianName = if (hydration != null) custodianId?.let(hydration.orgUnitNames::get) else custodianId?.let {
             OrganizationalUnits.selectAll()
                 .where { OrganizationalUnits.id eq it }
                 .firstOrNull()
                 ?.get(OrganizationalUnits.name)
         }
-        val createdByUserName = row[Items.createdByUserId]?.let { hydration?.userNames?.get(it) } ?: row[Items.createdByUserId]?.let { userId ->
+        val createdByUserName = if (hydration != null) row[Items.createdByUserId]?.let(hydration.userNames::get) else row[Items.createdByUserId]?.let { userId ->
             userDisplayName(userId)
         }
-        val responsibleUserName = row[Items.responsibleUserId]?.let { hydration?.userNames?.get(it) }
-            ?: userDisplayName(row[Items.responsibleUserId])
+        val responsibleUserName = if (hydration != null) row[Items.responsibleUserId]?.let(hydration.userNames::get)
+            else userDisplayName(row[Items.responsibleUserId])
 
-        val quantityBreakdown = hydration?.quantityBreakdowns?.get(row[Items.id]) ?: if (custodianId == null) {
+        val quantityBreakdown = if (hydration != null) hydration.quantityBreakdowns[row[Items.id]].orEmpty() else if (custodianId == null) {
             Items.selectAll()
                 .where {
                     (Items.sourceSharedItemId eq row[Items.id]) and
@@ -1882,11 +1882,11 @@ class ItemService {
         }
         val locationName = locationId?.let { id -> locationNodes[id]?.name }
         val locationPath = locationId?.let { id -> buildLocationPath(id, locationNodes) }
-        val activeKit = hydration?.activeKits?.get(row[Items.id])
-            ?: InventoryKitService.activeKitForItem(row[Items.id])?.let {
+        val activeKit = if (hydration != null) hydration.activeKits[row[Items.id]]
+            else InventoryKitService.activeKitForItem(row[Items.id])?.let {
                 KitSummary(id = it[InventoryKits.id], name = it[InventoryKits.name])
             }
-        val customFields = hydration?.customFields?.get(row[Items.id]) ?: ItemCustomFields.selectAll()
+        val customFields = if (hydration != null) hydration.customFields[row[Items.id]].orEmpty() else ItemCustomFields.selectAll()
             .where { ItemCustomFields.itemId eq row[Items.id] }
             .orderBy(ItemCustomFields.fieldName to SortOrder.ASC)
             .map {
@@ -1935,8 +1935,8 @@ class ItemService {
             totalQuantityAcrossCustodians = totalQuantityAcrossCustodians,
             status = row[Items.status],
             submittedByUserId = row[Items.submittedByUserId]?.toString(),
-            submittedByUserName = row[Items.submittedByUserId]?.let { hydration?.userNames?.get(it) }
-                ?: userDisplayName(row[Items.submittedByUserId]),
+            submittedByUserName = if (hydration != null) row[Items.submittedByUserId]?.let(hydration.userNames::get)
+                else userDisplayName(row[Items.submittedByUserId]),
             targetScope = row[Items.targetScope],
             reviewedByUserId = row[Items.reviewedByUserId]?.toString(),
             rejectionReason = row[Items.rejectionReason],
